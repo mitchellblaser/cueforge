@@ -94,6 +94,19 @@ class MainWindow(QMainWindow):
         self.autosave.timeout.connect(self._autosave)
         self.autosave.start()
         self._project_replaced()
+        from PySide6.QtWidgets import QApplication
+        QApplication.instance().installEventFilter(self)
+
+    def eventFilter(self, obj, ev) -> bool:
+        from PySide6.QtCore import QEvent
+        from PySide6.QtWidgets import QAbstractSpinBox, QLineEdit, QPlainTextEdit
+        if ev.type() == QEvent.KeyPress and ev.key() in (Qt.Key_Tab, Qt.Key_Backtab) \
+                and isinstance(obj, QWidget) and obj.window() is self:
+            if not isinstance(obj, (QLineEdit, QPlainTextEdit, QAbstractSpinBox)):
+                back = ev.key() == Qt.Key_Backtab or bool(ev.modifiers() & Qt.ShiftModifier)
+                self.jump_suggestion(-1 if back else 1)
+                return True
+        return False
 
     # ================================================================ building
     def _act(self, text: str, slot, shortcut=None, checkable=False, tip: str = "") -> QAction:
@@ -217,9 +230,13 @@ class MainWindow(QMainWindow):
         a.addAction(self._act("Analyse audio…", self.analyse, "Ctrl+R"))
         a.addAction(self._act("Cancel analysis", self.s.cancel_analysis))
         a.addSeparator()
-        a.addAction(self._act("Next suggestion", lambda: self.jump_suggestion(1), "Tab"))
-        a.addAction(self._act("Previous suggestion", lambda: self.jump_suggestion(-1), "Shift+Tab"))
-        self._act("Previous suggestion", lambda: self.jump_suggestion(-1), "Backtab")
+        # Tab / Shift+Tab are handled in eventFilter so focus navigation never eats them
+        nxt = QAction("Next suggestion\tTab", self)
+        nxt.triggered.connect(lambda: self.jump_suggestion(1))
+        prv = QAction("Previous suggestion\tShift+Tab", self)
+        prv.triggered.connect(lambda: self.jump_suggestion(-1))
+        a.addAction(nxt)
+        a.addAction(prv)
         a.addAction(self._act("Accept selected", self.accept_selected, "A"))
         a.addAction(self._act("Reject selected", self.reject_selected, "X"))
         a.addSeparator()
@@ -641,7 +658,7 @@ class MainWindow(QMainWindow):
     def _export_path(self, title: str, suffix: str, filt: str) -> str:
         default = os.path.join(self._dir(), (self.s.project.export.ma3_name or self.s.project.name) + suffix)
         path, _ = QFileDialog.getSaveFileName(self, title, default, filt)
-        if path and not path.lower().endswith(suffix):
+        if path and not path.lower().endswith(suffix.lower()):
             path += suffix
         return path
 
@@ -734,8 +751,12 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             QMessageBox.warning(self, "Export failed", str(exc))
             return
-        self._exported(path, f"LTC starts at {seconds_to_tc(t0, p.frame_rate, p.tc_offset)} "
-                             f"({ex.ltc_preroll:g} s pre-roll before the song).")
+        msg = (f"LTC starts at {seconds_to_tc(t0, p.frame_rate, p.tc_offset)} "
+               f"({max(0.0, -t0):.2f} s before the song).")
+        if -t0 < ex.ltc_preroll - 0.05:
+            msg += ("\n\nPre-roll was shortened because the song starts too close to 00:00:00:00. "
+                    "Set a start timecode such as 01:00:00:00 in Project settings.")
+        self._exported(path, msg)
 
     # ================================================================ misc
     def about(self) -> None:
@@ -748,6 +769,8 @@ class MainWindow(QMainWindow):
             e.ignore()
             return
         self.s.engine.close()
+        from PySide6.QtWidgets import QApplication
+        QApplication.instance().removeEventFilter(self)
         from .workers import wait_all
         wait_all(2000)
         self.s.settings.set("geometry", self.saveGeometry().toHex().data().decode())

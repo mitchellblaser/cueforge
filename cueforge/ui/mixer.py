@@ -262,9 +262,10 @@ class MixerPanel(QWidget):
     def rebuild(self) -> None:
         while self.row.count():
             item = self.row.takeAt(0)
-            if item.widget():
-                item.widget().setParent(None)
-                item.widget().deleteLater()
+            w = item.widget()
+            if w:
+                w.setParent(None)
+                w.deleteLater()
         self.strips.clear()
         for t in self.s.project.tracks:
             st = TrackStrip(self.s, t.id)
