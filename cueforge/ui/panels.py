@@ -5,7 +5,7 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QColorDialog, QComboBox, QGridLayout, QGroupBox,
                                QHBoxLayout, QHeaderView, QInputDialog, QLabel, QMenu, QMessageBox, QPushButton,
-                               QSlider, QSpinBox, QSplitter, QTableWidget, QTableWidgetItem, QTreeWidget, QTreeWidgetItem,
+                               QScrollArea, QSlider, QSpinBox, QSplitter, QTableWidget, QTableWidgetItem, QTreeWidget, QTreeWidgetItem,
                                QVBoxLayout, QWidget, QLineEdit)
 
 from ..core.model import KIND_LABELS, SUGGESTION_KINDS
@@ -17,7 +17,7 @@ from .session import RESERVED_KEYS, Session
 # ============================================================== cue list
 class CueTable(QWidget):
     seek_requested = Signal(float)
-    COLS = ["Timecode", "Lane", "Cue", "Label", "Fade", "Notes", "Src"]
+    COLS = ["Timecode", "Lane", "Cue", "Label", "Fade", "Hold", "Notes", "Src"]
 
     def __init__(self, session: Session, parent=None) -> None:
         super().__init__(parent)
@@ -44,7 +44,7 @@ class CueTable(QWidget):
         hh.setSectionResizeMode(QHeaderView.Interactive)
         hh.setStretchLastSection(False)
         hh.setSectionResizeMode(3, QHeaderView.Stretch)
-        for i, w in enumerate([92, 80, 44, 120, 40, 80, 28]):
+        for i, w in enumerate([92, 80, 44, 120, 40, 40, 80, 28]):
             if i != 3:
                 self.table.setColumnWidth(i, w)
         self.table.itemSelectionChanged.connect(self._sel_from_table)
@@ -84,16 +84,19 @@ class CueTable(QWidget):
             lane = p.lane(c.lane_id)
             vals = [seconds_to_tc(c.time, p.frame_rate, p.tc_offset), lane.name if lane else "?",
                     "" if c.number is None else f"{c.number:g}", c.label,
-                    "" if c.fade is None else f"{c.fade:g}", c.notes, "AI" if c.source == "ai-accepted" else ""]
+                    "" if c.fade is None else f"{c.fade:g}", "" if not c.duration else f"{c.duration:.2f}",
+                    c.notes, "AI" if c.source == "ai-accepted" else ""]
             for col, v in enumerate(vals):
                 it = QTableWidgetItem(v)
                 it.setData(Qt.UserRole, c.id)
-                if col in (1, 6):
+                if col in (1, 7):
                     it.setFlags(it.flags() & ~Qt.ItemIsEditable)
                 if col == 1 and lane:
                     it.setForeground(QColor(lane.color))
-                if col == 6:
+                if col == 7:
                     it.setForeground(QColor("#ffd54f"))
+                if col == 6 and c.notes:
+                    it.setToolTip(c.notes)
                 self.table.setItem(r, col, it)
         self.count.setText(f"{len(cues)} cues")
         self._syncing = False
@@ -144,6 +147,8 @@ class CueTable(QWidget):
             elif col == 4:
                 self.s.update_cue(cid, fade=float(txt) if txt else None)
             elif col == 5:
+                self.s.update_cue(cid, duration=float(txt) if txt and float(txt) > 0 else None)
+            elif col == 6:
                 self.s.update_cue(cid, notes=txt)
         except ValueError as exc:
             QMessageBox.warning(self, "Invalid value", str(exc))
@@ -198,7 +203,7 @@ class KindRow(QWidget):
         rej.clicked.connect(lambda: s.reject(s.visible_ids(kind)))
         for b in (acc, rej):
             b.setStyleSheet("padding: 2px 6px;")
-        self.visible.setMinimumWidth(84)
+        self.visible.setMinimumWidth(110)
         lay.addWidget(self.visible, 0, 0)
         lay.addWidget(self.count, 0, 1, 1, 2)
         lay.addWidget(QLabel("→"), 0, 3)
@@ -238,7 +243,8 @@ class KindRow(QWidget):
         self.lane.clear()
         for l in s.project.lanes:
             self.lane.addItem(l.name, l.id)
-        self.lane.setCurrentIndex(max(0, self.lane.findData(s.project.lane_for_kind(self.kind))))
+        lid = s.project.analysis.lane_for_kind.get(self.kind) or s.project.lane_for_kind(self.kind)
+        self.lane.setCurrentIndex(max(0, self.lane.findData(lid)))
 
 
 class SuggestionPanel(QWidget):
@@ -291,9 +297,18 @@ class SuggestionPanel(QWidget):
 
         kinds_box = QGroupBox("Suggestion filters")
         kl = QVBoxLayout(kinds_box)
+        rows_w = QWidget()
+        rows_l = QVBoxLayout(rows_w)
+        rows_l.setContentsMargins(0, 0, 0, 0)
         self.rows = {k: KindRow(self, k) for k in SUGGESTION_KINDS}
         for r in self.rows.values():
-            kl.addWidget(r)
+            rows_l.addWidget(r)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.NoFrame)
+        scroll.setWidget(rows_w)
+        scroll.setMinimumHeight(160)
+        kl.addWidget(scroll, 1)
         self.learned = QLabel()
         self.learned.setWordWrap(True)
         self.learned.setStyleSheet(f"color: {theme.FG_DIM}; font-size: 10px;")
@@ -304,12 +319,14 @@ class SuggestionPanel(QWidget):
         lay.addWidget(kinds_box)
 
         self.tree = QTreeWidget()
-        self.tree.setHeaderLabels(["Time", "Type", "Label", "Conf", "Why"])
+        self.tree.setHeaderLabels(["Time", "Type", "Label", "Conf", "Idea", "Why"])
         self.tree.setRootIsDecorated(False)
         self.tree.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.tree.setAlternatingRowColors(True)
-        for i, w in enumerate([86, 52, 90, 40]):
+        for i, w in enumerate([86, 70, 110, 40, 150]):
             self.tree.setColumnWidth(i, w)
+        self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.tree.customContextMenuRequested.connect(self._tree_menu)
         self.tree.itemSelectionChanged.connect(self._sel_from_tree)
         self.tree.itemDoubleClicked.connect(lambda it, _: session.accept([it.data(0, Qt.UserRole)]))
         bottom = QWidget()
@@ -365,13 +382,27 @@ class SuggestionPanel(QWidget):
         self.tree.clear()
         for sg in p.visible_suggestions():
             it = QTreeWidgetItem([seconds_to_tc(sg.time, p.frame_rate, p.tc_offset), KIND_LABELS[sg.kind],
-                                  sg.label, f"{sg.confidence:.0%}", sg.reason])
+                                  sg.label, f"{sg.confidence:.0%}", sg.idea, sg.reason])
             it.setData(0, Qt.UserRole, sg.id)
-            it.setToolTip(4, sg.reason)
+            it.setToolTip(4, sg.idea)
+            it.setToolTip(5, sg.reason)
             it.setSelected(sg.id in s.sel_sugs)
             self.tree.addTopLevelItem(it)
         self._syncing = False
         self._refreshing = False
+
+    def _tree_menu(self, pos) -> None:
+        it = self.tree.itemAt(pos)
+        if not it:
+            return
+        sid = it.data(0, Qt.UserRole)
+        sg = self.s.project.suggestion(sid)
+        m = QMenu(self)
+        m.addAction("Accept", lambda: self.s.accept([sid]))
+        if sg and sg.steps:
+            m.addAction(f"Accept as chase steps ({len(sg.steps)} cues)", lambda: self.s.accept_as_steps(sid))
+        m.addAction("Reject", lambda: self.s.reject([sid]))
+        m.exec(self.tree.viewport().mapToGlobal(pos))
 
     def _apply_learned(self) -> None:
         for k, v in self.s.learned_thresholds().items():

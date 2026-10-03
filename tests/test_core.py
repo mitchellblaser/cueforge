@@ -169,3 +169,25 @@ def test_effective_cue_numbers():
     assert nums[a.id] == 1 and nums[b.id] == 5 and nums[c.id] == 6
     editing.renumber_lane(p, lane, 10, 0.5)
     assert [x.number for x in p.cues_in_lane(lane)] == [10, 10.5, 11]
+
+
+def test_grid_tools():
+    from cueforge.core.grid_tools import double_tempo, grid_from_taps, halve_tempo, merge_grid
+    g = BeatGrid.from_tempo(120, 0.0, 8.0, 4)
+    h = halve_tempo(g)
+    assert h.bpm() == pytest.approx(60) and h.beats_per_bar == 4
+    assert h.downbeats[:2] == pytest.approx([0.0, 4.0])
+    d = double_tempo(h)
+    assert d.bpm() == pytest.approx(120) and d.downbeats[:2] == pytest.approx([0.0, 2.0])
+    # taps: slightly off, one missed beat, one double tap
+    true = np.arange(0, 6, 0.5)
+    onsets = true + 0.002
+    taps = list(true + np.random.default_rng(0).normal(0, 0.03, len(true)))
+    del taps[5]
+    taps.insert(3, taps[3] + 0.05)
+    t = grid_from_taps(taps, onsets, 4)
+    assert len(t.beats) == len(true)
+    assert np.max(np.abs(np.asarray(t.beats) - onsets)) < 0.01
+    assert t.downbeats[0] == pytest.approx(onsets[0]) and t.confirmed
+    m = merge_grid(BeatGrid.from_tempo(100, 0.0, 20.0), BeatGrid.from_tempo(120, 4.0, 6.0))
+    assert all(np.diff(m.beats) > 0)

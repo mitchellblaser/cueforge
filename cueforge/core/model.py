@@ -10,8 +10,12 @@ from .timecode import DEFAULT_RATE, FrameRate, get_rate
 TRACK_ROLES = ["Track", "Stem", "Click", "Cue/Guide", "Other"]
 ANALYSED_ROLES = {"Track", "Stem"}
 
-SUGGESTION_KINDS = ["hit", "section", "energy"]
-KIND_LABELS = {"hit": "Hits", "section": "Sections", "energy": "Energy"}
+SUGGESTION_KINDS = ["hit", "fill", "section", "energy", "harmony", "melody"]
+KIND_LABELS = {"hit": "Hits", "fill": "Drum fills", "section": "Sections", "energy": "Energy",
+               "harmony": "Chord changes", "melody": "Lead lines"}
+# lane each suggestion kind goes to by default: (lane name, tap key)
+KIND_DEFAULT_LANE = {"hit": ("Hits", "2"), "fill": ("Strobe", "3"), "section": ("Main Cues", "1"),
+                     "energy": ("Main Cues", "1"), "harmony": ("Colour", "4"), "melody": ("FX / Chase", "5")}
 
 LANE_COLORS = ["#4FC3F7", "#FFB74D", "#E57373", "#81C784", "#BA68C8", "#FFD54F", "#4DB6AC", "#F06292"]
 TRACK_COLORS = ["#90A4AE", "#7986CB", "#4DD0E1", "#AED581", "#FF8A65", "#A1887F", "#9575CD", "#DCE775"]
@@ -59,6 +63,7 @@ class Cue:
     fade: float | None = None
     notes: str = ""
     source: str = "manual"       # "manual" | "ai-accepted"
+    duration: float | None = None  # seconds the look is held (e.g. strobe through a fill); off afterwards
     id: str = field(default_factory=new_id)
 
 
@@ -73,6 +78,9 @@ class Suggestion:
     status: str = "pending"      # "pending" | "accepted" | "rejected"
     cue_id: str = ""
     source_track: str = ""
+    duration: float = 0.0        # span (fills, phrases)
+    idea: str = ""               # what the programmer might do here
+    steps: list[float] = field(default_factory=list)  # note times (lead lines) for chase steps
     id: str = field(default_factory=new_id)
 
 
@@ -150,8 +158,9 @@ class MixerState:
 @dataclass
 class AnalysisSettings:
     # Minimum confidence shown per suggestion kind (filter, no re-analysis needed)
-    thresholds: dict[str, float] = field(default_factory=lambda: {"hit": 0.75, "section": 0.5, "energy": 0.6})
-    visible: dict[str, bool] = field(default_factory=lambda: {"hit": True, "section": True, "energy": True})
+    thresholds: dict[str, float] = field(default_factory=lambda: {
+        "hit": 0.75, "fill": 0.6, "section": 0.5, "energy": 0.6, "harmony": 0.6, "melody": 0.5})
+    visible: dict[str, bool] = field(default_factory=lambda: {k: True for k in SUGGESTION_KINDS})
     lane_for_kind: dict[str, str] = field(default_factory=dict)  # kind -> lane id
     snap_to_grid: bool = True
     snap_window: float = 0.07    # seconds; suggestions this close to a beat snap to it
@@ -193,13 +202,26 @@ class Project:
         return get_rate(self.frame_rate_key)
 
     def add_default_lanes(self) -> None:
-        self.lanes = [
-            Lane("Main Cues", LANE_COLORS[0], "1", 1),
-            Lane("Hits", LANE_COLORS[1], "2", 2),
-            Lane("Strobe", LANE_COLORS[2], "3", 3),
-        ]
-        self.analysis.lane_for_kind = {
-            "section": self.lanes[0].id, "energy": self.lanes[0].id, "hit": self.lanes[1].id}
+        self.lanes = []
+        self.analysis.lane_for_kind = {}
+        for kind in ("section", "hit", "fill", "harmony", "melody", "energy"):
+            self.ensure_kind_lane(kind)
+
+    def ensure_kind_lane(self, kind: str) -> str:
+        """Lane for a suggestion kind; creates the default lane if it is missing."""
+        lid = self.analysis.lane_for_kind.get(kind, "")
+        if self.lane(lid):
+            return lid
+        name, key = KIND_DEFAULT_LANE.get(kind, ("Main Cues", "1"))
+        lane = next((l for l in self.lanes if l.name == name), None)
+        if lane is None:
+            used = {l.tap_key for l in self.lanes}
+            n = len(self.lanes)
+            lane = Lane(name, LANE_COLORS[n % len(LANE_COLORS)], key if key not in used else "",
+                        max((l.ma3_sequence for l in self.lanes), default=0) + 1)
+            self.lanes.append(lane)
+        self.analysis.lane_for_kind[kind] = lane.id
+        return lane.id
 
     def lane(self, lane_id: str) -> Lane | None:
         return next((l for l in self.lanes if l.id == lane_id), None)
@@ -275,6 +297,10 @@ class Project:
         p.tracks = [_from_dict(Track, t) for t in d.get("tracks", [])]
         p.mixer = _from_dict(MixerState, d.get("mixer", {}))
         p.analysis = _from_dict(AnalysisSettings, d.get("analysis", {}))
+        defaults = AnalysisSettings()
+        for k in SUGGESTION_KINDS:  # projects saved before a kind existed
+            p.analysis.thresholds.setdefault(k, defaults.thresholds[k])
+            p.analysis.visible.setdefault(k, True)
         p.export = _from_dict(ExportSettings, d.get("export", {}))
         loop = d.get("loop")
         p.loop = (float(loop[0]), float(loop[1])) if loop else None

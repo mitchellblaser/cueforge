@@ -192,3 +192,14 @@ def test_learn_thresholds():
     res = learn_thresholds(hist)
     assert 0.75 <= res["hit"]["threshold"] <= 0.82
     assert "section" not in res
+
+
+def test_ma3_hold_exports_off_event():
+    p = _project_with_cues()
+    c = p.cues_in_lane(p.lanes[0].id)[0]
+    c.duration = 2.0
+    root = ET.fromstring(build_ma3_xml(p))
+    evs = root.findall(".//Track")[0].findall(".//CmdEvent")
+    offs = [e for e in evs if e.find("RealtimeCmd").get("Token") == "Off"]
+    assert len(offs) == 1 and int(offs[0].get("Time")) == 3 * MA3_TICKS_PER_SECOND
+    assert "off=3.000000" in build_ma3_lua(p)

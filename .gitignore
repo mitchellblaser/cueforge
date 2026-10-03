@@ -5,3 +5,4 @@ build/
 dist/
 *_cache/
 *.cueproj.tmp
+.corpus_cache/

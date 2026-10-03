@@ -4,9 +4,19 @@ A desktop tool for lighting programmers. Import a song (and its stems, click and
 tracks), plan hits and cue changes against timecode, and export the result to
 **grandMA3**.
 
-CueForge can also **analyse the audio and suggest** hits, section changes, drops and the
-beat grid. These are only suggestions. They show as ghosted markers until you accept them,
-and the analysis never creates, moves or deletes a confirmed cue.
+CueForge can also **analyse the audio and suggest** cues:
+- **Hits** on kick, snare and crash.
+- **Drum fills**, suggested as strobes held across the fill.
+- **Section changes**: verse, chorus, drop, breakdown, build and blackout.
+- **Chord changes**, suggested as colour changes.
+- **Lead lines**: synth, guitar or vocal phrases, which you can accept as chase steps (one
+  cue per note).
+- The **beat grid**, which follows tempo drift in live recordings.
+
+These are only suggestions. They show as ghosted markers until you accept them, and the
+analysis never creates, moves or deletes a confirmed cue. Accuracy on a six-song
+multi-genre test set (live and studio styles) is documented in
+[docs/ACCURACY.md](docs/ACCURACY.md).
 
 ![lanes, waveform and suggestions](docs/screenshot.png)
 
@@ -83,14 +93,36 @@ the built-in analysis.
    **Cue blips** (a tick on every confirmed cue, so you can hear whether hits land) and **Master**.
 
 3. **Analyse** (✦ Analyse, Ctrl+R). Suggestions appear in the lanes as dashed, ghosted
-   markers, more opaque when confidence is higher:
-   - ◇ **Hits**: kick, snare and accent onsets. They go to the *Hits* lane by default.
-   - □ **Sections**: harmony, timbre or loudness changes, snapped to bar lines and labelled A/B/C;
-     a repeated letter means a repeated section.
-   - △ **Energy**: drops, breakdowns, builds, blackouts and returns.
-   - **Beat grid**: shown dashed and orange until you click *Accept grid*.
+   markers, more opaque when confidence is higher. Each one comes with an **idea** for
+   what to program there:
+   | Type | Lane (default) | What it finds | Idea |
+   |---|---|---|---|
+   | ◇ Hits | Hits | kick, snare and crash (not hats, ride or ghost notes) | bump / flash / blinder |
+   | ⚡ Drum fills | Strobe | the drummer leaving the groove into a downbeat | strobe held across the fill (Off at the landing) |
+   | □ Sections | Main Cues | verse / chorus / bridge changes, moved onto the downbeat a fill lands on | new look |
+   | △ Energy | Main Cues | drops, breakdowns, builds, blackouts, returns | |
+   | ○ Chord changes | Colour | harmony changes, e.g. "Chord → F#m" | colour change |
+   | ♪ Lead lines | FX / Chase | vocal, synth, guitar or horn phrases, rising / falling / fast runs | follow-spot, tilt with the line, chase steps |
 
-4. **Review**
+   - The beat grid is shown dashed and orange until you click *Accept grid*.
+   - Lanes for new suggestion types are created automatically.
+   - **Lead lines are accurate from stems.** Import vocal / lead / synth stems with role
+     **Stem**, or tick *Demucs*. CueForge checks whether each stem plays a single line or
+     chords, and uses chord parts for chord changes only. From a full mix, lead lines are a
+     rough estimate (opt-in, hidden by default).
+
+4. **Live recordings**
+   - The beat tracker follows tempo drift and loose timing beat by beat. Steady studio
+     material snaps to a perfectly even grid.
+   - The meter (3/4 or 4/4) is detected automatically.
+   - **Grid › Tap-along grid**: tap **T** on every beat while the song plays. Taps snap to
+     the actual kick/snare hits and missed taps are filled in; turn tap mode off to build
+     the grid. Use it for rubato passages, or to fix a section the tracker got wrong. It
+     only replaces the part you tapped.
+   - **Grid › Halve / Double tempo** fixes a grid locked onto 8th or half notes.
+   - Tap *cues* live with the lane keys as usual. Taps compensate for audio output latency.
+
+5. **Review**
    - **Tab / Shift+Tab** jumps between suggestions; **A** accepts, **X** rejects. Either one
      moves on to the next suggestion.
    - **P** plays from 2 s before the selected suggestion or cue.
@@ -101,7 +133,7 @@ the built-in analysis.
    - Over time CueForge learns thresholds from your decisions (*Apply learned
      thresholds*). It only offers them; it never applies them by itself.
 
-5. **Program manually**
+6. **Program manually**
    - Press a lane's **tap key** (1, 2, 3, …) during playback to drop a cue at the playhead.
    - Double-click a lane to add a cue. Drag cues to move them (they snap to beats when
      **Snap** is on; hold Alt to stop snapping), or drag them into another lane.
@@ -110,13 +142,14 @@ the built-in analysis.
    - Loop a region with **Shift-drag in the ruler**, or with **I / O**, then **L**. Slow
      playback with **[** (0.75×, 0.5×).
 
-6. **Export** (*File › Export*)
+7. **Export** (*File › Export*)
    - **grandMA3**: each lane becomes a timecode track targeting the lane's **MA3
-     sequence**, and each cue becomes a *Goto* event. Cue numbers you leave blank are filled
-     in automatically. Three formats:
+     sequence**, and each cue becomes a *Goto* event. Cues with a **Hold** time (e.g. an
+     accepted drum-fill strobe) also get an *Off* event when the hold ends. Cue numbers you
+     leave blank are filled in automatically. Three formats:
      - **Timecode XML**: import into the Timecode pool.
      - **Lua plugin**: creates any missing (empty, labelled) cues and builds the timecode
-       show on the console.
+       show on the console. It also writes the `.xml` descriptor MA3 needs to import a plugin.
      - **Command list**: `Store`/`Label` lines that create the cues.
    - **CSV** cue list, for paperwork.
    - **LTC WAV**: SMPTE timecode audio, optionally stereo with the song mix on L and LTC on R.
@@ -144,6 +177,8 @@ the built-in analysis.
 | Shift + ← / → | Nudge selection 1 beat (no selection: playhead 1 bar) |
 | Tab / Shift+Tab | Next / previous suggestion |
 | A / X | Accept / reject selected suggestions |
+| Right-click lead line | Accept as chase steps (one cue per note) |
+| T | Tap a grid beat (in *Grid › Tap-along grid* mode) |
 | P | Preview: play from 2 s before the selection |
 | Delete | Delete selection |
 | S / G | Snap on/off / snap selection to grid |
@@ -169,13 +204,24 @@ pip install -r requirements-dev.txt
 QT_QPA_PLATFORM=offscreen python -m pytest -q
 ```
 
+The accuracy tests need FluidSynth and a GM soundfont to render the multi-genre corpus;
+they're skipped automatically when those aren't installed, or with `CUEFORGE_SKIP_SLOW=1`:
+
+```bash
+sudo apt install fluidsynth fluid-soundfont-gm      # macOS: brew install fluid-synth (+ a GM .sf2)
+pip install pretty_midi pyfluidsynth mir_eval
+python -m tests.evaluate            # accuracy table, full mix
+python -m tests.evaluate --stems    # with stems
+```
+
 ```
 cueforge/
-  core/       model, timecode (incl. 29.97 DF), editing ops, undo, project I/O
+  core/       model, timecode (incl. 29.97 DF), editing ops, grid tools (tap-along, halve/double), undo, project I/O
   audio/      decoding/resampling/peaks, real-time multitrack engine (mixer, click, blips, varispeed, loop)
-  analysis/   beat grid (click track, Beat This!, librosa), hits, sections, energy, Demucs, threshold learning
+  analysis/   beat grid (click track, Beat This!, tempo-following DP tracker, meter), hits, drum fills,
+              sections, energy, chord changes, lead lines, Demucs, threshold learning
   export/     grandMA3 (XML, Lua, commands), CSV, LTC encoder/decoder
   ui/         Qt main window, timeline, mixer, panels, dialogs
-tests/        unit, analysis-accuracy (synthetic song with known answers), UI, optional backends
+tests/        unit, UI, optional backends, multi-genre corpus (corpus.py) + accuracy evaluation (evaluate.py)
 packaging/    PyInstaller spec, build scripts, icon
 ```

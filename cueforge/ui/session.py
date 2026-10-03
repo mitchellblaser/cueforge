@@ -23,7 +23,7 @@ from .workers import Job, start_job
 
 
 # single-key shortcuts that lanes may not use as tap keys
-RESERVED_KEYS = set("axsgiolcbfzp")
+RESERVED_KEYS = set("axsgiolcbfzpt")
 
 
 def guess_role(filename: str, is_first: bool) -> str:
@@ -311,6 +311,8 @@ class Session(QObject):
                 setattr(c, k, v)
             if "time" in fields:
                 c.time = editing.snap_time(self.project, c.time, False)
+            if c.duration is not None and c.duration <= 0:
+                c.duration = None
 
     def renumber_lane(self, lane_id: str, start: float, step: float) -> None:
         with self.edit("Renumber"):
@@ -400,6 +402,19 @@ class Session(QObject):
         self.status.emit(f"Accepted {n} suggestion(s)")
         return n
 
+    def accept_as_steps(self, sid: str, lane_id: str | None = None) -> int:
+        """Accept a lead-line suggestion as one cue per note (chase steps)."""
+        sg = self.project.suggestion(sid)
+        if not sg or sg.status != "pending" or not sg.steps:
+            return 0
+        with self.edit(f"Accept {len(sg.steps)} chase steps"):
+            cues = editing.accept_as_steps(self.project, sg, lane_id)
+            self.sel_sugs.discard(sid)
+            self.sel_cues = {c.id for c in cues}
+        self._record([sg], True)
+        self.status.emit(f"Added {len(cues)} chase steps")
+        return len(cues)
+
     def reject(self, ids) -> int:
         sugs = [s for s in self.project.suggestions if s.id in set(ids) and s.status == "pending"]
         if not sugs:
@@ -468,6 +483,73 @@ class Session(QObject):
             with self.edit("Shift grid"):
                 self.project.beat_grid = g.shifted(delta)
 
+    def halve_tempo(self) -> None:
+        from ..core.grid_tools import halve_tempo
+        if self.project.beat_grid.beats:
+            self.set_grid(halve_tempo(self.project.beat_grid), "Halve tempo")
+
+    def double_tempo(self) -> None:
+        from ..core.grid_tools import double_tempo
+        if self.project.beat_grid.beats:
+            self.set_grid(double_tempo(self.project.beat_grid), "Double tempo")
+
+    # live tap-along grid -------------------------------------------------
+    def start_tap_grid(self) -> None:
+        self.grid_taps: list[float] = []
+        self.tap_grid_active = True
+        self.status.emit("Tap-along grid: press T on every beat while playing (first tap = bar 1). "
+                         "Turn tap mode off to build the grid.")
+
+    def tap_grid_beat(self) -> None:
+        if getattr(self, "tap_grid_active", False) and self.engine.playing:
+            self.grid_taps.append(self.engine.position())
+            self.status.emit(f"Tap-along grid: {len(self.grid_taps)} taps")
+
+    def finish_tap_grid(self) -> bool:
+        from ..core.grid_tools import grid_from_taps, merge_grid
+        self.tap_grid_active = False
+        taps = sorted(getattr(self, "grid_taps", []))
+        self.grid_taps = []
+        if len(taps) < 4:
+            self.status.emit("Tap-along grid: need at least 4 taps")
+            return False
+        onsets = self._onsets_between(taps[0] - 0.5, taps[-1] + 0.5)
+        bpb = self.project.beat_grid.beats_per_bar or 4
+        tapped = grid_from_taps(taps, onsets, bpb)
+        self.set_grid(merge_grid(self.project.beat_grid, tapped), "Tap-along grid")
+        self.status.emit(f"Grid built from {len(taps)} taps ({tapped.bpm():.1f} BPM), snapped to the drums")
+        return True
+
+    def _onsets_between(self, t0: float, t1: float):
+        """Drum hit times of the analysed audio in [t0, t1] (for snapping taps)."""
+        import numpy as np
+        try:
+            from ..audio.loader import resample
+            sr = 22050
+            mix = None
+            for t in self.project.tracks:
+                a = self.audio.get(t.id)
+                if a is None or t.role not in ("Track", "Stem"):
+                    continue
+                i0 = max(0, int((t0 - t.offset) * a.sr))
+                i1 = max(i0, int((t1 - t.offset) * a.sr))
+                seg = a.samples[i0:i1].mean(axis=1)
+                start = max(t0, t.offset)
+                if mix is None:
+                    mix = (start, seg, a.sr)
+                elif len(seg) == len(mix[1]):
+                    mix = (mix[0], mix[1] + seg, a.sr)
+            if mix is None or len(mix[1]) < 2048:
+                return np.zeros(0)
+            start, seg, src_sr = mix
+            y = resample(seg[:, None].astype(np.float32), src_sr, sr)[:, 0]
+            # lock taps to the drums: kick / snare / crash hits, not every onset
+            from ..analysis.hits import detect_hits
+            hits = detect_hits(y, sr)
+            return np.asarray(sorted(h.time for h in hits if h.confidence >= 0.3)) + start
+        except Exception:
+            return np.zeros(0)
+
     def clear_grid(self) -> None:
         with self.edit("Clear grid"):
             self.project.beat_grid = BeatGrid()
@@ -511,8 +593,13 @@ class Session(QObject):
                     self.project.beat_grid = res.grid
                 else:
                     res.log.append("Kept your confirmed beat grid (clear it to use the detected one).")
+            n_lanes = len(self.project.lanes)
             added = editing.merge_suggestions(self.project, res.suggestions, res.kinds)
             res.log.append(f"{added} new suggestion(s) added")
+            if len(self.project.lanes) > n_lanes:
+                res.log.append("Added lanes for the new suggestion types: " +
+                               ", ".join(l.name for l in self.project.lanes[n_lanes:]))
+        self.lanes_changed.emit()
         self.status.emit(res.log[-1] if res.log else "Analysis done")
         self.analysis_done.emit(res)
 

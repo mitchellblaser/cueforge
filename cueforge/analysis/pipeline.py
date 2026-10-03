@@ -14,7 +14,11 @@ from ..audio.loader import ANALYSIS_SR, AudioData, resample
 from ..core.model import ANALYSED_ROLES, BeatGrid, Project, Suggestion
 from . import beats as beats_mod
 from .energy import detect_energy
+from .fills import detect_fills
+from .harmony import detect_chord_changes
 from .hits import detect_hits
+from .melody import detect_phrases, is_lead_like
+from .spectral import Spectra
 from .stems import demucs_available, separate
 from .structure import detect_sections, detect_sections_allin1
 
@@ -29,11 +33,15 @@ class Cancelled(Exception):
 class AnalysisOptions:
     grid: bool = True
     hits: bool = True
+    fills: bool = True
     sections: bool = True
     energy: bool = True
+    harmony: bool = True
+    melody: bool = True
     use_deep_models: bool = True     # Beat This! / All-In-One when installed
     use_demucs: bool = False         # separate the mix when no stems are imported
-    beats_per_bar: int = 4
+    melody_from_mix: bool = False    # rough lead-line estimate when there are no stems (slow)
+    beats_per_bar: int = 0           # 0 = detect (3 or 4)
 
 
 @dataclass
@@ -96,7 +104,7 @@ def run_analysis(project: Project, audio: dict[str, AudioData], opts: AnalysisOp
         if clicks:
             step(0.08, f"Building grid from click track '{clicks[0].name}'")
             yc = _timeline_mix([(audio[clicks[0].id], clicks[0].offset)], sr)
-            g = beats_mod.grid_from_click(yc, sr, opts.beats_per_bar)
+            g = beats_mod.grid_from_click(yc, sr, opts.beats_per_bar or 4)
         else:
             step(0.08, "Detecting beats and downbeats")
             g = beats_mod.detect_beats(y, sr, opts.use_deep_models, opts.beats_per_bar)
@@ -121,31 +129,78 @@ def run_analysis(project: Project, audio: dict[str, AudioData], opts: AnalysisOp
     def on_downbeat(t: float) -> bool:
         return bool(grid_downbeats) and float(np.min(np.abs(np.asarray(grid_downbeats) - t))) < 0.02
 
+    # --- sources: which audio each detector listens to -------------------------
+    drum_src: np.ndarray | None = None       # drums only (stem) -> no HPSS needed
+    melodic_srcs: list[tuple[str, np.ndarray, bool]] = []   # (name, audio, is_mix)
+    harmony_src = y
+    other_stems = []
+    for t in stems:
+        nm = t.name.lower()
+        ys = _timeline_mix([(audio[t.id], t.offset)], sr)
+        if any(w in nm for w in DRUM_WORDS):
+            drum_src = ys if drum_src is None else drum_src + ys
+        elif "bass" not in nm:
+            other_stems.append((t.name, ys))
+    for name, ys in other_stems:
+        # only single-line parts (vocals, leads, solos) become lead lines; chord
+        # parts (keys, rhythm guitar, pads) feed the chord-change detector instead
+        if opts.melody and is_lead_like(ys, sr, name):
+            melodic_srcs.append((name, ys, False))
+        elif opts.melody:
+            res.log.append(f"'{name}' plays chords: used for chord changes, not lead lines")
+    if other_stems:
+        harmony_src = sum(ys for _, ys in other_stems)
+    wants_sep = opts.use_demucs and not stems and (opts.hits or opts.fills or opts.melody)
+    if wants_sep and demucs_available():
+        step(0.15, "Separating stems with Demucs (slow on CPU, cached afterwards)")
+        ys2 = _timeline_mix([(audio[t.id], t.offset) for t in mix_tracks], 44100, stereo=True)
+        sep = separate(ys2, 44100, cache_dir)
+        if sep:
+            def r(x):
+                return resample(x[:, None], 44100, sr)[:, 0]
+            drum_src = r(sep["drums"]) if "drums" in sep else None
+            if "vocals" in sep:
+                melodic_srcs.append(("Vocal", r(sep["vocals"]), False))
+            if "other" in sep:
+                melodic_srcs.append(("Instrument", r(sep["other"]), True))
+            res.log.append("Stems separated with Demucs")
+        else:
+            res.log.append("Demucs unavailable or failed; using the full mix.")
+    if not melodic_srcs and opts.melody_from_mix:
+        melodic_srcs.append(("", y, True))
+    spectra = Spectra(y, sr)
+
+    # --- fills (before hits, so hits inside a fill can defer to it) -----------
+    fills = []
+    if opts.fills and grid_beats:
+        res.kinds.add("fill")
+        step(0.25, "Looking for drum fills")
+        fb = list(grid_beats) + ([grid_beats[-1] + (grid_beats[-1] - grid_beats[-2])] if len(grid_beats) > 1 else [])
+        bpb = grid.beats_per_bar if grid else 4
+        fills = detect_fills(drum_src if drum_src is not None else y, sr, fb, grid_downbeats, bpb,
+                             percussive=drum_src is None, spectra=None if drum_src is not None else spectra)
+        for f in fills:
+            res.suggestions.append(Suggestion(
+                "fill", round(f.start, 6), f.confidence, f.reason, label=f.label,
+                duration=round(f.end - f.start, 3),
+                idea="strobe (or fast chase) through the fill, big hit on the landing"))
+
+    def in_fill(t: float) -> bool:
+        return any(f.start - 0.03 <= t < f.end - 0.03 for f in fills)
+
     # --- hits ---------------------------------------------------------------
     if opts.hits:
         res.kinds.add("hit")
-        sources: list[tuple[str, np.ndarray, tuple[str, ...]]] = []
-        if stems:
-            for t in stems:
-                bands = ("kick", "snare", "full") if any(w in t.name.lower() for w in DRUM_WORDS) else ("full",)
-                sources.append((t.name, _timeline_mix([(audio[t.id], t.offset)], sr), bands))
-        elif opts.use_demucs and demucs_available():
-            step(0.2, "Separating stems with Demucs (slow on CPU, cached afterwards)")
-            ys = _timeline_mix([(audio[t.id], t.offset) for t in mix_tracks], 44100, stereo=True)
-            sep = separate(ys, 44100, cache_dir)
-            if sep:
-                for name, mono in sep.items():
-                    if name == "bass":
-                        continue
-                    bands = ("kick", "snare") if name == "drums" else ("full",)
-                    sources.append((name.capitalize(), resample(mono[:, None], 44100, sr)[:, 0], bands))
-            else:
-                res.log.append("Demucs unavailable or failed; using full mix for hits.")
-        if not sources:
-            sources.append(("", y, ("kick", "snare", "full")))
-        for i, (name, ys, bands) in enumerate(sources):
-            step(0.3 + 0.25 * i / len(sources), f"Detecting hits{(' in ' + name) if name else ''}")
-            for h in detect_hits(ys, sr, bands, source=name):
+        sources: list[tuple[str, np.ndarray, tuple[str, ...], bool]] = []
+        if drum_src is not None:
+            sources.append(("", drum_src, ("kick", "snare", "crash"), False))
+        else:
+            sources.append(("", y, ("kick", "snare", "crash"), True))
+        hit_sugs = []
+        for i, (name, ys, bands, perc) in enumerate(sources):
+            step(0.35, f"Detecting hits{(' in ' + name) if name else ''}")
+            for h in detect_hits(ys, sr, bands, source=name, percussive=perc,
+                                 spectra=spectra if ys is y else None):
                 t, snapped = snap_time(h.time)
                 conf = h.confidence
                 reason = h.reason
@@ -155,10 +210,48 @@ def run_analysis(project: Project, audio: dict[str, AudioData], opts: AnalysisOp
                     if on_downbeat(t):
                         reason += " (downbeat)"
                         conf = min(1.0, conf + 0.05)
-                res.suggestions.append(Suggestion("hit", round(t, 6), round(conf, 3), reason,
-                                                  label=h.label, source_track=name))
-        # Collapse hits from different stems at the same instant
-        res.suggestions = _dedupe(res.suggestions, 0.04)
+                if in_fill(t):
+                    reason += ", inside a drum fill"
+                    conf *= 0.85
+                idea = {"Kick": "bump / flash on the kick", "Snare": "hit / strobe flash on the snare",
+                        "Crash": "big hit: full-rig flash or blinder"}.get(h.label.split()[-1], "")
+                hit_sugs.append(Suggestion("hit", round(t, 6), round(conf, 3), reason,
+                                           label=h.label, source_track=name, idea=idea))
+        res.suggestions += _dedupe(hit_sugs, 0.04)
+
+    # --- harmony ------------------------------------------------------------
+    chord_times: list[float] = []
+    if opts.harmony and grid_beats:
+        res.kinds.add("harmony")
+        step(0.45, "Following chord changes")
+        for c in detect_chord_changes(harmony_src, sr, grid_beats, grid_downbeats,
+                                      spectra=spectra if harmony_src is y else None):
+            chord_times.append(c.time)
+            res.suggestions.append(Suggestion("harmony", round(c.time, 6), c.confidence, c.reason,
+                                              label=f"Chord → {c.chord}",
+                                              idea="colour change / new palette on the chord"))
+
+    # --- melody / lead lines --------------------------------------------------
+    if opts.melody and melodic_srcs:
+        res.kinds.add("melody")
+        for name, ys, is_mix in melodic_srcs:
+            step(0.55, f"Following the lead line{(' in ' + name) if name else ''}")
+            phrases = detect_phrases(ys, sr, chord_times, harmonic=is_mix, source=name)
+            for ph in phrases:
+                t, _ = snap_time(ph.start)
+                conf = ph.confidence
+                reason = ph.reason
+                if is_mix and not name:
+                    # lead lines from a full mix are much less reliable than from stems
+                    conf = min(conf, 0.45)
+                    reason += " (estimated from the full mix: import stems or enable Demucs for accuracy)"
+                idea = ph.idea
+                if "vocal" in name.lower() or "vox" in name.lower():
+                    idea = "follow-spot / key light on the singer for this line"
+                res.suggestions.append(Suggestion("melody", round(t, 6), round(conf, 3), reason,
+                                                  label=ph.label, source_track=name, idea=idea,
+                                                  duration=round(ph.end - ph.start, 3),
+                                                  steps=[round(x, 4) for x in ph.notes[:128]]))
 
     # --- sections -----------------------------------------------------------
     if opts.sections:
@@ -182,6 +275,21 @@ def run_analysis(project: Project, audio: dict[str, AudioData], opts: AnalysisOp
             res.suggestions.append(Suggestion("energy", round(e.time, 6), round(e.confidence, 3), e.reason,
                                               label=e.label))
 
+    # A drum fill usually leads into a new section: the change itself happens on the
+    # downbeat the fill lands on, so move section/energy changes found at the start
+    # of (or just before) a fill onto its landing.
+    if fills:
+        bar = (grid_downbeats[1] - grid_downbeats[0]) if len(grid_downbeats) > 1 else 2.0
+        for sg in res.suggestions:
+            if sg.kind not in ("section", "energy") or sg.label in ("Blackout", "Return", "Build"):
+                continue
+            for f in fills:
+                if sg.time - 0.1 <= f.end <= sg.time + 2.2 * bar and f.start >= sg.time - 0.1 - bar and \
+                        abs(f.end - sg.time) > 0.05:
+                    sg.time = round(f.end, 6)
+                    sg.reason += ", moved to where the drum fill lands"
+                    sg.confidence = round(min(1.0, sg.confidence + 0.1), 3)
+                    break
     res.suggestions.sort(key=lambda s: s.time)
     step(1.0, f"Done: {len(res.suggestions)} suggestions")
     return res

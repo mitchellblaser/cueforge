@@ -48,7 +48,7 @@ def test_beat_this_failure_falls_back(monkeypatch):
         i = int(k * 0.5 * sr)
         y[i:i + 200] = 0.8
     g = beats_mod.detect_beats(y, sr, use_deep=True)
-    assert g.source == "librosa"
+    assert g.source.startswith("librosa")
 
 
 def test_demucs_glue(monkeypatch, tmp_path):

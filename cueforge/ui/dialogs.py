@@ -57,14 +57,33 @@ class AnalysisDialog(QDialog):
         self.grid.setChecked(prev.get("grid", True))
         if p.beat_grid.confirmed:
             self.grid.setText("Beat grid — you have a confirmed grid; it will be kept")
-        self.hits = QCheckBox("Hits (kick, snare, accents)")
+        self.hits = QCheckBox("Hits (kick, snare, crash)")
         self.hits.setChecked(prev.get("hits", True))
+        self.fills = QCheckBox("Drum fills → strobe suggestions")
+        self.fills.setChecked(prev.get("fills", True))
         self.sections = QCheckBox("Sections (verse / chorus / drop changes)")
         self.sections.setChecked(prev.get("sections", True))
         self.energy = QCheckBox("Energy (drops, breakdowns, builds, blackouts)")
         self.energy.setChecked(prev.get("energy", True))
-        for w in (self.grid, self.hits, self.sections, self.energy):
+        self.harmony = QCheckBox("Chord changes → colour-change suggestions")
+        self.harmony.setChecked(prev.get("harmony", True))
+        has_melodic_stems = any(t.role == "Stem" and not any(w in t.name.lower() for w in
+                                ("drum", "kick", "snare", "perc", "bass")) for t in p.tracks)
+        self.melody = QCheckBox("Lead lines (synth / guitar / vocal phrases, chase steps)")
+        self.melody.setChecked(prev.get("melody", True))
+        self.melody_mix = QCheckBox("…also estimate lead lines from the full mix (slow, rough)")
+        self.melody_mix.setChecked(prev.get("melody_from_mix", False))
+        self.melody_mix.setToolTip("Without stems the lead line has to be guessed from the whole mix. "
+                                   "Import stems (or use Demucs) for accurate lead-line following.")
+        for w in (self.grid, self.hits, self.fills, self.sections, self.energy, self.harmony, self.melody,
+                  self.melody_mix):
             form.addRow(w)
+        if not has_melodic_stems:
+            tip = QLabel("Tip: lead lines are followed accurately from stems (vocals, synth, guitar…). "
+                         "Import them with role <b>Stem</b>, or tick Demucs below.")
+            tip.setWordWrap(True)
+            tip.setStyleSheet(f"color: {theme.FG_DIM};")
+            form.addRow(tip)
         bt, a1 = _deep_available()
         self.deep = QCheckBox("Use deep-learning models when installed")
         self.deep.setChecked(prev.get("use_deep_models", True))
@@ -79,8 +98,9 @@ class AnalysisDialog(QDialog):
             self.demucs.setToolTip("Install with: pip install demucs")
         form.addRow(self.demucs)
         self.bpb = QSpinBox()
-        self.bpb.setRange(2, 12)
-        self.bpb.setValue(prev.get("beats_per_bar", p.beat_grid.beats_per_bar or 4))
+        self.bpb.setRange(0, 12)
+        self.bpb.setSpecialValueText("Auto (3 or 4)")
+        self.bpb.setValue(prev.get("beats_per_bar", 0))
         form.addRow("Beats per bar", self.bpb)
         lay.addLayout(form)
         note = QLabel("Results appear as ghosted suggestions. Your existing cues are never changed, and "
@@ -91,8 +111,10 @@ class AnalysisDialog(QDialog):
         lay.addWidget(_buttons(self, "Analyse"))
 
     def options(self) -> AnalysisOptions:
-        o = AnalysisOptions(grid=self.grid.isChecked(), hits=self.hits.isChecked(),
+        o = AnalysisOptions(grid=self.grid.isChecked(), hits=self.hits.isChecked(), fills=self.fills.isChecked(),
                             sections=self.sections.isChecked(), energy=self.energy.isChecked(),
+                            harmony=self.harmony.isChecked(), melody=self.melody.isChecked(),
+                            melody_from_mix=self.melody_mix.isChecked(),
                             use_deep_models=self.deep.isChecked(), use_demucs=self.demucs.isChecked(),
                             beats_per_bar=self.bpb.value())
         self.s.settings.set("analysis_options", dict(o.__dict__))
@@ -210,6 +232,9 @@ class CueDialog(QDialog):
         self.number.setPlaceholderText("auto")
         self.fade = QLineEdit("" if c.fade is None else f"{c.fade:g}")
         self.fade.setPlaceholderText("console default")
+        self.hold = QLineEdit("" if not c.duration else f"{c.duration:g}")
+        self.hold.setPlaceholderText("none (stays on)")
+        self.hold.setToolTip("Seconds until the sequence is switched Off again (e.g. a strobe through a fill)")
         self.notes = QPlainTextEdit(c.notes)
         self.notes.setFixedHeight(70)
         form.addRow("Label", self.label)
@@ -217,6 +242,7 @@ class CueDialog(QDialog):
         form.addRow("Lane", self.lane)
         form.addRow("MA3 cue number", self.number)
         form.addRow("Fade (s)", self.fade)
+        form.addRow("Hold, then Off (s)", self.hold)
         form.addRow("Notes", self.notes)
         if c.source == "ai-accepted":
             form.addRow(QLabel("<i>Accepted from an AI suggestion</i>"))
@@ -229,11 +255,12 @@ class CueDialog(QDialog):
             t = parse_tc(self.tc.text(), p.frame_rate, p.tc_offset)
             num = float(self.number.text()) if self.number.text().strip() else None
             fade = float(self.fade.text()) if self.fade.text().strip() else None
+            hold = float(self.hold.text()) if self.hold.text().strip() else None
         except ValueError as exc:
             QMessageBox.warning(self, "Invalid value", str(exc))
             return
         self.s.update_cue(self.cid, label=self.label.text().strip(), time=max(0.0, t), lane_id=self.lane.currentData(),
-                          number=num, fade=fade, notes=self.notes.toPlainText().strip())
+                          number=num, fade=fade, notes=self.notes.toPlainText().strip(), duration=hold)
         super().accept()
 
 
@@ -365,9 +392,12 @@ SHORTCUTS = [
               ("Shift-drag in ruler", "Set loop region"), ("Delete / Backspace", "Delete selected"),
               ("S", "Snap on/off"), ("G", "Snap selected cues to grid"), ("Ctrl+A", "Select all cues"),
               ("Ctrl+Z / Ctrl+Shift+Z", "Undo / redo"), ("Esc", "Clear selection")]),
+    ("Grid (live music)", [("Grid ▸ Tap-along grid, then T", "Tap every beat while playing; taps snap to the drums"),
+                           ("Grid ▸ Halve / Double tempo", "Fix a grid locked to 8th or half notes")]),
     ("AI suggestions", [("Tab / Shift+Tab", "Jump to next / previous suggestion"),
                         ("A", "Accept selected suggestion(s)"), ("X", "Reject selected suggestion(s)"),
-                        ("Double-click suggestion", "Accept")]),
+                        ("Double-click suggestion", "Accept"),
+                        ("Right-click lead line", "Accept as chase steps (one cue per note)")]),
     ("View", [("Ctrl + wheel / + / -", "Zoom"), ("Wheel / Shift+wheel", "Scroll"), ("F", "Follow playhead on/off"),
               ("Z", "Zoom to fit")]),
 ]

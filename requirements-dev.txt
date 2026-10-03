@@ -1,3 +1,7 @@
 -r requirements.txt
 pytest
 pyinstaller>=6.0
+# accuracy corpus (also needs the fluidsynth program and a GM soundfont)
+pretty_midi
+pyfluidsynth
+mir_eval

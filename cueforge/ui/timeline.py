@@ -22,7 +22,8 @@ TRACK_H = 58
 LANE_H = 46
 HIT_PX = 6
 
-KIND_SHAPES = {"hit": "diamond", "section": "square", "energy": "triangle"}
+KIND_SHAPES = {"hit": "diamond", "section": "square", "energy": "triangle", "fill": "bolt",
+               "harmony": "circle", "melody": "note"}
 
 
 @dataclass
@@ -328,6 +329,18 @@ class TimelineCanvas(QWidget):
             pen = QPen(QColor("#ffd54f") if sel else ghost, 2 if sel else 1, Qt.DashLine)
             p.setPen(pen)
             p.drawLine(QPointF(x, rr.top() + 4), QPointF(x, rr.bottom() - 4))
+            if sg.duration > 0:
+                x2 = self.x_of(sg.time + sg.duration)
+                band = QRectF(x, rr.bottom() - 17, max(2.0, x2 - x), 14)
+                fill = QColor(ghost)
+                fill.setAlphaF(0.08 + 0.12 * sg.confidence)
+                p.fillRect(band, fill)
+                p.drawRect(band)
+                if sg.steps and (x2 - x) / max(1, len(sg.steps)) > 3:
+                    p.setPen(QPen(ghost, 1))
+                    for st in sg.steps:
+                        xs = self.x_of(st)
+                        p.drawLine(QPointF(xs, band.top() + 2), QPointF(xs, band.bottom() - 2))
             if sel or x - last_shape > 8:  # skip glyphs when markers are densely packed
                 self._draw_shape(p, KIND_SHAPES.get(sg.kind, "diamond"), x, rr.bottom() - 10, 5,
                                  QColor("#ffd54f") if sel else ghost, filled=False)
@@ -351,6 +364,10 @@ class TimelineCanvas(QWidget):
                 continue
             x = self.x_of(t)
             sel = c.id in self.s.sel_cues
+            if c.duration:
+                bar = QColor(theme.SELECT if sel else lane.color)
+                bar.setAlpha(60)
+                p.fillRect(QRectF(x, rr.top() + 20, max(2.0, c.duration * self.pps), rr.height() - 24), bar)
             p.setPen(QPen(QColor(theme.SELECT) if sel else col, 2))
             p.drawLine(QPointF(x, rr.top() + 2), QPointF(x, rr.bottom() - 2))
             label = c.label or (f"{c.number:g}" if c.number is not None else "")
@@ -386,6 +403,14 @@ class TimelineCanvas(QWidget):
             p.drawPolygon(QPolygonF([QPointF(x, y - s), QPointF(x + s, y), QPointF(x, y + s), QPointF(x - s, y)]))
         elif shape == "square":
             p.drawRect(QRectF(x - s * 0.8, y - s * 0.8, s * 1.6, s * 1.6))
+        elif shape == "circle":
+            p.drawEllipse(QPointF(x, y), s * 0.85, s * 0.85)
+        elif shape == "bolt":
+            p.drawPolyline(QPolygonF([QPointF(x + s * 0.4, y - s), QPointF(x - s * 0.5, y + s * 0.1),
+                                      QPointF(x + s * 0.5, y - s * 0.1), QPointF(x - s * 0.4, y + s)]))
+        elif shape == "note":
+            p.drawEllipse(QPointF(x - s * 0.3, y + s * 0.5), s * 0.5, s * 0.4)
+            p.drawLine(QPointF(x + s * 0.2, y + s * 0.5), QPointF(x + s * 0.2, y - s))
         else:
             p.drawPolygon(QPolygonF([QPointF(x, y - s), QPointF(x + s, y + s), QPointF(x - s, y + s)]))
         p.setRenderHint(QPainter.Antialiasing, False)
@@ -526,6 +551,14 @@ class TimelineCanvas(QWidget):
             d = abs(self.x_of(s.time) - pos.x())
             if d < bd:
                 best, bd = s.id, d
+        if best is None:
+            # click inside a suggestion's duration band (fills, phrases)
+            rr = self.row_rect(r)
+            if pos.y() >= rr.bottom() - 18:
+                for s in self.s.project.visible_suggestions():
+                    if s.lane_id == r.id and s.duration and \
+                            self.x_of(s.time) <= pos.x() <= self.x_of(s.time + s.duration):
+                        return s.id
         return best
 
     # ------------------------------------------------------------- mouse
@@ -700,6 +733,8 @@ class TimelineCanvas(QWidget):
                 tip += f"<br>Cue {c.number:g}"
             if c.source == "ai-accepted":
                 tip += "<br><i>accepted AI suggestion</i>"
+            if c.duration:
+                tip += f"<br>Held {c.duration:.2f}s (Off event at the end)"
             if c.notes:
                 tip += f"<br>{c.notes}"
             QToolTip.showText(e.globalPosition().toPoint(), tip, self)
@@ -712,7 +747,10 @@ class TimelineCanvas(QWidget):
             QToolTip.showText(e.globalPosition().toPoint(),
                               f"<b>Suggestion: {s.label or KIND_LABELS.get(s.kind, s.kind)}</b><br>{tc}"
                               f"<br>Confidence {s.confidence:.0%}<br>{s.reason}"
-                              f"<br><i>Double-click or A to accept, X to reject</i>", self)
+                              + (f"<br>Lasts {s.duration:.2f}s" if s.duration else "")
+                              + (f"<br>{len(s.steps)} note steps (right-click: accept as chase steps)" if s.steps else "")
+                              + (f"<br><b>Idea:</b> {s.idea}" if s.idea else "")
+                              + "<br><i>Double-click or A to accept, X to reject</i>", self)
             self.setCursor(Qt.PointingHandCursor)
             return
         self.unsetCursor()
@@ -743,6 +781,13 @@ class TimelineCanvas(QWidget):
                 sub.addAction(lane.name, lambda lid=lane.id: s.move_selected_to_lane(lid))
         if s.sel_sugs:
             m.addAction(f"Accept {len(s.sel_sugs)} suggestion(s)", lambda: s.accept(set(s.sel_sugs)))
+            if sid and s.project.suggestion(sid) and s.project.suggestion(sid).steps:
+                sg = s.project.suggestion(sid)
+                m.addAction(f"Accept as chase steps ({len(sg.steps)} cues)", lambda: s.accept_as_steps(sid))
+                if r and r.kind == "lane":
+                    sub = m.addMenu("Accept as chase steps into lane")
+                    for lane in s.project.lanes:
+                        sub.addAction(lane.name, lambda lid=lane.id: s.accept_as_steps(sid, lid))
             m.addAction(f"Reject {len(s.sel_sugs)} suggestion(s)", lambda: s.reject(set(s.sel_sugs)))
         if r and r.kind == "lane":
             vis = [x.id for x in s.project.visible_suggestions() if x.lane_id == r.id]

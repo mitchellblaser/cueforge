@@ -69,6 +69,12 @@ def build_ma3_xml(project: Project, timecode_number: int = 1, duration: float | 
                 f'\t\t\t\t\t\t\t<RealtimeCmd Type="Key" Source="Original" UserProfile="0" Status="On" '
                 f'Token="Goto" Cue="ShowData.DataPools.Default.Sequences.{seq}.Cues.{num:g}"/>')
             lines.append('\t\t\t\t\t\t</CmdEvent>')
+            if c.duration:
+                lines.append(f'\t\t\t\t\t\t<CmdEvent Name={quoteattr(label + " off")} Guid="{_guid()}" '
+                             f'Time="{_fmt_time(c.time + c.duration, unit)}">')
+                lines.append('\t\t\t\t\t\t\t<RealtimeCmd Type="Key" Source="Original" UserProfile="0" '
+                             'Status="Off" Token="Off"/>')
+                lines.append('\t\t\t\t\t\t</CmdEvent>')
         lines.append('\t\t\t\t\t</CmdSubTrack>')
         lines.append('\t\t\t\t</TimeRange>')
         lines.append('\t\t\t</Track>')
@@ -98,7 +104,8 @@ def build_ma3_lua(project: Project, timecode_number: int = 1, create_cues: bool 
     for lane in export_lanes(project):
         nums = effective_cue_numbers(project, lane.id)
         evs = ",\n".join(
-            f"      {{t={c.time:.6f}, cue={nums[c.id]:g}, label={_lua_str(c.label or '')}}}"
+            f"      {{t={c.time:.6f}, cue={nums[c.id]:g}, label={_lua_str(c.label or '')}"
+            + (f", off={c.time + c.duration:.6f}" if c.duration else "") + "}"
             for c in project.cues_in_lane(lane.id))
         lanes_lua.append(f"  {{name={_lua_str(lane.name)}, seq={lane.ma3_sequence}, events={{\n{evs}\n    }}}}")
     lanes_src = ",\n".join(lanes_lua)
@@ -155,6 +162,11 @@ local function main()
         e.token = "Goto"
         if cue then e.cue = cue end
         if ev.label ~= "" then e.name = ev.label end
+        if ev.off then
+          local o = sub:Acquire()
+          o.time = ev.off
+          o.token = "Off"
+        end
       end
     end
   end

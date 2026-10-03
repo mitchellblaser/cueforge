@@ -4,6 +4,7 @@ import sys
 import time
 import xml.etree.ElementTree as ET
 
+import numpy as np
 import pytest
 import soundfile as sf
 
@@ -76,6 +77,21 @@ def win(app, tmp_path, monkeypatch):
     from PySide6.QtCore import QEvent
     QApplication.sendPostedEvents(None, QEvent.DeferredDelete)
     pump(app, 0.05)
+
+
+_orig_key_click = QTest.keyClick
+
+
+def _key_click(widget, key, *a, **k):
+    """Shortcuts only fire in the active window; make sure it is before each key."""
+    w = widget.window()
+    if QApplication.activeWindow() is not w:
+        w.activateWindow()
+        QTest.qWaitForWindowActive(w, 1000)
+    _orig_key_click(widget, key, *a, **k)
+
+
+QTest.keyClick = _key_click
 
 
 def lane_y(w, idx):
@@ -233,3 +249,45 @@ def test_mixer_strip_controls_engine(app, win):
     assert win.s.project.track(tid).gain_db == pytest.approx(-12)
     win.mixer.click_on.click()
     assert win.s.project.mixer.click_enabled and win.s.engine.click_enabled
+
+
+def test_tap_along_grid(app, win, monkeypatch):
+    s = win.s
+    win.a_tapgrid.setChecked(True)          # starts tap mode (and playback)
+    taps = [16.0 + 0.5 * k + (0.03 if k % 2 else -0.025) for k in range(12)]  # verse: drums playing
+    for t in taps:
+        monkeypatch.setattr(s.engine, "position", lambda t=t: t)
+        QTest.keyClick(win, Qt.Key_T)
+    s.engine.pause()
+    win.a_tapgrid.setChecked(False)         # builds the grid
+    g = s.project.beat_grid
+    assert g.confirmed and "tapped" in g.source
+    assert abs(g.bpm() - 120) < 3
+    # taps were snapped onto the click/drum onsets (song beats are every 0.5 s from 0.0)
+    near = [min(abs(b - x) for x in win.info["beats"]) for b in g.beats if 16.0 <= b <= 21.5]
+    assert np.median(near) < 0.012
+    win.s.halve_tempo()
+    assert abs(s.project.beat_grid.bpm() - 60) < 2
+    win._undo()
+    assert abs(s.project.beat_grid.bpm() - 120) < 3
+
+
+def test_chase_steps_and_hold(app, win):
+    from cueforge.core.model import Suggestion
+    s = win.s
+    sg = Suggestion("melody", 2.0, 0.9, "4 notes", label="Lead phrase: rising line", duration=1.5,
+                    steps=[2.0, 2.4, 2.8, 3.2], idea="chase")
+    with s.edit("test"):
+        from cueforge.core import editing
+        editing.merge_suggestions(s.project, [sg], {"melody"})
+    assert s.project.lane(sg.lane_id).name == "FX / Chase"
+    n = s.accept_as_steps(sg.id)
+    assert n == 4 and len(s.project.cues_in_lane(sg.lane_id)) == 4
+    fill = Suggestion("fill", 5.0, 0.9, "groove break", label="Drum fill (2 beats)", duration=1.0)
+    with s.edit("test"):
+        editing.merge_suggestions(s.project, [fill], {"fill"})
+    s.accept([fill.id])
+    cue = s.project.cue(fill.cue_id)
+    assert s.project.lane(cue.lane_id).name == "Strobe" and cue.duration == pytest.approx(1.0)
+    pump(app, 0.1)
+    win.canvas.repaint()

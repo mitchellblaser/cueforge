@@ -102,20 +102,42 @@ def effective_cue_numbers(project: Project, lane_id: str) -> dict[str, float]:
 def accept_suggestion(project: Project, s: Suggestion) -> Cue | None:
     if s.status != "pending":
         return None
-    lane_id = s.lane_id if project.lane(s.lane_id) else project.lane_for_kind(s.kind)
+    lane_id = s.lane_id if project.lane(s.lane_id) else project.ensure_kind_lane(s.kind)
     t = snap_to_frame(s.time, project.frame_rate)
     existing = next((c for c in project.cues
                      if c.lane_id == lane_id and abs(c.time - t) < DUPLICATE_WINDOW), None)
     if existing:
         cue = existing
     else:
-        cue = Cue(lane_id=lane_id, time=t, label=s.label, source="ai-accepted",
-                  notes=f"AI: {s.reason} ({s.confidence:.0%})")
+        note = f"AI: {s.reason} ({s.confidence:.0%})"
+        if s.idea:
+            note += f" — idea: {s.idea}"
+        cue = Cue(lane_id=lane_id, time=t, label=s.label, source="ai-accepted", notes=note,
+                  duration=round(s.duration, 3) if s.duration > 0 else None)
         project.cues.append(cue)
         project.sort_cues()
     s.status = "accepted"
     s.cue_id = cue.id
     return cue
+
+
+def accept_as_steps(project: Project, s: Suggestion, lane_id: str | None = None) -> list[Cue]:
+    """Accept a lead-line suggestion as one cue per note (chase steps)."""
+    if s.status != "pending" or not s.steps:
+        return []
+    lane_id = lane_id or (s.lane_id if project.lane(s.lane_id) else project.ensure_kind_lane(s.kind))
+    cues = []
+    for k, t in enumerate(s.steps):
+        tt = snap_to_frame(t, project.frame_rate)
+        if any(c.lane_id == lane_id and abs(c.time - tt) < 1e-6 for c in project.cues):
+            continue
+        cues.append(Cue(lane_id=lane_id, time=tt, label=str(k + 1),
+                        source="ai-accepted", notes=f"AI chase step {k + 1}/{len(s.steps)}: {s.reason}"))
+    project.cues.extend(cues)
+    project.sort_cues()
+    s.status = "accepted"
+    s.cue_id = cues[0].id if cues else ""
+    return cues
 
 
 def reject_suggestion(project: Project, s: Suggestion) -> None:
@@ -149,7 +171,7 @@ def merge_suggestions(project: Project, new: list[Suggestion], kinds: set[str]) 
     added = 0
     for s in new:
         if not s.lane_id:
-            s.lane_id = project.lane_for_kind(s.kind)
+            s.lane_id = project.ensure_kind_lane(s.kind)
         if any(d.kind == s.kind and abs(d.time - s.time) < DUPLICATE_WINDOW for d in decided):
             continue
         if any(c.lane_id == s.lane_id and abs(c.time - s.time) < DUPLICATE_WINDOW for c in project.cues):

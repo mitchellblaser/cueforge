@@ -249,6 +249,14 @@ class MainWindow(QMainWindow):
         g.addAction(self._act("Make beat at playhead bar 1", lambda: self.s.set_downbeat_at(self.s.engine.position())))
         g.addAction(self._act("Shift grid 1 frame earlier", lambda: self.s.shift_grid(-1 / self.s.project.frame_rate.fps)))
         g.addAction(self._act("Shift grid 1 frame later", lambda: self.s.shift_grid(1 / self.s.project.frame_rate.fps)))
+        g.addSeparator()
+        g.addAction(self._act("Halve tempo (grid is on 8th notes)", self.s.halve_tempo))
+        g.addAction(self._act("Double tempo (grid is on half notes)", self.s.double_tempo))
+        self.a_tapgrid = self._act("Tap-along grid (live): press T on every beat", self._tap_grid_mode,
+                                   checkable=True, tip="Build or fix the grid by tapping along; taps snap to the drums")
+        g.addAction(self.a_tapgrid)
+        self._act("Tap grid beat", self.s.tap_grid_beat, "T")
+        g.addSeparator()
         g.addAction(self._act("Clear grid", self.s.clear_grid))
 
         p = mb.addMenu("&Playback")
@@ -545,6 +553,14 @@ class MainWindow(QMainWindow):
         if res.grid and not self.s.project.beat_grid.confirmed:
             msg += "\n\nThe detected beat grid is shown dashed until you accept it (AI Suggestions ▸ Accept grid)."
         QMessageBox.information(self, "Analysis done", msg)
+
+    def _tap_grid_mode(self, on: bool) -> None:
+        if on:
+            self.s.start_tap_grid()
+            if not self.s.engine.playing:
+                self.s.engine.play()
+        else:
+            self.s.finish_tap_grid()
 
     def set_tempo(self) -> None:
         TempoDialog(self.s, self).exec()
