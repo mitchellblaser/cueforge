@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 import numpy as np
 from PySide6.QtCore import QPointF, QRect, QRectF, Qt, QTimer, Signal
-from PySide6.QtGui import (QBrush, QColor, QFont, QFontMetrics, QPainter, QPainterPath, QPen, QPixmap,
+from PySide6.QtGui import (QBrush, QColor, QFont, QFontMetrics, QImage, QPainter, QPainterPath, QPen, QPixmap,
                            QPolygonF)
 from PySide6.QtWidgets import QGridLayout, QMenu, QScrollBar, QToolTip, QWidget
 
@@ -185,6 +185,9 @@ class TimelineCanvas(QWidget):
         p = QPainter(pm)
         p.setRenderHint(QPainter.Antialiasing, False)
         self.layout_rows()
+        self._vis_by_lane: dict[str, list] = {}
+        for sg in self.s.project.visible_suggestions():
+            self._vis_by_lane.setdefault(sg.lane_id, []).append(sg)
         w = self.width()
         body = QRect(HEADER_W, RULER_H, w - HEADER_W, self.height() - RULER_H)
 
@@ -286,24 +289,18 @@ class TimelineCanvas(QWidget):
         if not audible:
             col.setAlpha(70)
         gain = 10 ** (t.gain_db / 20)
-        top = mid - np.clip(maxs * gain, -1, 1) * amp
-        bot = mid - np.clip(mins * gain, -1, 1) * amp
-        dur_px_start = self.x_of(t.offset)
-        dur_px_end = self.x_of(t.offset + audio.duration)
-        path = QPainterPath()
+        h = rr.height()
+        top = (h / 2 - np.clip(maxs * gain, -1, 1) * amp)
+        bot = (h / 2 - np.clip(mins * gain, -1, 1) * amp) + 1
         xs = np.arange(width) + HEADER_W
-        valid = (xs >= dur_px_start) & (xs <= dur_px_end)
-        if valid.any():
-            idx = np.where(valid)[0]
-            path.moveTo(xs[idx[0]], top[idx[0]])
-            for i in idx[1:]:
-                path.lineTo(float(xs[i]), float(top[i]))
-            for i in idx[::-1]:
-                path.lineTo(float(xs[i]), float(bot[i]) + 0.5)
-            path.closeSubpath()
-            p.setRenderHint(QPainter.Antialiasing, True)
-            p.fillPath(path, col)
-            p.setRenderHint(QPainter.Antialiasing, False)
+        valid = (xs >= self.x_of(t.offset)) & (xs <= self.x_of(t.offset + audio.duration))
+        # Rasterise the min/max envelope with numpy: far faster than a QPainterPath
+        rows = np.arange(h, dtype=np.float32)[:, None]
+        mask = (rows >= np.floor(top)[None, :]) & (rows <= np.ceil(bot)[None, :]) & valid[None, :]
+        img = np.zeros((h, width, 4), np.uint8)
+        img[mask] = (col.blue(), col.green(), col.red(), col.alpha())  # ARGB32 is BGRA in memory
+        qimg = QImage(img.data, width, h, width * 4, QImage.Format_ARGB32)
+        p.drawImage(HEADER_W, rr.top(), qimg)
         p.setPen(QColor("#12ffffff"))
         p.drawLine(HEADER_W, mid, rr.right(), mid)
 
@@ -320,8 +317,9 @@ class TimelineCanvas(QWidget):
 
         # suggestions (ghosts) first, so real cues draw on top
         label_end = -1e9
-        for sg in proj.visible_suggestions():
-            if sg.lane_id != r.id or not (self.t0 - 1 <= sg.time <= t1 + 1):
+        last_shape = -1e9
+        for sg in self._vis_by_lane.get(r.id, ()):
+            if not (self.t0 - 1 <= sg.time <= t1 + 1):
                 continue
             x = self.x_of(sg.time)
             sel = sg.id in self.s.sel_sugs
@@ -330,8 +328,10 @@ class TimelineCanvas(QWidget):
             pen = QPen(QColor("#ffd54f") if sel else ghost, 2 if sel else 1, Qt.DashLine)
             p.setPen(pen)
             p.drawLine(QPointF(x, rr.top() + 4), QPointF(x, rr.bottom() - 4))
-            self._draw_shape(p, KIND_SHAPES.get(sg.kind, "diamond"), x, rr.bottom() - 10, 5,
-                             QColor("#ffd54f") if sel else ghost, filled=False)
+            if sel or x - last_shape > 8:  # skip glyphs when markers are densely packed
+                self._draw_shape(p, KIND_SHAPES.get(sg.kind, "diamond"), x, rr.bottom() - 10, 5,
+                                 QColor("#ffd54f") if sel else ghost, filled=False)
+                last_shape = x
             if sg.label and x + 4 > label_end:
                 txt = fm.elidedText(sg.label, Qt.ElideRight, 110)
                 p.setPen(QColor(ghost))

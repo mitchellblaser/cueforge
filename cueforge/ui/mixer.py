@@ -257,6 +257,7 @@ class MixerPanel(QWidget):
         self.timer.timeout.connect(self._meters)
         self.timer.start()
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.setFixedHeight(196)
         self.rebuild()
 
     def rebuild(self) -> None:

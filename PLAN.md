@@ -26,9 +26,19 @@ Demucs (advanced AI) · PyInstaller (packaging).
 6. Export: grandMA3 timecode XML, CSV cue list, LTC WAV.
 
 ## Milestones
-0. Spike — analysis on test tracks; MA3 XML format.
-1. Core — import, waveform, playback, mixer, click, markers, ruler, save/load, CSV.
-2. AI v1 — grid, onsets, sections, review UI.
-3. MA3 export — XML, LTC WAV.
-4. AI v2 — per-stem hits, energy, batch rules, tuning.
-5. Later — live LTC/MTC, OSC.
+| # | Milestone | Status |
+|---|---|---|
+| 0 | Spike — analysis accuracy on test audio; MA3 format | Done (synthetic ground-truth tests; MA3 XML needs onPC verification) |
+| 1 | Core — import, waveform, playback, mixer, click, markers, ruler, save/load, CSV | Done |
+| 2 | AI v1 — grid, onsets, sections, review UI | Done |
+| 3 | MA3 export — XML, Lua plugin, command list, LTC WAV | Done |
+| 4 | AI v2 — per-stem hits (imported stems / Demucs), energy, batch accept, threshold learning | Done |
+| 5 | Later — live LTC/MTC output, OSC to console | Not started (out of scope for now) |
+
+## Known limitations / next steps
+- grandMA3 timecode XML layout is undocumented: verify an import in grandMA3 onPC; fall back to the Lua plugin.
+- Deep-learning backends (Beat This!, Demucs, All-In-One) are wired in and tested with stand-in
+  models; real weights download on first use and were not exercised in CI.
+- Analysis accuracy is verified on synthetic songs; tune thresholds on your own material
+  (the app learns thresholds from your accept/reject decisions).
+- Undo covers cues, lanes, suggestions and the beat grid; mixer moves are not undoable.

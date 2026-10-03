@@ -22,6 +22,10 @@ from ..core.undo import UndoStack
 from .workers import Job, start_job
 
 
+# single-key shortcuts that lanes may not use as tap keys
+RESERVED_KEYS = set("axsgiolcbfzp")
+
+
 def guess_role(filename: str, is_first: bool) -> str:
     n = os.path.basename(filename).lower()
     if "click" in n or "metronome" in n:
@@ -105,7 +109,6 @@ class Session(QObject):
         self.project.loop = self.engine.loop
         save_project(self.project, path)
         self.undo.mark_clean()
-        self._saved_mixer = True
         self.settings.add_recent(path)
         self._emit_dirty()
         self.status.emit(f"Saved {path}")

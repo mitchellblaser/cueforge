@@ -20,11 +20,10 @@ from .dialogs import (AnalysisDialog, AudioDeviceDialog, CueDialog, LTCDialog, M
                       ProjectSettingsDialog, ShortcutsDialog, TempoDialog)
 from .mixer import MixerPanel
 from .panels import CueTable, LanePanel, SuggestionPanel
-from .session import Session
+from .session import RESERVED_KEYS, Session
 from .timeline import TimelinePanel
 
 SPEEDS = [0.5, 0.75, 1.0]
-RESERVED_KEYS = set("axsgiolcbfzp")
 
 
 class MainWindow(QMainWindow):

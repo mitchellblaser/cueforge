@@ -5,8 +5,60 @@ import os
 import sys
 
 
+def self_test() -> int:
+    """Headless check that decoding, analysis, mixing and export work (also in packaged builds)."""
+    import tempfile
+
+    import numpy as np
+    import soundfile as sf
+
+    from .analysis.pipeline import AnalysisOptions, run_analysis
+    from .audio.engine import AudioEngine
+    from .audio.loader import load_audio
+    from .core import editing
+    from .core.model import Project, Track
+    from .export.ltc import decode_ltc, generate_ltc
+    from .export.ma3 import build_ma3_xml
+
+    sr = 44100
+    y = np.zeros(sr * 12, np.float32)
+    t = np.arange(int(sr * 0.05)) / sr
+    for k in range(24):  # 120 BPM clicks
+        i = int(k * 0.5 * sr)
+        y[i:i + len(t)] += np.sin(2 * np.pi * 1000 * t) * np.exp(-t / 0.01)
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "test.wav")
+        sf.write(path, y, sr)
+        audio = load_audio(path)
+        p = Project()
+        tr = Track("test", path)
+        p.tracks.append(tr)
+        res = run_analysis(p, {tr.id: audio}, AnalysisOptions(use_deep_models=False, sections=False))
+        bpm = res.grid.bpm() if res.grid else 0
+        print(f"analysis ok: {bpm:.1f} BPM, {len(res.suggestions)} suggestions")
+        eng = AudioEngine()
+        eng.set_track(tr.id, audio.samples)
+        print(f"mixer ok: peak {float(np.abs(eng.render(0.0, 4800)).max()):.2f}")
+        editing.add_cue(p, p.lanes[0].id, 1.0, label="Test")
+        print(f"ma3 xml ok: {len(build_ma3_xml(p))} bytes")
+        frames = decode_ltc(generate_ltc(0, 10, p.frame_rate), 48000, p.frame_rate)
+        print(f"ltc ok: {len(frames)} frames")
+        try:
+            import sounddevice as sd
+            print(f"audio devices: {len(sd.query_devices())}")
+        except Exception as exc:
+            print(f"audio devices unavailable: {exc}")
+    ok = abs(bpm - 120) < 2 and frames
+    print("SELF-TEST", "PASSED" if ok else "FAILED")
+    return 0 if ok else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv if argv is None else argv
+    if "--self-test" in argv:
+        if sys.stdout is None:  # windowed build on Windows has no console: log to a file
+            sys.stdout = sys.stderr = open("cueforge-self-test.log", "w", encoding="utf-8")
+        return self_test()
     from PySide6.QtCore import Qt
     from PySide6.QtGui import QIcon
     from PySide6.QtWidgets import QApplication
@@ -17,6 +69,9 @@ def main(argv: list[str] | None = None) -> int:
     app.setOrganizationName("CueForge")
     from .ui.theme import apply_theme
     apply_theme(app)
+    icon = os.path.join(os.path.dirname(os.path.abspath(__file__)), "resources", "icon.png")
+    if os.path.exists(icon):
+        app.setWindowIcon(QIcon(icon))
     from .ui.main_window import MainWindow
     win = MainWindow()
     win.restore_layout()

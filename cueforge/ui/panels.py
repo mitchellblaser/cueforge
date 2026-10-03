@@ -5,13 +5,13 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QColorDialog, QComboBox, QGridLayout, QGroupBox,
                                QHBoxLayout, QHeaderView, QInputDialog, QLabel, QMenu, QMessageBox, QPushButton,
-                               QSlider, QSpinBox, QTableWidget, QTableWidgetItem, QTreeWidget, QTreeWidgetItem,
+                               QSlider, QSpinBox, QSplitter, QTableWidget, QTableWidgetItem, QTreeWidget, QTreeWidgetItem,
                                QVBoxLayout, QWidget, QLineEdit)
 
 from ..core.model import KIND_LABELS, SUGGESTION_KINDS
 from ..core.timecode import parse_tc, seconds_to_tc
 from . import theme
-from .session import Session
+from .session import RESERVED_KEYS, Session
 
 
 # ============================================================== cue list
@@ -190,22 +190,23 @@ class KindRow(QWidget):
         self.lane = QComboBox()
         self.lane.setToolTip("Lane that accepted suggestions go into")
         self.lane.activated.connect(lambda _: s.set_kind_lane(kind, self.lane.currentData()))
-        acc = QPushButton("Accept all")
+        acc = QPushButton("✓ all")
         acc.setToolTip("Accept every visible suggestion of this type")
         acc.clicked.connect(self._accept_all)
-        rej = QPushButton("Reject all")
+        rej = QPushButton("✗ all")
+        rej.setToolTip("Reject every visible suggestion of this type")
         rej.clicked.connect(lambda: s.reject(s.visible_ids(kind)))
+        for b in (acc, rej):
+            b.setStyleSheet("padding: 2px 6px;")
+        self.visible.setMinimumWidth(84)
         lay.addWidget(self.visible, 0, 0)
-        lay.addWidget(self.count, 0, 1)
-        lay.addWidget(QLabel("→"), 0, 2)
-        lay.addWidget(self.lane, 0, 3, 1, 2)
-        lay.addWidget(QLabel("Min"), 1, 0, Qt.AlignRight)
-        lay.addWidget(self.slider, 1, 1, 1, 2)
-        lay.addWidget(self.thr_label, 1, 3)
-        btns = QHBoxLayout()
-        btns.addWidget(acc)
-        btns.addWidget(rej)
-        lay.addLayout(btns, 2, 0, 1, 5)
+        lay.addWidget(self.count, 0, 1, 1, 2)
+        lay.addWidget(QLabel("→"), 0, 3)
+        lay.addWidget(self.lane, 0, 4, 1, 2)
+        lay.addWidget(self.slider, 1, 0, 1, 2)
+        lay.addWidget(self.thr_label, 1, 2)
+        lay.addWidget(acc, 1, 4)
+        lay.addWidget(rej, 1, 5)
 
     def _thr(self, v: int) -> None:
         self.thr_label.setText(f"{v}%")
@@ -232,7 +233,8 @@ class KindRow(QWidget):
         self.slider.setValue(int(round(a.thresholds.get(self.kind, 0) * 100)))
         self.slider.blockSignals(False)
         self.thr_label.setText(f"{self.slider.value()}%")
-        self.count.setText(f"{len(shown)} shown / {len(pending)}")
+        self.count.setText(f"{len(shown)} / {len(pending)}")
+        self.count.setToolTip(f"{len(shown)} shown at this threshold, {len(pending)} pending in total")
         self.lane.clear()
         for l in s.project.lanes:
             self.lane.addItem(l.name, l.id)
@@ -249,8 +251,14 @@ class SuggestionPanel(QWidget):
         self.s = session
         self._refreshing = False
         self._syncing = False
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(4, 4, 4, 4)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(4, 4, 4, 4)
+        split = QSplitter(Qt.Vertical)
+        outer.addWidget(split)
+        controls = QWidget()
+        lay = QVBoxLayout(controls)
+        lay.setContentsMargins(0, 0, 0, 0)
+        split.addWidget(controls)
 
         top = QHBoxLayout()
         self.analyse_btn = QPushButton("✦ Analyse audio…")
@@ -304,6 +312,12 @@ class SuggestionPanel(QWidget):
             self.tree.setColumnWidth(i, w)
         self.tree.itemSelectionChanged.connect(self._sel_from_tree)
         self.tree.itemDoubleClicked.connect(lambda it, _: session.accept([it.data(0, Qt.UserRole)]))
+        bottom = QWidget()
+        lay = QVBoxLayout(bottom)
+        lay.setContentsMargins(0, 0, 0, 0)
+        split.addWidget(bottom)
+        split.setStretchFactor(1, 1)
+        split.setChildrenCollapsible(False)
         lay.addWidget(self.tree, 1)
         b = QHBoxLayout()
         acc = QPushButton("Accept (A)")
@@ -476,7 +490,7 @@ class LanePanel(QWidget):
         lane = self.s.project.lane(lid)
         if not lane or lane.tap_key == text:
             return
-        if text in {"a", "x", "s", "g", "i", "o", "l", "c", "b", " "}:
+        if text in RESERVED_KEYS or text == " ":
             QMessageBox.warning(self, "Tap key", f"'{text.upper()}' is used by another shortcut. Use 1–9 or another letter.")
             self.rebuild()
             return
