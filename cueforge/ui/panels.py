@@ -1,0 +1,522 @@
+"""Side panels: cue list, AI suggestion review, lane setup."""
+from __future__ import annotations
+
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QColor
+from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QColorDialog, QComboBox, QGridLayout, QGroupBox,
+                               QHBoxLayout, QHeaderView, QInputDialog, QLabel, QMenu, QMessageBox, QPushButton,
+                               QSlider, QSpinBox, QTableWidget, QTableWidgetItem, QTreeWidget, QTreeWidgetItem,
+                               QVBoxLayout, QWidget, QLineEdit)
+
+from ..core.model import KIND_LABELS, SUGGESTION_KINDS
+from ..core.timecode import parse_tc, seconds_to_tc
+from . import theme
+from .session import Session
+
+
+# ============================================================== cue list
+class CueTable(QWidget):
+    seek_requested = Signal(float)
+    COLS = ["Timecode", "Lane", "Cue", "Label", "Fade", "Notes", "Src"]
+
+    def __init__(self, session: Session, parent=None) -> None:
+        super().__init__(parent)
+        self.s = session
+        self._syncing = False
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(4, 4, 4, 4)
+        top = QHBoxLayout()
+        self.lane_filter = QComboBox()
+        self.lane_filter.currentIndexChanged.connect(self.rebuild)
+        top.addWidget(QLabel("Lane:"))
+        top.addWidget(self.lane_filter, 1)
+        self.count = QLabel()
+        self.count.setStyleSheet(f"color: {theme.FG_DIM};")
+        top.addWidget(self.count)
+        lay.addLayout(top)
+        self.table = QTableWidget(0, len(self.COLS))
+        self.table.setHorizontalHeaderLabels(self.COLS)
+        self.table.verticalHeader().setVisible(False)
+        self.table.setAlternatingRowColors(True)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed)
+        hh = self.table.horizontalHeader()
+        hh.setSectionResizeMode(QHeaderView.Interactive)
+        hh.setStretchLastSection(False)
+        hh.setSectionResizeMode(3, QHeaderView.Stretch)
+        for i, w in enumerate([92, 80, 44, 120, 40, 80, 28]):
+            if i != 3:
+                self.table.setColumnWidth(i, w)
+        self.table.itemSelectionChanged.connect(self._sel_from_table)
+        self.table.itemChanged.connect(self._edited)
+        self.table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._menu)
+        lay.addWidget(self.table)
+        hint = QLabel("Double-click a cell to edit · right-click for more")
+        hint.setStyleSheet(f"color: {theme.FG_DIM}; font-size: 10px;")
+        lay.addWidget(hint)
+
+        session.cues_changed.connect(self.rebuild)
+        session.lanes_changed.connect(self._lanes)
+        session.project_replaced.connect(self._lanes)
+        session.selection_changed.connect(self._sel_from_session)
+        self._lanes()
+
+    def _lanes(self) -> None:
+        cur = self.lane_filter.currentData()
+        self.lane_filter.blockSignals(True)
+        self.lane_filter.clear()
+        self.lane_filter.addItem("All lanes", "")
+        for l in self.s.project.lanes:
+            self.lane_filter.addItem(l.name, l.id)
+        i = self.lane_filter.findData(cur)
+        self.lane_filter.setCurrentIndex(max(0, i))
+        self.lane_filter.blockSignals(False)
+        self.rebuild()
+
+    def rebuild(self) -> None:
+        p = self.s.project
+        lane_id = self.lane_filter.currentData()
+        cues = [c for c in p.cues if not lane_id or c.lane_id == lane_id]
+        self._syncing = True
+        self.table.setRowCount(len(cues))
+        for r, c in enumerate(cues):
+            lane = p.lane(c.lane_id)
+            vals = [seconds_to_tc(c.time, p.frame_rate, p.tc_offset), lane.name if lane else "?",
+                    "" if c.number is None else f"{c.number:g}", c.label,
+                    "" if c.fade is None else f"{c.fade:g}", c.notes, "AI" if c.source == "ai-accepted" else ""]
+            for col, v in enumerate(vals):
+                it = QTableWidgetItem(v)
+                it.setData(Qt.UserRole, c.id)
+                if col in (1, 6):
+                    it.setFlags(it.flags() & ~Qt.ItemIsEditable)
+                if col == 1 and lane:
+                    it.setForeground(QColor(lane.color))
+                if col == 6:
+                    it.setForeground(QColor("#ffd54f"))
+                self.table.setItem(r, col, it)
+        self.count.setText(f"{len(cues)} cues")
+        self._syncing = False
+        self._sel_from_session()
+
+    def _sel_from_session(self) -> None:
+        self._syncing = True
+        self.table.clearSelection()
+        mode = self.table.selectionMode()
+        self.table.setSelectionMode(QAbstractItemView.MultiSelection)
+        first = None
+        for r in range(self.table.rowCount()):
+            it = self.table.item(r, 0)
+            if it and it.data(Qt.UserRole) in self.s.sel_cues:
+                self.table.selectRow(r)
+                first = first if first is not None else r
+        self.table.setSelectionMode(mode)
+        if first is not None:
+            self.table.scrollToItem(self.table.item(first, 0))
+        self._syncing = False
+
+    def _sel_from_table(self) -> None:
+        if self._syncing:
+            return
+        ids = {self.table.item(i.row(), 0).data(Qt.UserRole) for i in self.table.selectionModel().selectedRows()}
+        self._syncing = True
+        self.s.select(cues=ids)
+        self._syncing = False
+        if len(ids) == 1:
+            c = self.s.project.cue(next(iter(ids)))
+            if c:
+                self.seek_requested.emit(c.time)
+
+    def _edited(self, it: QTableWidgetItem) -> None:
+        if self._syncing:
+            return
+        cid = it.data(Qt.UserRole)
+        col = it.column()
+        txt = it.text().strip()
+        p = self.s.project
+        try:
+            if col == 0:
+                self.s.update_cue(cid, time=max(0.0, parse_tc(txt, p.frame_rate, p.tc_offset)))
+            elif col == 2:
+                self.s.update_cue(cid, number=float(txt) if txt else None)
+            elif col == 3:
+                self.s.update_cue(cid, label=txt)
+            elif col == 4:
+                self.s.update_cue(cid, fade=float(txt) if txt else None)
+            elif col == 5:
+                self.s.update_cue(cid, notes=txt)
+        except ValueError as exc:
+            QMessageBox.warning(self, "Invalid value", str(exc))
+            self.rebuild()
+
+    def _menu(self, pos) -> None:
+        if not self.s.sel_cues:
+            return
+        m = QMenu(self)
+        m.addAction("Delete", self.s.delete_selected)
+        m.addAction("Snap to grid", self.s.snap_selected)
+        sub = m.addMenu("Move to lane")
+        for lane in self.s.project.lanes:
+            sub.addAction(lane.name, lambda lid=lane.id: self.s.move_selected_to_lane(lid))
+        m.addAction("Clear cue numbers (auto)", self._clear_numbers)
+        m.exec(self.table.viewport().mapToGlobal(pos))
+
+    def _clear_numbers(self) -> None:
+        with self.s.edit("Clear numbers"):
+            for c in self.s.project.cues:
+                if c.id in self.s.sel_cues:
+                    c.number = None
+
+
+# ============================================================== suggestions
+class KindRow(QWidget):
+    def __init__(self, panel: "SuggestionPanel", kind: str) -> None:
+        super().__init__()
+        self.panel, self.kind, s = panel, kind, panel.s
+        lay = QGridLayout(self)
+        lay.setContentsMargins(0, 2, 0, 2)
+        lay.setHorizontalSpacing(6)
+        self.visible = QCheckBox(KIND_LABELS[kind])
+        self.visible.setStyleSheet("font-weight: bold;")
+        self.visible.toggled.connect(lambda v: s.set_filter(kind, visible=v))
+        self.count = QLabel()
+        self.count.setStyleSheet(f"color: {theme.FG_DIM};")
+        self.slider = QSlider(Qt.Horizontal)
+        self.slider.setRange(0, 100)
+        self.slider.setToolTip("Minimum confidence shown")
+        self.slider.valueChanged.connect(self._thr)
+        self.thr_label = QLabel()
+        self.thr_label.setFixedWidth(34)
+        self.lane = QComboBox()
+        self.lane.setToolTip("Lane that accepted suggestions go into")
+        self.lane.activated.connect(lambda _: s.set_kind_lane(kind, self.lane.currentData()))
+        acc = QPushButton("Accept all")
+        acc.setToolTip("Accept every visible suggestion of this type")
+        acc.clicked.connect(self._accept_all)
+        rej = QPushButton("Reject all")
+        rej.clicked.connect(lambda: s.reject(s.visible_ids(kind)))
+        lay.addWidget(self.visible, 0, 0)
+        lay.addWidget(self.count, 0, 1)
+        lay.addWidget(QLabel("→"), 0, 2)
+        lay.addWidget(self.lane, 0, 3, 1, 2)
+        lay.addWidget(QLabel("Min"), 1, 0, Qt.AlignRight)
+        lay.addWidget(self.slider, 1, 1, 1, 2)
+        lay.addWidget(self.thr_label, 1, 3)
+        btns = QHBoxLayout()
+        btns.addWidget(acc)
+        btns.addWidget(rej)
+        lay.addLayout(btns, 2, 0, 1, 5)
+
+    def _thr(self, v: int) -> None:
+        self.thr_label.setText(f"{v}%")
+        if not self.panel._refreshing:
+            self.panel.s.set_filter(self.kind, threshold=v / 100)
+
+    def _accept_all(self) -> None:
+        ids = self.panel.s.visible_ids(self.kind)
+        if len(ids) > 20 and QMessageBox.question(
+                self, "Accept all", f"Accept {len(ids)} {KIND_LABELS[self.kind].lower()} suggestions?") \
+                != QMessageBox.Yes:
+            return
+        self.panel.s.accept(ids)
+
+    def refresh(self) -> None:
+        s = self.panel.s
+        a = s.project.analysis
+        pending = [x for x in s.project.suggestions if x.kind == self.kind and x.status == "pending"]
+        shown = [x for x in pending if x.confidence >= a.thresholds.get(self.kind, 0)]
+        self.visible.blockSignals(True)
+        self.visible.setChecked(a.visible.get(self.kind, True))
+        self.visible.blockSignals(False)
+        self.slider.blockSignals(True)
+        self.slider.setValue(int(round(a.thresholds.get(self.kind, 0) * 100)))
+        self.slider.blockSignals(False)
+        self.thr_label.setText(f"{self.slider.value()}%")
+        self.count.setText(f"{len(shown)} shown / {len(pending)}")
+        self.lane.clear()
+        for l in s.project.lanes:
+            self.lane.addItem(l.name, l.id)
+        self.lane.setCurrentIndex(max(0, self.lane.findData(s.project.lane_for_kind(self.kind))))
+
+
+class SuggestionPanel(QWidget):
+    analyse_requested = Signal()
+    tempo_requested = Signal()
+    seek_requested = Signal(float)
+
+    def __init__(self, session: Session, parent=None) -> None:
+        super().__init__(parent)
+        self.s = session
+        self._refreshing = False
+        self._syncing = False
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(4, 4, 4, 4)
+
+        top = QHBoxLayout()
+        self.analyse_btn = QPushButton("✦ Analyse audio…")
+        self.analyse_btn.setStyleSheet(f"font-weight: bold; padding: 6px; border-color: {theme.ACCENT};")
+        self.analyse_btn.clicked.connect(self.analyse_requested.emit)
+        top.addWidget(self.analyse_btn)
+        lay.addLayout(top)
+        note = QLabel("AI suggestions are drafts. Nothing becomes a cue until you accept it.")
+        note.setWordWrap(True)
+        note.setStyleSheet(f"color: {theme.FG_DIM}; font-size: 10px;")
+        lay.addWidget(note)
+
+        grid_box = QGroupBox("Beat grid")
+        gl = QVBoxLayout(grid_box)
+        self.grid_label = QLabel()
+        self.grid_label.setWordWrap(True)
+        gl.addWidget(self.grid_label)
+        gb = QHBoxLayout()
+        self.grid_accept = QPushButton("Accept grid")
+        self.grid_accept.clicked.connect(session.accept_grid)
+        tempo = QPushButton("Set tempo…")
+        tempo.clicked.connect(self.tempo_requested.emit)
+        clear = QPushButton("Clear")
+        clear.clicked.connect(session.clear_grid)
+        gb.addWidget(self.grid_accept)
+        gb.addWidget(tempo)
+        gb.addWidget(clear)
+        gl.addLayout(gb)
+        lay.addWidget(grid_box)
+
+        kinds_box = QGroupBox("Suggestion filters")
+        kl = QVBoxLayout(kinds_box)
+        self.rows = {k: KindRow(self, k) for k in SUGGESTION_KINDS}
+        for r in self.rows.values():
+            kl.addWidget(r)
+        self.learned = QLabel()
+        self.learned.setWordWrap(True)
+        self.learned.setStyleSheet(f"color: {theme.FG_DIM}; font-size: 10px;")
+        self.apply_learned = QPushButton("Apply learned thresholds")
+        self.apply_learned.clicked.connect(self._apply_learned)
+        kl.addWidget(self.learned)
+        kl.addWidget(self.apply_learned)
+        lay.addWidget(kinds_box)
+
+        self.tree = QTreeWidget()
+        self.tree.setHeaderLabels(["Time", "Type", "Label", "Conf", "Why"])
+        self.tree.setRootIsDecorated(False)
+        self.tree.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.tree.setAlternatingRowColors(True)
+        for i, w in enumerate([86, 52, 90, 40]):
+            self.tree.setColumnWidth(i, w)
+        self.tree.itemSelectionChanged.connect(self._sel_from_tree)
+        self.tree.itemDoubleClicked.connect(lambda it, _: session.accept([it.data(0, Qt.UserRole)]))
+        lay.addWidget(self.tree, 1)
+        b = QHBoxLayout()
+        acc = QPushButton("Accept (A)")
+        acc.clicked.connect(lambda: session.accept(set(session.sel_sugs)))
+        rej = QPushButton("Reject (X)")
+        rej.clicked.connect(lambda: session.reject(set(session.sel_sugs)))
+        b.addWidget(acc)
+        b.addWidget(rej)
+        lay.addLayout(b)
+        tip = QLabel("Tab / Shift+Tab: next / previous suggestion")
+        tip.setStyleSheet(f"color: {theme.FG_DIM}; font-size: 10px;")
+        lay.addWidget(tip)
+
+        session.cues_changed.connect(self.refresh)
+        session.lanes_changed.connect(self.refresh)
+        session.project_replaced.connect(self.refresh)
+        session.selection_changed.connect(self._sel_from_session)
+        session.busy.connect(lambda m: self.analyse_btn.setEnabled(not m.startswith("Analys")))
+        self.refresh()
+
+    def refresh(self) -> None:
+        self._refreshing = True
+        s = self.s
+        for r in self.rows.values():
+            r.refresh()
+        g = s.project.beat_grid
+        if g.beats:
+            state = "confirmed" if g.confirmed else "<span style='color:#ffb74d'>unconfirmed suggestion</span>"
+            self.grid_label.setText(f"{g.bpm():.2f} BPM · {g.beats_per_bar}/4 · from {g.source or '?'}"
+                                    f" · {state}" + (f" · confidence {g.confidence:.0%}" if not g.confirmed else ""))
+        else:
+            self.grid_label.setText("No grid. Analyse, load a click track, or set the tempo.")
+        self.grid_accept.setEnabled(bool(g.beats) and not g.confirmed)
+        learned = s.learned_thresholds()
+        if learned:
+            parts = [f"{KIND_LABELS[k]} ≥ {v['threshold']:.0%} (from {v['n']} decisions)" for k, v in learned.items()]
+            self.learned.setText("Learned from your accept/reject history: " + "; ".join(parts))
+            self.apply_learned.setVisible(True)
+        else:
+            self.learned.setText("Thresholds will be learned from your accept/reject decisions over time.")
+            self.apply_learned.setVisible(False)
+
+        p = s.project
+        self._syncing = True
+        self.tree.clear()
+        for sg in p.visible_suggestions():
+            it = QTreeWidgetItem([seconds_to_tc(sg.time, p.frame_rate, p.tc_offset), KIND_LABELS[sg.kind],
+                                  sg.label, f"{sg.confidence:.0%}", sg.reason])
+            it.setData(0, Qt.UserRole, sg.id)
+            it.setToolTip(4, sg.reason)
+            it.setSelected(sg.id in s.sel_sugs)
+            self.tree.addTopLevelItem(it)
+        self._syncing = False
+        self._refreshing = False
+
+    def _apply_learned(self) -> None:
+        for k, v in self.s.learned_thresholds().items():
+            self.s.set_filter(k, threshold=v["threshold"])
+        self.refresh()
+
+    def _sel_from_session(self) -> None:
+        self._syncing = True
+        first = None
+        for i in range(self.tree.topLevelItemCount()):
+            it = self.tree.topLevelItem(i)
+            sel = it.data(0, Qt.UserRole) in self.s.sel_sugs
+            it.setSelected(sel)
+            if sel and first is None:
+                first = it
+        if first:
+            self.tree.scrollToItem(first)
+        self._syncing = False
+
+    def _sel_from_tree(self) -> None:
+        if self._syncing:
+            return
+        ids = {it.data(0, Qt.UserRole) for it in self.tree.selectedItems()}
+        self.s.select(sugs=ids)
+        if len(ids) == 1:
+            sg = self.s.project.suggestion(next(iter(ids)))
+            if sg:
+                self.seek_requested.emit(sg.time)
+
+
+# ============================================================== lanes
+class LanePanel(QWidget):
+    COLS = ["Name", "Colour", "Tap key", "MA3 seq", "Export"]
+
+    def __init__(self, session: Session, parent=None) -> None:
+        super().__init__(parent)
+        self.s = session
+        self._syncing = False
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(4, 4, 4, 4)
+        self.table = QTableWidget(0, len(self.COLS))
+        self.table.setHorizontalHeaderLabels(self.COLS)
+        self.table.verticalHeader().setVisible(False)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        for i, w in enumerate([0, 56, 56, 64, 50]):
+            if w:
+                self.table.setColumnWidth(i, w)
+        self.table.cellDoubleClicked.connect(self._dbl)
+        self.table.itemChanged.connect(self._renamed)
+        lay.addWidget(self.table)
+        b = QGridLayout()
+        for i, (txt, fn) in enumerate([("Add lane", self._add), ("Remove", self._remove), ("Up", lambda: self._move(-1)),
+                                       ("Down", lambda: self._move(1)), ("Renumber cues…", self._renumber)]):
+            btn = QPushButton(txt)
+            btn.clicked.connect(fn)
+            b.addWidget(btn, i // 3, i % 3)
+        lay.addLayout(b)
+        help_ = QLabel("Each lane exports to one grandMA3 sequence as a timecode track.\n"
+                       "Press a lane's tap key during playback to drop a cue in it.")
+        help_.setWordWrap(True)
+        help_.setStyleSheet(f"color: {theme.FG_DIM}; font-size: 10px;")
+        lay.addWidget(help_)
+        lay.addStretch()
+        session.lanes_changed.connect(self.rebuild)
+        session.project_replaced.connect(self.rebuild)
+        self.rebuild()
+
+    def _lane_id(self, row: int | None = None) -> str | None:
+        row = self.table.currentRow() if row is None else row
+        it = self.table.item(row, 0) if row >= 0 else None
+        return it.data(Qt.UserRole) if it else None
+
+    def rebuild(self) -> None:
+        self._syncing = True
+        cur = self._lane_id()
+        lanes = self.s.project.lanes
+        self.table.setRowCount(len(lanes))
+        for r, l in enumerate(lanes):
+            name = QTableWidgetItem(l.name)
+            name.setData(Qt.UserRole, l.id)
+            self.table.setItem(r, 0, name)
+            col = QTableWidgetItem("")
+            col.setBackground(QColor(l.color))
+            col.setFlags(col.flags() & ~Qt.ItemIsEditable)
+            self.table.setItem(r, 1, col)
+            key = QLineEdit(l.tap_key.upper())
+            key.setMaxLength(1)
+            key.setAlignment(Qt.AlignCenter)
+            key.editingFinished.connect(lambda lid=l.id, w=key: self._key(lid, w.text()))
+            self.table.setCellWidget(r, 2, key)
+            seq = QSpinBox()
+            seq.setRange(1, 9999)
+            seq.setValue(l.ma3_sequence)
+            seq.editingFinished.connect(lambda lid=l.id, w=seq: self.s.update_lane(lid, ma3_sequence=w.value())
+                                        if self.s.project.lane(lid).ma3_sequence != w.value() else None)
+            self.table.setCellWidget(r, 3, seq)
+            ex = QCheckBox()
+            ex.setChecked(l.export)
+            ex.toggled.connect(lambda v, lid=l.id: self.s.update_lane(lid, export=v))
+            self.table.setCellWidget(r, 4, ex)
+            if l.id == cur:
+                self.table.selectRow(r)
+        self._syncing = False
+
+    def _renamed(self, it: QTableWidgetItem) -> None:
+        if self._syncing or it.column() != 0:
+            return
+        lid = it.data(Qt.UserRole)
+        if lid and it.text().strip() and self.s.project.lane(lid).name != it.text().strip():
+            self.s.update_lane(lid, name=it.text().strip())
+
+    def _key(self, lid: str, text: str) -> None:
+        text = text.strip().lower()[:1]
+        lane = self.s.project.lane(lid)
+        if not lane or lane.tap_key == text:
+            return
+        if text in {"a", "x", "s", "g", "i", "o", "l", "c", "b", " "}:
+            QMessageBox.warning(self, "Tap key", f"'{text.upper()}' is used by another shortcut. Use 1–9 or another letter.")
+            self.rebuild()
+            return
+        for other in self.s.project.lanes:
+            if other.id != lid and other.tap_key == text and text:
+                self.s.update_lane(other.id, tap_key="")
+        self.s.update_lane(lid, tap_key=text)
+
+    def _dbl(self, row: int, col: int) -> None:
+        if col == 1:
+            lid = self._lane_id(row)
+            c = QColorDialog.getColor(QColor(self.s.project.lane(lid).color), self, "Lane colour")
+            if c.isValid():
+                self.s.update_lane(lid, color=c.name())
+
+    def _add(self) -> None:
+        self.s.add_lane()
+
+    def _remove(self) -> None:
+        lid = self._lane_id()
+        if not lid:
+            return
+        n = len(self.s.project.cues_in_lane(lid))
+        if n and QMessageBox.question(self, "Remove lane", f"Remove lane and its {n} cue(s)?") != QMessageBox.Yes:
+            return
+        self.s.remove_lane(lid)
+
+    def _move(self, d: int) -> None:
+        lid = self._lane_id()
+        if lid:
+            self.s.move_lane(lid, d)
+
+    def _renumber(self) -> None:
+        lid = self._lane_id()
+        if not lid:
+            QMessageBox.information(self, "Renumber", "Select a lane first.")
+            return
+        start, ok = QInputDialog.getDouble(self, "Renumber cues", "First cue number:", 1, 0, 99999, 3)
+        if not ok:
+            return
+        step, ok = QInputDialog.getDouble(self, "Renumber cues", "Step:", 1, 0.001, 1000, 3)
+        if ok:
+            self.s.renumber_lane(lid, start, step)
