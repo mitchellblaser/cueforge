@@ -12,7 +12,7 @@ hiddenimports = collect_submodules("cueforge")
 
 # librosa uses lazy_loader stubs (.pyi) and data files; soundfile/sounddevice ship native libs
 for pkg in ("librosa", "soundfile", "sounddevice", "_soundfile_data", "_sounddevice_data", "soxr",
-            "lazy_loader", "audioread"):
+            "lazy_loader", "audioread", "mido", "rtmidi", "pythonosc"):
     try:
         d, b, h = collect_all(pkg)
         datas += d
@@ -20,7 +20,7 @@ for pkg in ("librosa", "soundfile", "sounddevice", "_soundfile_data", "_sounddev
         hiddenimports += h
     except Exception:
         pass
-hiddenimports += ["sklearn.utils._typedefs", "sklearn.neighbors._partition_nodes"]
+hiddenimports += ["sklearn.utils._typedefs", "sklearn.neighbors._partition_nodes", "mido.backends.rtmidi"]
 
 # Optional deep-learning backends are large; include them only if requested
 if os.environ.get("CUEFORGE_BUNDLE_AI") == "1":

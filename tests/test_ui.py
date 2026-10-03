@@ -21,7 +21,7 @@ from cueforge.export.ltc import decode_ltc
 from cueforge.ui import dialogs
 from cueforge.ui.main_window import MainWindow
 from cueforge.ui.session import Session
-from cueforge.ui.timeline import HEADER_W, LANE_H, RULER_H, TRACK_H
+from cueforge.ui.timeline import HEADER_W, LANE_H, TOP_H, TRACK_H
 from tests.synth import SR, make_click, make_song
 
 
@@ -95,7 +95,7 @@ QTest.keyClick = _key_click
 
 
 def lane_y(w, idx):
-    return RULER_H + len(w.s.project.tracks) * TRACK_H + idx * LANE_H + LANE_H // 2
+    return TOP_H + len(w.s.project.tracks) * TRACK_H + idx * LANE_H + LANE_H // 2
 
 
 def test_roles_guessed(win):
@@ -383,3 +383,176 @@ def test_cue_and_temp_buttons(app, win, monkeypatch):
               for e in root.findall(".//CmdEvent")]
     assert ("Goto", "On") in tokens and ("Temp", "On") in tokens and ("Temp", "Off") in tokens
     assert sum(1 for t in tokens if t == ("Temp", "Off")) == 2
+
+
+def test_dual_monitor_and_popout(app, win):
+    win.dual_monitor(True)
+    pump(app)
+    pw = win.panels_window
+    assert pw is not None and pw.isVisible()
+    assert win.dock_sugs.parent() is pw and win.dock_mixer.parent() is pw
+    # shortcuts still work while the panels window has focus
+    win.s.engine.seek(3.0)
+    pw.activateWindow()
+    QTest.keyClick(pw, Qt.Key_Q)
+    assert any(abs(c.time - 3.0) < 0.05 for c in win.s.project.cues)
+    win.dual_monitor(False)
+    pump(app)
+    assert win.panels_window is None and win.dock_sugs.parent() is win
+    win.pop_out(win.dock_cues)
+    assert win.dock_cues.isFloating()
+    win.reset_layout()
+    assert not win.dock_cues.isFloating()
+
+
+def test_sections_copy_paste_ui(app, win):
+    from cueforge.core.model import BeatGrid
+    s = win.s
+    s.set_grid(BeatGrid.from_tempo(120, 0.0, 70))
+    s.engine.seek(0.0)
+    s.add_section_at(0.0, "Verse 1")
+    s.add_section_at(16.0, "Chorus 1")
+    s.add_section_at(32.0, "Verse 2")
+    s.add_section_at(48.0, "Chorus 2")
+    ch1 = next(m for m in s.project.sections if m.name == "Chorus 1")
+    lane = s.project.lanes[0].id
+    for t in (16.0, 18.5, 20.0):
+        s.add_cue(lane, t)
+    assert s.copy_section_to_repeats(ch1.id) == 3
+    assert sorted(round(c.time, 2) for c in s.project.cues if c.time >= 48) == [48.0, 50.5, 52.0]
+    win._undo()
+    assert not [c for c in s.project.cues if c.time >= 48]
+    # copy two cues, paste at the playhead with Ctrl+V
+    s.select(cues={c.id for c in s.project.cues if c.time in (18.5, 20.0)})
+    QTest.keyClick(win, Qt.Key_C, Qt.ControlModifier)
+    s.engine.seek(60.0)
+    QTest.keyClick(win, Qt.Key_V, Qt.ControlModifier)
+    assert sorted(round(c.time, 2) for c in s.project.cues if c.time >= 59) == [60.0, 61.5]
+    # aligned paste into Chorus 2 (keeps the position inside the section)
+    s.engine.seek(49.0)
+    QTest.keyClick(win, Qt.Key_V, Qt.ControlModifier | Qt.ShiftModifier)
+    assert sorted(round(c.time, 2) for c in s.project.cues if 48 <= c.time < 59) == [50.5, 52.0]
+    # M adds a section marker at the playhead; rename all repeats
+    s.engine.seek(64.0)
+    QTest.keyClick(win, Qt.Key_M)
+    assert any(abs(m.time - 64.0) < 0.05 for m in s.project.sections)
+    s.rename_section(ch1.id, "Hook", all_of_kind=True)
+    assert sorted(m.name for m in s.project.sections if m.kind == "hook") == ["Hook 1", "Hook 2"]
+    # pattern fill over a section
+    r = s.section_range(next(m for m in s.project.sections if m.name == "Verse 2").id)
+    n = s.pattern_fill(s.project.lanes[2].id, r[0], r[1], "beat", temp=True)
+    assert n == 32 and all(c.duration for c in s.project.cues_in_lane(s.project.lanes[2].id))
+    win.canvas.repaint()
+
+
+def test_midi_control_and_feedback(app, win):
+    import mido
+    from cueforge.control.actions import WHITE, color_velocity
+    hub = win.control
+    s = win.s
+    sent = []
+
+    class FakeOut:
+        def send(self, m):
+            sent.append(m)
+
+        def close(self):
+            pass
+    hub._out = FakeOut()
+    lanes = s.project.lanes
+    # note 36 -> cue into lane 1; note 45 -> Temp into lane 2 (hold from the Hold box)
+    hub.handle_midi(mido.Message("note_on", note=36, velocity=100), 2.0)
+    hub.handle_midi(mido.Message("note_on", note=45, velocity=100), 3.0)
+    hub.handle_midi(mido.Message("note_off", note=45), 3.4)
+    pump(app)
+    c1 = s.project.cues_in_lane(lanes[0].id)
+    c2 = s.project.cues_in_lane(lanes[1].id)
+    assert [round(c.time, 2) for c in c1] == [2.0] and c1[0].duration is None
+    assert [round(c.time, 2) for c in c2] == [3.0] and c2[0].duration == pytest.approx(s.temp_hold)
+    assert any(m.velocity == WHITE for m in sent)               # pad flashed on the hit
+    # hold time = how long the pad is held
+    hub.cfg.hold_from_press = True
+    hub.handle_midi(mido.Message("note_on", note=46, velocity=127), 5.0)
+    hub.handle_midi(mido.Message("note_on", note=46, velocity=0), 5.8)
+    pump(app)
+    c3 = s.project.cues_in_lane(lanes[2].id)
+    assert c3[0].duration == pytest.approx(0.8, abs=0.04)
+    # colour feedback follows lane colours; active lane's Temp pad is full colour
+    s.set_active_lane(lanes[0].id)
+    msgs = {m.note: m.velocity for m in hub.feedback_messages()}
+    assert msgs[36] == color_velocity(lanes[0].color)
+    assert msgs[44] == color_velocity(lanes[0].color)               # active lane temp pad: full
+    assert msgs[45] == color_velocity(lanes[1].color, dim=True)     # other temp pads dimmer
+    assert msgs[36 + len(lanes)] == 0 if len(lanes) < 8 else True   # pads beyond the lanes are off
+    # MIDI learn
+    got = []
+    hub.learned.connect(got.append)
+    hub.start_learn()
+    hub.handle_midi(mido.Message("control_change", channel=2, control=20, value=127), 0.0)
+    pump(app)
+    assert got and got[0].kind == "cc" and got[0].number == 20 and got[0].channel == 2
+    hub._out = None
+
+
+def test_osc_control_roundtrip(app, win):
+    import socket
+    from pythonosc.osc_message import OscMessage
+    from pythonosc.udp_client import SimpleUDPClient
+    hub = win.control
+    s = win.s
+    rx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    rx.bind(("127.0.0.1", 0))
+    rx.settimeout(2)
+    hub.cfg.osc_enabled = True
+    hub.cfg.osc_port = 0                       # any free port
+    hub.cfg.osc_feedback_host = "127.0.0.1"
+    hub.cfg.osc_feedback_port = rx.getsockname()[1]
+    hub.apply()
+    try:
+        assert hub.osc_port
+        # feedback arrives with the lane names
+        names = set()
+        for _ in range(40):
+            try:
+                data, _ = rx.recvfrom(4096)
+            except socket.timeout:
+                break
+            msg = OscMessage(data)
+            if msg.address.endswith("/name"):
+                names.add(msg.params[0])
+            if len(names) >= 3:
+                break
+        assert "Main Cues" in names
+        cli = SimpleUDPClient("127.0.0.1", hub.osc_port)
+        s.engine.seek(7.0)
+        cli.send_message("/cueforge/lane/2/temp", 1.0)
+        wait(app, lambda: len(s.project.cues) >= 1, 5)
+        s.engine.seek(9.0)
+        cli.send_message("/cueforge/cue", 3)
+        wait(app, lambda: len(s.project.cues) >= 2, 5)
+        lanes = s.project.lanes
+        assert [round(c.time, 1) for c in s.project.cues_in_lane(lanes[1].id)] == [7.0]
+        assert s.project.cues_in_lane(lanes[1].id)[0].duration
+        assert [round(c.time, 1) for c in s.project.cues_in_lane(lanes[2].id)] == [9.0]
+        ids = [l.id for l in lanes]
+        expect = ids[min(len(ids) - 1, ids.index(s.active_lane_id) + 1)]
+        cli.send_message("/cueforge/lane/next", [])
+        wait(app, lambda: s.active_lane_id == expect, 5)
+    finally:
+        hub.close()
+        rx.close()
+
+
+def test_import_ma3_ui(app, win, monkeypatch):
+    from cueforge.export.ma3 import export_ma3_xml_all
+    s = win.s
+    s.add_cue(s.project.lanes[0].id, 2.0, label="A")
+    s.add_song(name="Second")
+    s.add_cue(s.project.lanes[0].id, 4.0, label="B")
+    paths = export_ma3_xml_all(s.project, str(win.tmp / "tc"))
+    # wipe the cues, then bring them back from the console files
+    for song in s.project.songs:
+        song.cues = []
+    win.import_ma3(paths, replace=True)
+    assert [c.label for c in s.project.songs[0].cues] == ["A"]
+    assert [c.label for c in s.project.songs[1].cues] == ["B"]

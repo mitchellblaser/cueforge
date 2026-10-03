@@ -18,6 +18,8 @@ from .session import Session
 
 HEADER_W = 160
 RULER_H = 38
+SECTION_H = 22
+TOP_H = RULER_H + SECTION_H   # rows start below the ruler and the section band
 TRACK_H = 58
 LANE_H = 46
 HIT_PX = 6
@@ -44,6 +46,8 @@ def _nice_step(min_seconds: float) -> float:
 
 class TimelineCanvas(QWidget):
     edit_cue_requested = Signal(str)
+    rename_section_requested = Signal(str)
+    pattern_fill_requested = Signal(float, float)
     view_changed = Signal()
 
     def __init__(self, session: Session, parent=None) -> None:
@@ -53,9 +57,10 @@ class TimelineCanvas(QWidget):
         self.pps = 40.0          # pixels per second
         self.v_off = 0
         self.follow = True
+        self.scrub_audio = bool(session.settings.get("scrub_audio", True))
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.ClickFocus)
-        self.setMinimumHeight(RULER_H + LANE_H)
+        self.setMinimumHeight(TOP_H + LANE_H)
         self._cache: QPixmap | None = None
         self._rows: list[Row] = []
         self._drag: dict | None = None
@@ -112,14 +117,14 @@ class TimelineCanvas(QWidget):
         return len(self.s.project.tracks) * TRACK_H + len(self.s.project.lanes) * LANE_H
 
     def row_at(self, y: float) -> Row | None:
-        cy = y - RULER_H + self.v_off
+        cy = y - TOP_H + self.v_off
         for r in self._rows:
             if r.y <= cy < r.y + r.h:
                 return r
         return None
 
     def row_rect(self, r: Row) -> QRect:
-        return QRect(0, RULER_H + r.y - self.v_off, self.width(), r.h)
+        return QRect(0, TOP_H + r.y - self.v_off, self.width(), r.h)
 
     def set_view(self, t0: float | None = None, pps: float | None = None) -> None:
         if pps is not None:
@@ -190,14 +195,14 @@ class TimelineCanvas(QWidget):
         for sg in self.s.project.visible_suggestions():
             self._vis_by_lane.setdefault(sg.lane_id, []).append(sg)
         w = self.width()
-        body = QRect(HEADER_W, RULER_H, w - HEADER_W, self.height() - RULER_H)
+        body = QRect(HEADER_W, TOP_H, w - HEADER_W, self.height() - TOP_H)
 
         # rows background + content
         p.save()
-        p.setClipRect(QRect(0, RULER_H, w, self.height() - RULER_H))
+        p.setClipRect(QRect(0, TOP_H, w, self.height() - TOP_H))
         for i, r in enumerate(self._rows):
             rr = self.row_rect(r)
-            if rr.bottom() < RULER_H or rr.top() > self.height():
+            if rr.bottom() < TOP_H or rr.top() > self.height():
                 continue
             if r.kind == "track":
                 p.fillRect(rr, QColor("#191c21"))
@@ -211,10 +216,10 @@ class TimelineCanvas(QWidget):
         self._paint_grid(p, body)
         for r in self._rows:
             rr = self.row_rect(r)
-            if rr.bottom() < RULER_H or rr.top() > self.height():
+            if rr.bottom() < TOP_H or rr.top() > self.height():
                 continue
             p.save()
-            p.setClipRect(QRect(HEADER_W, max(rr.top(), RULER_H), w - HEADER_W, rr.height()))
+            p.setClipRect(QRect(HEADER_W, max(rr.top(), TOP_H), w - HEADER_W, rr.height()))
             if r.kind == "track":
                 self._paint_waveform(p, r, rr)
             else:
@@ -223,6 +228,7 @@ class TimelineCanvas(QWidget):
             self._paint_header(p, r, rr)
         p.restore()
         self._paint_ruler(p)
+        self._paint_sections(p)
         p.fillRect(QRect(0, 0, HEADER_W, RULER_H), QColor(theme.BG2))
         p.setPen(QColor(theme.FG_DIM))
         g = self.s.project.beat_grid
@@ -519,6 +525,54 @@ class TimelineCanvas(QWidget):
             col = QColor("#4caf50") if self.s.engine.loop_enabled else QColor("#666")
             p.fillRect(QRectF(max(HEADER_W, x0), 0, max(0, x1 - max(HEADER_W, x0)), 4), col)
 
+    def section_spans(self) -> list[tuple]:
+        ms = sorted(self.s.project.sections, key=lambda m: m.time)
+        end = self.s.duration
+        return [(m, m.time, ms[i + 1].time if i + 1 < len(ms) else end) for i, m in enumerate(ms)]
+
+    def _paint_sections(self, p: QPainter) -> None:
+        w = self.width()
+        band = QRect(0, RULER_H, w, SECTION_H)
+        p.fillRect(band, QColor("#181b20"))
+        p.setFont(self.font_small)
+        fm = QFontMetrics(self.font_small)
+        for m, a, b in self.section_spans():
+            x0, x1 = self.x_of(a), self.x_of(b)
+            if x1 < HEADER_W or x0 > w:
+                continue
+            x0c = max(HEADER_W, x0)
+            col = QColor(m.color or "#5C6BC0")
+            fill = QColor(col)
+            fill.setAlpha(90)
+            r = QRectF(x0c, RULER_H + 2, max(1.0, x1 - x0c - 1), SECTION_H - 4)
+            p.fillRect(r, fill)
+            sel = m.id == self.s.sel_section
+            p.setPen(QPen(QColor(theme.SELECT) if sel else col, 2 if sel else 1))
+            p.drawRect(r)
+            if x0 >= HEADER_W:
+                p.setPen(QPen(col, 2))
+                p.drawLine(QPointF(x0, RULER_H), QPointF(x0, RULER_H + SECTION_H))
+            p.setPen(QColor("#ffffff"))
+            p.drawText(r.adjusted(5, 0, -3, 0), Qt.AlignVCenter | Qt.AlignLeft,
+                       fm.elidedText(m.name, Qt.ElideRight, int(max(0, r.width() - 8))))
+        hr = QRect(0, RULER_H, HEADER_W, SECTION_H)
+        p.fillRect(hr, QColor(theme.BG2))
+        p.setPen(QColor(theme.FG_DIM))
+        p.drawText(hr.adjusted(10, 0, -6, 0), Qt.AlignVCenter | Qt.AlignLeft, "Sections")
+        p.drawText(hr.adjusted(10, 0, -8, 0), Qt.AlignVCenter | Qt.AlignRight, "＋ M")
+        p.setPen(QColor("#2a2e36"))
+        p.drawLine(0, TOP_H - 1, w, TOP_H - 1)
+
+    def hit_section(self, pos) -> tuple[object, str]:
+        """(marker, "edge"|"body") under the mouse in the section band."""
+        for m, a, b in self.section_spans():
+            if abs(self.x_of(a) - pos.x()) <= 5 and self.x_of(a) >= HEADER_W:
+                return m, "edge"
+        for m, a, b in self.section_spans():
+            if self.x_of(a) <= pos.x() < self.x_of(b):
+                return m, "body"
+        return None, ""
+
     def _paint_overlay(self, p: QPainter) -> None:
         x = self._last_playhead_x if self._last_playhead_x >= 0 else int(self.x_of(self.s.engine.position()))
         if x >= HEADER_W:
@@ -589,6 +643,16 @@ class TimelineCanvas(QWidget):
                 self._drag = {"mode": "scrub"}
             self.update()
             return
+        if pos.y() < TOP_H:                     # section band
+            if pos.x() < HEADER_W:
+                self.s.add_section_at()             # header: add a section at the playhead
+                return
+            m, part = self.hit_section(pos)
+            if m is not None:
+                self.s.select_section(m.id)
+                if part == "edge":
+                    self._drag = {"mode": "section", "id": m.id, "t": m.time}
+            return
         r = self.row_at(pos.y())
         if pos.x() < HEADER_W:
             if r is not None and r.kind == "lane":
@@ -628,7 +692,10 @@ class TimelineCanvas(QWidget):
             self._hover_tip(e)
             return
         if d["mode"] == "scrub":
-            self.s.engine.seek(max(0.0, self.t_of(pos.x())))
+            t = max(0.0, self.t_of(pos.x()))
+            self.s.engine.seek(t)
+            if self.scrub_audio:
+                self.s.engine.scrub(t)
             self.update()
         elif d["mode"] == "loop":
             t = max(0.0, self.t_of(pos.x()))
@@ -654,11 +721,29 @@ class TimelineCanvas(QWidget):
             d["cur"] = pos
             d["moved"] = True
             self.update()
+        elif d["mode"] == "section":
+            t = max(0.0, self.t_of(pos.x()))
+            if self.s.snap and not (e.modifiers() & Qt.AltModifier):
+                b = self.s.project.beat_grid.nearest_beat(t)
+                if b is not None and abs(b - t) * self.pps < 12:
+                    t = b
+            m = next((x for x in self.s.project.sections if x.id == d["id"]), None)
+            if m:
+                d["moved"] = True
+                m.time = t                       # live preview; committed (with undo) on release
+                self.invalidate()
 
     def mouseReleaseEvent(self, e) -> None:
         d = self._drag
         self._drag = None
         if not d:
+            return
+        if d["mode"] == "section":
+            m = next((x for x in self.s.project.sections if x.id == d["id"]), None)
+            if m and d.get("moved"):
+                new_t = m.time
+                m.time = d["t"]                  # restore, then move through the undo stack
+                self.s.move_section(m.id, new_t)
             return
         if d["mode"] == "move":
             if d["moved"] and d["preview"]:
@@ -696,7 +781,14 @@ class TimelineCanvas(QWidget):
 
     def mouseDoubleClickEvent(self, e) -> None:
         pos = e.position()
-        if e.button() != Qt.LeftButton or pos.y() < RULER_H or pos.x() < HEADER_W:
+        if e.button() == Qt.LeftButton and RULER_H <= pos.y() < TOP_H and pos.x() >= HEADER_W:
+            m, _ = self.hit_section(pos)
+            if m is not None and m.time <= self.t_of(pos.x()):
+                self.rename_section_requested.emit(m.id)
+            else:
+                self.s.add_section_at(max(0.0, self.t_of(pos.x())))
+            return
+        if e.button() != Qt.LeftButton or pos.y() < TOP_H or pos.x() < HEADER_W:
             return
         r = self.row_at(pos.y())
         if not r or r.kind != "lane":
@@ -723,7 +815,7 @@ class TimelineCanvas(QWidget):
         if dx:
             self.set_view(t0=self.t0 - dx / 120 * self.visible_seconds * 0.1)
         if dy:
-            extra = self.content_height() - (self.height() - RULER_H)
+            extra = self.content_height() - (self.height() - TOP_H)
             if extra > 0:
                 self.v_off = int(max(0, min(extra, self.v_off - dy / 2)))
                 self.invalidate()
@@ -767,11 +859,54 @@ class TimelineCanvas(QWidget):
         QToolTip.hideText()
 
     # ------------------------------------------------------------- context menu
+    def _section_menu(self, e) -> None:
+        pos = e.position()
+        s = self.s
+        t = max(0.0, self.t_of(pos.x()))
+        sec, _ = self.hit_section(pos)
+        m = QMenu(self)
+        m.addAction("Add section here", lambda: s.add_section_at(t))
+        if sec is not None:
+            s.select_section(sec.id)
+            from ..core import arrange
+            reps = arrange.repeats_of(s.project, sec)
+            m.addAction(f"Rename '{sec.name}'…", lambda: self.rename_section_requested.emit(sec.id))
+            m.addSeparator()
+            if reps:
+                names = ", ".join(r.name for r in reps)
+                m.addAction(f"Copy cues to all repeats ({names})", lambda: s.copy_section_to_repeats(sec.id))
+                m.addAction("Copy cues to all repeats, replacing their cues",
+                            lambda: s.copy_section_to_repeats(sec.id, replace=True))
+            sub = m.addMenu("Copy cues to section")
+            for other in sorted(s.project.sections, key=lambda x: x.time):
+                if other.id != sec.id:
+                    sub.addAction(other.name, lambda oid=other.id: s.copy_section_to_repeats(sec.id, [oid]))
+            m.addAction("Paste into this section (aligned)", lambda: s.paste_into_section(sec.id))
+            m.addAction("Select cues in section", lambda: s.select_section_cues(sec.id))
+            r = s.section_range(sec.id)
+            m.addAction("Pattern fill this section…", lambda: self.pattern_fill_requested.emit(r[0], r[1]))
+            m.addAction("Loop this section", lambda: self._loop_range(r))
+            m.addSeparator()
+            m.addAction(f"Delete '{sec.name}'", lambda: s.delete_section(sec.id))
+        m.addSeparator()
+        m.addAction("Create sections from AI suggestions", s.sections_from_ai)
+        m.exec(e.globalPosition().toPoint())
+
+    def _loop_range(self, r) -> None:
+        self.s.engine.loop = (r[0], r[1])
+        self.s.project.loop = (r[0], r[1])
+        self.s.engine.loop_enabled = True
+        self.s.status.emit("Looping section (L toggles loop)")
+        self.invalidate()
+
     def _context_menu(self, e) -> None:
         pos = e.position()
         s = self.s
+        if RULER_H <= pos.y() < TOP_H:
+            self._section_menu(e)
+            return
         m = QMenu(self)
-        r = self.row_at(pos.y()) if pos.y() >= RULER_H else None
+        r = self.row_at(pos.y()) if pos.y() >= TOP_H else None
         t = max(0.0, self.t_of(pos.x()))
         cid = self.hit_cue(pos)
         sid = None if cid else self.hit_suggestion(pos)
@@ -805,6 +940,10 @@ class TimelineCanvas(QWidget):
             vis = [x.id for x in s.project.visible_suggestions() if x.lane_id == r.id]
             if vis:
                 m.addAction(f"Accept all {len(vis)} visible suggestions in lane", lambda: s.accept(vis))
+        if s.sel_cues:
+            m.addAction(f"Copy {len(s.sel_cues)} cue(s)", s.copy_selected)
+        if s.clipboard and not s.clipboard.empty:
+            m.addAction(f"Paste {len(s.clipboard.cues)} cue(s) here", lambda: s.paste_at(t))
         m.addSeparator()
         m.addAction("Move playhead here", lambda: s.engine.seek(t))
         if s.project.beat_grid.beats:
@@ -843,10 +982,10 @@ class TimelinePanel(QWidget):
         self.hbar.setPageStep(page)
         self.hbar.setSingleStep(max(1, page // 20))
         self.hbar.setValue(int(c.t0 * 1000))
-        extra = c.content_height() - (c.height() - RULER_H)
+        extra = c.content_height() - (c.height() - TOP_H)
         self.vbar.setVisible(extra > 0)
         self.vbar.setRange(0, max(0, extra))
-        self.vbar.setPageStep(max(1, c.height() - RULER_H))
+        self.vbar.setPageStep(max(1, c.height() - TOP_H))
         self.vbar.setValue(c.v_off)
         self._updating = False
 

@@ -23,7 +23,7 @@ from .workers import Job, start_job
 
 
 # single-key shortcuts that lanes may not use as tap keys
-RESERVED_KEYS = set("axsgiolcbfzptqw")
+RESERVED_KEYS = set("axsgiolcbfzptqwm")
 
 
 def guess_role(filename: str, is_first: bool) -> str:
@@ -404,13 +404,13 @@ class Session(QObject):
     def set_temp_hold(self, seconds: float) -> None:
         self.settings.set("temp_hold", round(max(0.0, seconds), 3))
 
-    def add_at_playhead(self, temp: bool = False, lane_id: str | None = None):
+    def add_at_playhead(self, temp: bool = False, lane_id: str | None = None, t: float | None = None):
         """Drop a cue (or a Temp with the current hold time) into the active lane at the
-        playhead — the heard position while playing."""
+        playhead — the heard position while playing (or at time t, e.g. a MIDI hit)."""
         lane_id = lane_id or self.active_lane_id
         if not lane_id:
             return None
-        t = self.engine.position()
+        t = self.engine.position() if t is None else t
         with self.edit("Add temp" if temp else "Add cue"):
             c = editing.add_cue(self.project, lane_id, t, self.snap)
             if temp:
@@ -427,6 +427,150 @@ class Session(QObject):
             for c in self.project.cues:
                 if c.id in self.sel_cues:
                     c.duration = (c.duration or self.temp_hold) if temp else None
+
+    # ------------------------------------------------------------------ sections
+    sel_section: str = ""
+
+    def song_end(self) -> float:
+        return self.duration
+
+    def select_section(self, sid: str) -> None:
+        self.sel_section = sid
+        self.selection_changed.emit()
+
+    def add_section_at(self, t: float | None = None, name: str = "") -> str:
+        from ..core import arrange
+        t = self.engine.position() if t is None else t
+        with self.edit("Add section"):
+            m = arrange.add_section(self.project, t, name)
+            arrange.recolor_by_kind(self.project)
+        self.sel_section = m.id
+        return m.id
+
+    def rename_section(self, sid: str, name: str, all_of_kind: bool = False) -> None:
+        from ..core import arrange
+        m = next((x for x in self.project.sections if x.id == sid), None)
+        if not m or not name.strip():
+            return
+        with self.edit("Rename section"):
+            if all_of_kind:
+                kind = m.kind
+                same = [x for x in sorted(self.project.sections, key=lambda x: x.time) if x.kind == kind]
+                base = name.strip()
+                import re
+                base = re.sub(r"[\s#]*\d+$", "", base).strip() or base
+                for k, x in enumerate(same, 1):
+                    x.name = f"{base} {k}" if len(same) > 1 else base
+            else:
+                m.name = name.strip()
+            arrange.recolor_by_kind(self.project)
+
+    def move_section(self, sid: str, t: float) -> None:
+        m = next((x for x in self.project.sections if x.id == sid), None)
+        if m:
+            with self.edit("Move section"):
+                m.time = editing.snap_time(self.project, max(0.0, t), self.snap)
+                self.project.sections.sort(key=lambda x: x.time)
+
+    def delete_section(self, sid: str) -> None:
+        with self.edit("Delete section"):
+            self.project.sections = [x for x in self.project.sections if x.id != sid]
+        if self.sel_section == sid:
+            self.sel_section = ""
+
+    def sections_from_ai(self) -> int:
+        from ..core import arrange
+        with self.edit("Sections from AI"):
+            arrange.sections_from_suggestions(self.project)
+        return len(self.project.sections)
+
+    def section_range(self, sid: str) -> tuple[float, float] | None:
+        from ..core import arrange
+        m = next((x for x in self.project.sections if x.id == sid), None)
+        return arrange.section_bounds(self.project, m, self.song_end()) if m else None
+
+    def copy_section_to_repeats(self, sid: str, targets: list[str] | None = None, replace: bool = False,
+                                lanes: set[str] | None = None) -> int:
+        from ..core import arrange
+        m = next((x for x in self.project.sections if x.id == sid), None)
+        if not m:
+            return 0
+        tg = [x for x in self.project.sections if x.id in targets] if targets is not None \
+            else arrange.repeats_of(self.project, m)
+        if not tg:
+            self.status.emit(f"No other '{m.kind}' sections — name repeats the same (e.g. Chorus 1, Chorus 2)")
+            return 0
+        with self.edit("Copy section cues"):
+            n = arrange.copy_section_to(self.project, m, tg, self.song_end(), lanes, replace)
+        self.status.emit(f"Copied '{m.name}' to {len(tg)} section(s): {n} cues")
+        return n
+
+    def select_section_cues(self, sid: str) -> None:
+        r = self.section_range(sid)
+        if r:
+            self.select(cues={c.id for c in self.project.cues if r[0] - 0.02 <= c.time < r[1] - 0.02})
+
+    # ------------------------------------------------------------------ clipboard
+    clipboard = None
+
+    def copy_selected(self) -> int:
+        from ..core import arrange
+        if not self.sel_cues:
+            return 0
+        self.clipboard = arrange.copy_cues(self.project, set(self.sel_cues))
+        self.status.emit(f"Copied {len(self.clipboard.cues)} cue(s)")
+        return len(self.clipboard.cues)
+
+    def cut_selected(self) -> int:
+        n = self.copy_selected()
+        if n:
+            with self.edit("Cut"):
+                editing.delete_cues(self.project, set(self.sel_cues))
+                self.sel_cues.clear()
+        return n
+
+    def paste_at(self, t: float | None = None, lane_override: str | None = None) -> int:
+        from ..core import arrange
+        if not self.clipboard or self.clipboard.empty:
+            self.status.emit("Clipboard is empty")
+            return 0
+        t = self.engine.position() if t is None else t
+        if self.snap:
+            t = editing.snap_time(self.project, t, True)
+        with self.edit("Paste"):
+            made = arrange.paste(self.project, self.clipboard, t, lane_override=lane_override)
+            self.sel_cues = {c.id for c in made}
+        self.status.emit(f"Pasted {len(made)} cue(s)")
+        return len(made)
+
+    def paste_into_section(self, sid: str | None = None) -> int:
+        """Paste keeping the copied cues' position relative to their section start."""
+        from ..core import arrange
+        if not self.clipboard or self.clipboard.empty:
+            self.status.emit("Clipboard is empty")
+            return 0
+        m = next((x for x in self.project.sections if x.id == sid), None) if sid else \
+            arrange.section_at(self.project, self.engine.position())
+        if not m:
+            self.status.emit("No section here — add section markers first (M)")
+            return 0
+        anchor = arrange.section_anchor(self.project, m, self.clipboard)
+        end = self.section_range(m.id)[1]
+        with self.edit("Paste into section"):
+            made = arrange.paste(self.project, self.clipboard, anchor, end=end)
+            self.sel_cues = {c.id for c in made}
+        self.status.emit(f"Pasted {len(made)} cue(s) into '{m.name}'")
+        return len(made)
+
+    def pattern_fill(self, lane_id: str, t0: float, t1: float, step, offset_beats: float = 0.0,
+                     temp: bool = False, replace: bool = False, label: str = "") -> int:
+        from ..core import arrange
+        with self.edit("Pattern fill"):
+            made = arrange.pattern_fill(self.project, lane_id, t0, t1, step, offset_beats,
+                                        self.temp_hold if temp else None, replace, label)
+            self.sel_cues = {c.id for c in made}
+        self.status.emit(f"Pattern fill: {len(made)} cue(s)")
+        return len(made)
 
     def tap(self, lane_id: str) -> None:
         """Tap a cue at the current (heard) playback position. Live taps are not

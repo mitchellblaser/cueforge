@@ -268,6 +268,82 @@ class SongDialog(QDialog):
         super().accept()
 
 
+class PatternDialog(QDialog):
+    """Fill a range with cues/Temps every bar / beat / 8th … in one lane."""
+
+    def __init__(self, session, t0: float, t1: float, parent=None) -> None:
+        super().__init__(parent)
+        from ..core.arrange import PATTERN_STEPS
+        self.setWindowTitle("Pattern fill")
+        self.s, self.t0, self.t1 = session, t0, t1
+        p = session.project
+        form = QFormLayout(self)
+        form.addRow(QLabel(f"From {seconds_to_tc(t0, p.frame_rate, p.tc_offset)} to "
+                           f"{seconds_to_tc(t1, p.frame_rate, p.tc_offset)}"))
+        self.lane = QComboBox()
+        for l in p.lanes:
+            self.lane.addItem(l.name, l.id)
+        self.lane.setCurrentIndex(max(0, self.lane.findData(session.active_lane_id)))
+        form.addRow("Lane", self.lane)
+        self.step = QComboBox()
+        for k in PATTERN_STEPS:
+            self.step.addItem(k, k)
+        self.step.setCurrentIndex(max(0, self.step.findData(session.settings.get("pattern_step", "beat"))))
+        form.addRow("Every", self.step)
+        self.offset = QDoubleSpinBox()
+        self.offset.setRange(0, 15.75)
+        self.offset.setSingleStep(0.25)
+        self.offset.setSuffix(" beats")
+        self.offset.setToolTip("Shift the pattern, e.g. 0.5 for off-beats")
+        form.addRow("Offset", self.offset)
+        self.kind = QComboBox()
+        self.kind.addItem("Cues", False)
+        self.kind.addItem(f"Temps (hold {session.temp_hold:g} s)", True)
+        form.addRow("Add", self.kind)
+        self.label = QLineEdit(session.settings.get("pattern_label", ""))
+        self.label.setPlaceholderText("optional, {n} = step number, e.g. Chase {n}")
+        form.addRow("Label", self.label)
+        self.replace = QCheckBox("Replace existing cues in this lane and range")
+        form.addRow(self.replace)
+        if not p.beat_grid.beats:
+            form.addRow(QLabel("<span style='color:#ffb74d'>No beat grid: steps fall every 0.5 s.</span>"))
+        form.addRow(_buttons(self, "Fill"))
+
+    def accept(self) -> None:
+        self.s.settings.set("pattern_step", self.step.currentData())
+        self.s.settings.set("pattern_label", self.label.text())
+        self.s.pattern_fill(self.lane.currentData(), self.t0, self.t1, self.step.currentData(),
+                            self.offset.value(), self.kind.currentData(), self.replace.isChecked(),
+                            self.label.text().strip())
+        super().accept()
+
+
+class SectionDialog(QDialog):
+    def __init__(self, session, sid: str, parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Section")
+        self.s, self.sid = session, sid
+        m = next(x for x in session.project.sections if x.id == sid)
+        form = QFormLayout(self)
+        self.name = QLineEdit(m.name)
+        self.name.setToolTip("Sections with the same name (ignoring a trailing number) are repeats: "
+                             "Chorus 1, Chorus 2 …")
+        form.addRow("Name", self.name)
+        from ..core import arrange
+        n = len(arrange.repeats_of(session.project, m))
+        self.all = QCheckBox(f"Rename all {n + 1} '{m.kind}' sections (numbered)")
+        self.all.setVisible(n > 0)
+        form.addRow(self.all)
+        form.addRow(QLabel(f"<span style='color:{theme.FG_DIM}'>Tip: name repeats alike (Verse 1, Verse 2) "
+                           "so 'Copy cues to all repeats' finds them.</span>"))
+        form.addRow(_buttons(self))
+        self.name.selectAll()
+
+    def accept(self) -> None:
+        self.s.rename_section(self.sid, self.name.text(), self.all.isChecked())
+        super().accept()
+
+
 class CueDialog(QDialog):
     def __init__(self, session, cue_id: str, parent=None) -> None:
         super().__init__(parent)
@@ -493,6 +569,12 @@ SHORTCUTS = [
               ("Shift-drag in ruler", "Set loop region"), ("Delete / Backspace", "Delete selected"),
               ("S", "Snap on/off"), ("G", "Snap selected cues to grid"), ("Ctrl+A", "Select all cues"),
               ("Ctrl+Z / Ctrl+Shift+Z", "Undo / redo"), ("Esc", "Clear selection")]),
+    ("Arrange", [("M / Shift+M", "Add section marker at playhead / rename section"),
+                 ("Ctrl+C / Ctrl+X / Ctrl+V", "Copy / cut / paste cues at the playhead"),
+                 ("Ctrl+Shift+V", "Paste into the section at the playhead, aligned to its start"),
+                 ("Ctrl+Shift+C", "Copy this section's cues to all its repeats"),
+                 ("Ctrl+P", "Pattern fill (loop region, section or selection)"),
+                 ("Section band", "Drag a marker's edge to move it, double-click to rename, right-click for more")]),
     ("Grid (live music)", [("Grid ▸ Tap-along grid, then T", "Tap every beat while playing; taps snap to the drums"),
                            ("Grid ▸ Halve / Double tempo", "Fix a grid locked to 8th or half notes")]),
     ("AI suggestions", [("Tab / Shift+Tab", "Jump to next / previous suggestion"),

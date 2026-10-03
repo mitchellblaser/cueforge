@@ -159,6 +159,8 @@ on the timeline.
      thresholds*). It only offers them; it never applies them by itself.
 
 6. **Program manually (fast)**
+   - **Scrub**: drag in the ruler or a waveform while stopped to hear the audio under the
+     playhead. Speed and direction follow your drag (*View › Scrub audio* turns it off).
    - The **active lane** is highlighted with ▶. Click a lane header (or empty space in a lane),
      use **↑ / ↓**, or pick it in the toolbar's *Active lane* box.
    - **＋ Cue (Q)** drops a normal cue at the playhead in the active lane.
@@ -176,7 +178,39 @@ on the timeline.
    - Loop a region with **Shift-drag in the ruler**, or with **I / O**, then **L**. Slow
      playback with **[** (0.75×, 0.5×).
 
-7. **Export** (*File › Export*)
+7. **Sections, copy & paste, patterns** (*Arrange* menu)
+   - The **section band** under the ruler holds your song sections. Add a marker with
+     **M** (or click *＋ M*). Drag its edge to move it, double-click to rename. *Create
+     sections from AI suggestions* turns the analysis into markers you can then fix.
+   - Sections with the same name (*Chorus 1*, *Chorus 2*) are repeats. Right-click a section
+     › **Copy cues to all repeats**, or to any one section. Cues are placed by beats from the
+     section start, so they land correctly even if a live band drifted, and they're cut at
+     the end of a shorter section.
+   - **Ctrl+C / Ctrl+V** pastes at the playhead. **Ctrl+Shift+V** pastes into the section
+     under the playhead, keeping the cues' position inside their section.
+   - **Pattern fill (Ctrl+P)**: a cue or Temp every bar, 2 beats, beat, 8th, triplet or 16th
+     over the loop region, a section or the selection. Options for offset (e.g. off-beats),
+     labels ("Chase {n}") and replacing existing cues.
+
+8. **MIDI & OSC control** (*File › MIDI & OSC control…*)
+   - **MIDI**: pick the input and output ports. By default the bottom row of 8 pads (notes
+     36–43) drops cues into lanes 1–8, and the next row (44–51) drops Temps. Remap anything
+     with **Learn**. Other actions you can map: play/stop, next/previous lane, song or
+     suggestion, accept/reject, undo, add section, loop.
+   - **Temp pads** use the Hold time, or optionally *how long you hold the pad*, for live
+     strobes.
+   - **Feedback**: pads light in their lane's colour (Launchpad / APC mini mk2-style velocity
+     palette, or plain on/off). The active lane's Temp pad is full brightness and pads flash
+     white on a hit.
+   - **OSC** (TouchOSC, Open Stage Control, a Stream Deck plugin…): listens on port 8000 by
+     default. Addresses: `/cueforge/lane/N/cue|temp`, `/cueforge/cue|temp [lane]`,
+     `/cueforge/play|stop|loop|undo|section`, `/cueforge/lane/next|prev`,
+     `/cueforge/song/next|prev`, `/cueforge/suggestion/next|prev|accept|reject`. Float
+     arguments 1/0 are press/release; integers are lane numbers.
+   - OSC feedback: lane names, colours, active lane, song name, and timecode while playing.
+   - Hits are timestamped with the heard playback position the moment they arrive.
+
+9. **Export** (*File › Export*)
    - **grandMA3**: each lane becomes a timecode track targeting the lane's **MA3 sequence**.
      - **Normal cues fire Go+** by default, which steps to the next cue without
        retriggering the way a Goto can. The first cue of each lane is a **Goto** (optional,
@@ -212,6 +246,22 @@ on the timeline.
 
 ---
 
+## Screens and panels
+
+Every panel (Setlist, AI Suggestions, Cue list, Lanes, Mixer) is its own dock: drag it
+anywhere, or use *View › Pop out*.
+- **View › Dual-monitor layout (Ctrl+Shift+D)** moves all panels into a second window on
+  your other screen, so the timeline gets the whole main screen. Keyboard shortcuts work
+  from both windows, and the layout is remembered.
+- *View › Reset panel layout* puts everything back.
+
+## Round trip from the console
+
+*File › Import grandMA3 timecode XML…* reads timecode shows back in, for example after
+cues were moved on the desk. Each file goes to the song with the same name (or the current
+song). Lanes are matched by sequence (new ones are created). Temp On/Off pairs become Temps,
+and cue numbers and labels are kept. Choose **Replace** (console is master) or **Merge**.
+
 ## Keyboard shortcuts (F1 in the app)
 
 | Key | Action |
@@ -235,6 +285,12 @@ on the timeline.
 | [ / ] | Playback speed |
 | C / B | Click / cue blips on-off |
 | F / Z | Follow playhead / zoom to fit |
+| M / Shift+M | Add / rename section |
+| Ctrl+C / X / V | Copy / cut / paste at playhead |
+| Ctrl+Shift+V | Paste into section (aligned) |
+| Ctrl+Shift+C | Copy section cues to all repeats |
+| Ctrl+P | Pattern fill |
+| Ctrl+Shift+D | Dual-monitor layout |
 | Ctrl + wheel, + / − | Zoom |
 | Ctrl+PgUp / Ctrl+PgDn | Previous / next song in the setlist |
 | Ctrl+Shift+N | Add a song |

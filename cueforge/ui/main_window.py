@@ -17,13 +17,38 @@ from ..core.project_io import EXTENSION
 from ..core.timecode import seconds_to_tc
 from . import theme
 from .dialogs import (AnalysisDialog, AudioDeviceDialog, CueDialog, LTCDialog, MA3ExportDialog,
-                      ProjectSettingsDialog, ShortcutsDialog, SongDialog, TempoDialog)
+                      PatternDialog, ProjectSettingsDialog, SectionDialog, ShortcutsDialog, SongDialog,
+                      TempoDialog)
 from .mixer import MixerPanel
 from .panels import CueTable, LanePanel, SongList, SuggestionPanel
 from .session import RESERVED_KEYS, Session
 from .timeline import TimelinePanel
 
 SPEEDS = [0.5, 0.75, 1.0]
+
+
+class PanelsWindow(QMainWindow):
+    """Second window holding the panels in dual-monitor mode."""
+
+    def __init__(self, main: "MainWindow") -> None:
+        super().__init__()
+        self.main = main
+        self._closing = False
+        self.setWindowTitle("CueForge — Panels")
+        self.setDockOptions(QMainWindow.AnimatedDocks | QMainWindow.AllowTabbedDocks)
+        self.setCentralWidget(None)
+
+    def close_for_real(self) -> None:
+        self._closing = True
+        self.close()
+        self.deleteLater()
+
+    def closeEvent(self, e) -> None:
+        if not self._closing:            # closing the panels window returns the panels
+            e.ignore()
+            self.main.dual_monitor(False)
+            return
+        e.accept()
 
 
 class MainWindow(QMainWindow):
@@ -38,6 +63,8 @@ class MainWindow(QMainWindow):
         self.canvas = self.timeline.canvas
         self.setCentralWidget(self.timeline)
         self.canvas.edit_cue_requested.connect(self.edit_cue)
+        self.canvas.rename_section_requested.connect(lambda sid: SectionDialog(self.s, sid, self).exec())
+        self.canvas.pattern_fill_requested.connect(lambda a, b: PatternDialog(self.s, a, b, self).exec())
 
         # right dock: suggestions / cues / lanes
         self.suggestions = SuggestionPanel(self.s)
@@ -47,36 +74,42 @@ class MainWindow(QMainWindow):
         self.cue_table = CueTable(self.s)
         self.cue_table.seek_requested.connect(self._seek_show)
         self.lanes = LanePanel(self.s)
-        self.tabs = QTabWidget()
-        self.tabs.addTab(self.suggestions, "AI Suggestions")
-        self.tabs.addTab(self.cue_table, "Cue list")
-        self.tabs.addTab(self.lanes, "Lanes")
-        right = QDockWidget("Inspector", self)
-        right.setObjectName("inspector")
-        right.setWidget(self.tabs)
-        right.setFeatures(QDockWidget.DockWidgetMovable | QDockWidget.DockWidgetFloatable)
-        right.setMinimumWidth(380)
-        self.addDockWidget(Qt.RightDockWidgetArea, right)
+        # every panel is its own dock: pop any of them out, or move them to a second
+        # screen (View ▸ Dual-monitor layout)
+        self.dock_sugs = self._dock("AI Suggestions", "dock_suggestions", self.suggestions, Qt.RightDockWidgetArea)
+        self.dock_sugs.setMinimumWidth(380)
+        self.dock_cues = self._dock("Cue list", "dock_cuelist", self.cue_table, Qt.RightDockWidgetArea)
+        self.dock_lanes = self._dock("Lanes", "dock_lanes", self.lanes, Qt.RightDockWidgetArea)
+        self.tabifyDockWidget(self.dock_sugs, self.dock_cues)
+        self.tabifyDockWidget(self.dock_cues, self.dock_lanes)
+        self.dock_sugs.raise_()
 
-        # left dock: setlist
         self.setlist = SongList(self.s)
         self.setlist.open_settings.connect(self.song_settings)
         self.setlist.add_requested.connect(self.add_song)
-        left = QDockWidget("Setlist", self)
-        left.setObjectName("setlist")
-        left.setWidget(self.setlist)
-        left.setFeatures(QDockWidget.DockWidgetMovable | QDockWidget.DockWidgetFloatable)
-        left.setMinimumWidth(250)
-        self.addDockWidget(Qt.LeftDockWidgetArea, left)
+        self.dock_setlist = self._dock("Setlist", "setlist", self.setlist, Qt.LeftDockWidgetArea)
+        self.dock_setlist.setMinimumWidth(250)
 
         self.mixer = MixerPanel(self.s)
-        bottom = QDockWidget("Mixer", self)
-        bottom.setObjectName("mixer")
-        bottom.setWidget(self.mixer)
-        bottom.setFeatures(QDockWidget.DockWidgetMovable | QDockWidget.DockWidgetFloatable)
-        self.addDockWidget(Qt.BottomDockWidgetArea, bottom)
+        self.dock_mixer = self._dock("Mixer", "mixer", self.mixer, Qt.BottomDockWidgetArea)
+        self.panels_window = None
 
         self._build_toolbar()
+        from ..control.hub import ControlHub
+        self.control = ControlHub(self.s, {
+            "transport:toggle": self.s.engine.toggle,
+            "transport:stop": lambda: (self.s.engine.pause(), self.go_start()),
+            "sugg:next": lambda: self.jump_suggestion(1),
+            "sugg:prev": lambda: self.jump_suggestion(-1),
+            "sugg:accept": self.accept_selected,
+            "sugg:reject": self.reject_selected,
+            "edit:undo": self._undo,
+            "section:add": lambda: self.s.add_section_at(),
+            "song:next": lambda: self._step_song(1),
+            "song:prev": lambda: self._step_song(-1),
+            "loop:toggle": lambda: self.a_loop.toggle(),
+        })
+        self.control.status.connect(lambda m: self.statusBar().showMessage(m, 5000))
         self._build_menus()
         self._build_statusbar()
         self._tap_shortcuts: list[QShortcut] = []
@@ -117,7 +150,7 @@ class MainWindow(QMainWindow):
         from PySide6.QtCore import QEvent
         from PySide6.QtWidgets import QAbstractSpinBox, QLineEdit, QPlainTextEdit
         if ev.type() == QEvent.KeyPress and ev.key() in (Qt.Key_Tab, Qt.Key_Backtab) \
-                and isinstance(obj, QWidget) and obj.window() is self:
+                and isinstance(obj, QWidget) and obj.window() in (self, self.panels_window):
             if not isinstance(obj, (QLineEdit, QPlainTextEdit, QAbstractSpinBox)):
                 back = ev.key() == Qt.Key_Backtab or bool(ev.modifiers() & Qt.ShiftModifier)
                 self.jump_suggestion(-1 if back else 1)
@@ -125,6 +158,92 @@ class MainWindow(QMainWindow):
         return False
 
     # ================================================================ building
+    def _dock(self, title: str, name: str, widget, area) -> QDockWidget:
+        d = QDockWidget(title, self)
+        d.setObjectName(name)
+        d.setWidget(widget)
+        d.setFeatures(QDockWidget.DockWidgetMovable | QDockWidget.DockWidgetFloatable |
+                      QDockWidget.DockWidgetClosable)
+        self.addDockWidget(area, d)
+        return d
+
+    def _show_panel(self, dock: QDockWidget) -> None:
+        dock.show()
+        dock.raise_()
+
+    def _docks(self) -> list[QDockWidget]:
+        return [self.dock_setlist, self.dock_sugs, self.dock_cues, self.dock_lanes, self.dock_mixer]
+
+    def pop_out(self, dock: QDockWidget) -> None:
+        dock.show()
+        dock.setFloating(True)
+        dock.resize(max(380, dock.width()), max(420, dock.height()))
+        dock.raise_()
+
+    # dual monitor ------------------------------------------------------
+    def dual_monitor(self, on: bool | None = None) -> None:
+        """Move Setlist / Inspector / Mixer into a second window, on the second screen if
+        there is one; the main window keeps the full-width timeline."""
+        from PySide6.QtGui import QGuiApplication
+        on = self.panels_window is None if on is None else on
+        if on and self.panels_window is None:
+            pw = PanelsWindow(self)
+            for d in self._docks():
+                self.removeDockWidget(d)
+                d.setFloating(False)
+            pw.addDockWidget(Qt.LeftDockWidgetArea, self.dock_setlist)
+            for d in (self.dock_sugs, self.dock_cues, self.dock_lanes):
+                pw.addDockWidget(Qt.RightDockWidgetArea, d)
+            pw.tabifyDockWidget(self.dock_sugs, self.dock_cues)
+            pw.tabifyDockWidget(self.dock_cues, self.dock_lanes)
+            pw.addDockWidget(Qt.BottomDockWidgetArea, self.dock_mixer)
+            for d in self._docks():
+                d.show()
+            self.dock_sugs.raise_()
+            screens = QGuiApplication.screens()
+            mine = self.screen()
+            other = next((sc for sc in screens if sc is not mine), None)
+            if other is not None:
+                pw.setGeometry(other.availableGeometry())
+                pw.showMaximized()
+                self.statusBar().showMessage("Dual-monitor layout: panels on the second screen", 5000)
+            else:
+                g = mine.availableGeometry() if mine else None
+                pw.resize(1000, 800)
+                pw.show()
+                self.statusBar().showMessage("Only one screen found — panels opened in their own window", 6000)
+            self.panels_window = pw
+            self._set_shortcut_scope(Qt.ApplicationShortcut)
+            self.s.settings.set("dual_monitor", True)
+        elif not on and self.panels_window is not None:
+            pw = self.panels_window
+            for d in self._docks():
+                pw.removeDockWidget(d)
+            self.addDockWidget(Qt.LeftDockWidgetArea, self.dock_setlist)
+            for d in (self.dock_sugs, self.dock_cues, self.dock_lanes):
+                self.addDockWidget(Qt.RightDockWidgetArea, d)
+            self.tabifyDockWidget(self.dock_sugs, self.dock_cues)
+            self.tabifyDockWidget(self.dock_cues, self.dock_lanes)
+            self.addDockWidget(Qt.BottomDockWidgetArea, self.dock_mixer)
+            for d in self._docks():
+                d.show()
+            self.panels_window = None
+            pw.close_for_real()
+            self._set_shortcut_scope(Qt.WindowShortcut)
+            self.s.settings.set("dual_monitor", False)
+        if hasattr(self, "a_dual"):
+            self.a_dual.blockSignals(True)
+            self.a_dual.setChecked(self.panels_window is not None)
+            self.a_dual.blockSignals(False)
+
+    def _set_shortcut_scope(self, ctx) -> None:
+        """With panels in a second window, shortcuts (Space, Q, W, tap keys…) must work
+        from either window."""
+        for a in self.actions():
+            a.setShortcutContext(ctx)
+        for sc in getattr(self, "_tap_shortcuts", []):
+            sc.setContext(ctx)
+
     def _act(self, text: str, slot, shortcut=None, checkable=False, tip: str = "") -> QAction:
         a = QAction(text, self)
         if shortcut:
@@ -243,6 +362,46 @@ class MainWindow(QMainWindow):
         self._act("Next lane", lambda: self.s.step_active_lane(1), "Down")
         self._sync_lane_combo()
 
+    # ================================================================ arrange
+    def _section_here(self):
+        from ..core import arrange
+        sid = self.s.sel_section if any(m.id == self.s.sel_section for m in self.s.project.sections) else ""
+        m = next((x for x in self.s.project.sections if x.id == sid), None)
+        return m or arrange.section_at(self.s.project, self.s.engine.position())
+
+    def _rename_section_here(self) -> None:
+        m = self._section_here()
+        if m:
+            SectionDialog(self.s, m.id, self).exec()
+
+    def _copy_section_here(self) -> None:
+        m = self._section_here()
+        if m:
+            self.s.copy_section_to_repeats(m.id)
+        else:
+            self.statusBar().showMessage("No section here — add markers with M", 4000)
+
+    def pattern_fill(self) -> None:
+        """Range: loop region, else selected section, else section at playhead, else selected
+        cues, else one bar from the playhead."""
+        s = self.s
+        rng = None
+        if s.engine.loop and (s.engine.loop_enabled or self.a_loop.isChecked()):
+            rng = s.engine.loop
+        if rng is None:
+            m = self._section_here()
+            if m:
+                rng = s.section_range(m.id)
+        if rng is None and len(s.sel_cues) > 1:
+            ts = [s.project.cue(c).time for c in s.sel_cues if s.project.cue(c)]
+            rng = (min(ts), max(ts) + 1e-3)
+        if rng is None:
+            t = s.engine.position()
+            g = s.project.beat_grid
+            bar = (g.downbeats[1] - g.downbeats[0]) if len(g.downbeats) > 1 else 2.0
+            rng = (t, t + bar)
+        PatternDialog(s, rng[0], rng[1], self).exec()
+
     def _sel_hold(self) -> None:
         """Selecting a Temp shows its hold in the Hold box (and edits it there)."""
         sel = [self.s.project.cue(c) for c in self.s.sel_cues]
@@ -300,6 +459,7 @@ class MainWindow(QMainWindow):
         f.addAction(self._act("Previous song", lambda: self._step_song(-1), "Ctrl+PgUp"))
         f.addAction(self._act("Next song", lambda: self._step_song(1), "Ctrl+PgDown"))
         f.addSeparator()
+        f.addAction(self._act("Import grandMA3 timecode XML…", self.import_ma3))
         ex = f.addMenu("Export")
         ex.addAction(self._act("grandMA3…", self.export_ma3, "Ctrl+E"))
         ex.addAction(self._act("CSV cue list…", self.export_csv))
@@ -307,6 +467,7 @@ class MainWindow(QMainWindow):
         f.addSeparator()
         f.addAction(self._act("Project settings (frame rate, TC offset)…", self.project_settings))
         f.addAction(self._act("Audio output…", self.audio_device))
+        f.addAction(self._act("MIDI && OSC control…", self.control_settings))
         f.addSeparator()
         f.addAction(self._act("Quit", self.close, QKeySequence.Quit))
 
@@ -331,6 +492,21 @@ class MainWindow(QMainWindow):
         self._act("Nudge left beat", lambda: self._arrow(-1, True), "Shift+Left")
         self._act("Nudge right beat", lambda: self._arrow(1, True), "Shift+Right")
         e.addAction(self._act("Add lane", lambda: self.s.add_lane()))
+
+        ar = mb.addMenu("A&rrange")
+        ar.addAction(self._act("Copy cues", self.s.copy_selected, QKeySequence.Copy))
+        ar.addAction(self._act("Cut cues", self.s.cut_selected, QKeySequence.Cut))
+        ar.addAction(self._act("Paste at playhead", lambda: self.s.paste_at(), QKeySequence.Paste))
+        ar.addAction(self._act("Paste into section at playhead (aligned to its start)",
+                               lambda: self.s.paste_into_section(), "Ctrl+Shift+V"))
+        ar.addSeparator()
+        ar.addAction(self._act("Add section marker at playhead", lambda: self.s.add_section_at(), "M"))
+        ar.addAction(self._act("Rename section at playhead…", self._rename_section_here, "Shift+M"))
+        ar.addAction(self._act("Copy this section's cues to all its repeats", self._copy_section_here,
+                               "Ctrl+Shift+C"))
+        ar.addAction(self._act("Create sections from AI suggestions", self.s.sections_from_ai))
+        ar.addSeparator()
+        ar.addAction(self._act("Pattern fill…", self.pattern_fill, "Ctrl+P"))
 
         a = mb.addMenu("&AI")
         a.addAction(self._act("Analyse audio…", self.analyse, "Ctrl+R"))
@@ -385,6 +561,22 @@ class MainWindow(QMainWindow):
         v = mb.addMenu("&View")
         for act in (self.a_zoom_in, self.a_zoom_out, self.a_fit, self.a_follow):
             v.addAction(act)
+        self.a_scrub = self._act("Scrub audio (hear audio while dragging the playhead)", self._set_scrub,
+                                 "Ctrl+Shift+S", True)
+        self.a_scrub.setChecked(self.canvas.scrub_audio)
+        v.addAction(self.a_scrub)
+        v.addSeparator()
+        panels = v.addMenu("Panels")
+        for d in self._docks():
+            panels.addAction(d.toggleViewAction())
+        pop = v.addMenu("Pop out")
+        for d in self._docks():
+            pop.addAction(d.windowTitle(), lambda d=d: self.pop_out(d))
+        self.a_dual = self._act("Dual-monitor layout (panels on the second screen)",
+                                lambda on: self.dual_monitor(on), "Ctrl+Shift+D", True)
+        v.addAction(self.a_dual)
+        v.addAction(self._act("Reset panel layout", self.reset_layout))
+        self.view_menu = v
 
         h = mb.addMenu("&Help")
         h.addAction(self._act("Keyboard shortcuts", lambda: ShortcutsDialog(self).exec(), "F1"))
@@ -474,7 +666,7 @@ class MainWindow(QMainWindow):
                 continue
             sc = QShortcut(QKeySequence(k.upper()), self)
             sc.setAutoRepeat(False)
-            sc.setContext(Qt.WindowShortcut)
+            sc.setContext(Qt.ApplicationShortcut if self.panels_window is not None else Qt.WindowShortcut)
             sc.activated.connect(lambda lid=lane.id: self.s.tap(lid))
             self._tap_shortcuts.append(sc)
 
@@ -537,6 +729,10 @@ class MainWindow(QMainWindow):
             self.s.project.loop = eng.loop
         eng.loop_enabled = v
         self.canvas.invalidate()
+
+    def _set_scrub(self, v: bool) -> None:
+        self.canvas.scrub_audio = v
+        self.s.settings.set("scrub_audio", v)
 
     def _set_follow(self, v: bool) -> None:
         self.canvas.follow = v
@@ -624,7 +820,7 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("No more suggestions in that direction", 3000)
             return
         self.s.select(sugs={sg.id})
-        self.tabs.setCurrentWidget(self.suggestions)
+        self._show_panel(self.dock_sugs)
         self._seek_show(sg.time)
 
     def accept_selected(self) -> None:
@@ -676,7 +872,7 @@ class MainWindow(QMainWindow):
         if isinstance(res, str):
             QMessageBox.warning(self, "Analysis failed", res[:2000])
             return
-        self.tabs.setCurrentWidget(self.suggestions)
+        self._show_panel(self.dock_sugs)
         n = len(self.s.project.visible_suggestions())
         msg = "\n".join(res.log[-6:])
         self.statusBar().showMessage(f"Analysis done — {n} suggestions visible. Tab to review.", 10000)
@@ -795,6 +991,52 @@ class MainWindow(QMainWindow):
     def project_settings(self) -> None:
         ProjectSettingsDialog(self.s, self).exec()
         self.canvas.invalidate()
+
+    def import_ma3(self, paths: list[str] | None = None, replace: bool | None = None) -> None:
+        """Round trip: bring timecode shows edited on the console back in. Each file goes to
+        the song with the same name (or the current song when importing one file)."""
+        from ..export.ma3_import import import_into_song, parse_timecode_xml
+        if paths is None:
+            paths, _ = QFileDialog.getOpenFileNames(self, "Import grandMA3 timecode XML", self._dir(),
+                                                    "grandMA3 XML (*.xml)")
+        if not paths:
+            return
+        if replace is None:
+            box = QMessageBox(self)
+            box.setWindowTitle("Import timecode")
+            box.setText("Replace the cues in the matching lanes with the console's version, or merge?")
+            rep = box.addButton("Replace (console is master)", QMessageBox.AcceptRole)
+            box.addButton("Merge", QMessageBox.ActionRole)
+            box.addButton(QMessageBox.Cancel)
+            box.exec()
+            if box.clickedButton() is None or box.clickedButton() == box.button(QMessageBox.Cancel):
+                return
+            replace = box.clickedButton() is rep
+        p = self.s.project
+        report = []
+        for path in paths:
+            try:
+                with open(path, encoding="utf-8") as fh:
+                    show = parse_timecode_xml(fh.read())
+            except Exception as exc:
+                report.append(f"{os.path.basename(path)}: could not read ({exc})")
+                continue
+            target = next((x for x in p.songs if x.name.lower() == show.name.lower()), None)
+            if target is None and len(paths) > 1:
+                target = p.add_song(show.name)
+            target = target or p.song
+            self.s.switch_song(target.id)
+            with self.s.edit("Import timecode"):
+                info = import_into_song(p, show, replace=replace)
+            self.s.lanes_changed.emit()
+            report.append(f"{show.name} → '{target.name}': {info['cues']} cues"
+                          + (f", new lanes: {', '.join(info['lanes_created'])}" if info["lanes_created"] else ""))
+        self.s.songs_changed.emit()
+        QMessageBox.information(self, "Imported", "\n".join(report))
+
+    def control_settings(self) -> None:
+        from .control_dialog import ControlDialog
+        ControlDialog(self.control, self).exec()
 
     def audio_device(self) -> None:
         AudioDeviceDialog(self.s, self).exec()
@@ -931,13 +1173,32 @@ class MainWindow(QMainWindow):
             e.ignore()
             return
         self.s.engine.close()
+        self.control.close()
         from PySide6.QtWidgets import QApplication
         QApplication.instance().removeEventFilter(self)
         from .workers import wait_all
         wait_all(2000)
+        dual = self.panels_window is not None
+        if dual:
+            self.dual_monitor(False)            # docks back home so the layout saves cleanly
+            self.s.settings.set("dual_monitor", True)
         self.s.settings.set("geometry", self.saveGeometry().toHex().data().decode())
         self.s.settings.set("state", self.saveState().toHex().data().decode())
         e.accept()
+
+    def reset_layout(self) -> None:
+        if self.panels_window is not None:
+            self.dual_monitor(False)
+        for d in self._docks():
+            d.setFloating(False)
+            d.show()
+        self.addDockWidget(Qt.LeftDockWidgetArea, self.dock_setlist)
+        for d in (self.dock_sugs, self.dock_cues, self.dock_lanes):
+            self.addDockWidget(Qt.RightDockWidgetArea, d)
+        self.tabifyDockWidget(self.dock_sugs, self.dock_cues)
+        self.tabifyDockWidget(self.dock_cues, self.dock_lanes)
+        self.addDockWidget(Qt.BottomDockWidgetArea, self.dock_mixer)
+        self.dock_sugs.raise_()
 
     def restore_layout(self) -> None:
         from PySide6.QtCore import QByteArray
@@ -946,3 +1207,7 @@ class MainWindow(QMainWindow):
             self.restoreGeometry(QByteArray.fromHex(g.encode()))
         if st:
             self.restoreState(QByteArray.fromHex(st.encode()))
+        QTimer.singleShot(0, self.control.apply)   # open configured MIDI / OSC
+        from PySide6.QtGui import QGuiApplication
+        if self.s.settings.get("dual_monitor") and len(QGuiApplication.screens()) > 1:
+            QTimer.singleShot(300, lambda: self.dual_monitor(True))

@@ -178,6 +178,24 @@ class ExportSettings:
     ltc_preroll: float = 2.0
 
 
+SECTION_COLORS = ["#5C6BC0", "#26A69A", "#EF5350", "#AB47BC", "#FFA726", "#66BB6A", "#29B6F6", "#EC407A"]
+
+
+@dataclass
+class SectionMarker:
+    """Start of a song section (verse, chorus…). A section runs to the next marker."""
+    name: str
+    time: float
+    color: str = ""
+    id: str = field(default_factory=new_id)
+
+    @property
+    def kind(self) -> str:
+        """Sections with the same kind are repeats: "Chorus 2" -> "chorus"."""
+        import re
+        return re.sub(r"[\s#]*\d+$", "", self.name).strip().lower() or self.name.lower()
+
+
 class Song:
     """One song in the setlist: its own audio, cues, suggestions, grid and timecode."""
 
@@ -196,6 +214,7 @@ class Song:
         self.seq_offset = 0          # added to each lane's MA3 sequence number for this song
         self.cue_start = 1.0         # first auto cue number for this song
         self.notes = ""
+        self.sections: list[SectionMarker] = []
 
     def duration_hint(self) -> float:
         end = max((c.time + (c.duration or 0) for c in self.cues), default=0.0)
@@ -213,6 +232,7 @@ class Song:
             "view": self.view,
             "tc_offset": self.tc_offset, "ma3_timecode": self.ma3_timecode,
             "seq_offset": self.seq_offset, "cue_start": self.cue_start,
+            "sections": [asdict(m) for m in self.sections],
         }
 
     @classmethod
@@ -235,12 +255,15 @@ class Song:
     def content(self) -> dict[str, Any]:
         return {"cues": [asdict(c) for c in self.cues],
                 "suggestions": [asdict(x) for x in self.suggestions],
-                "beat_grid": asdict(self.beat_grid)}
+                "beat_grid": asdict(self.beat_grid),
+                "sections": [asdict(m) for m in self.sections]}
 
     def restore_content(self, d: dict[str, Any]) -> None:
         self.cues = [_from_dict(Cue, c) for c in d.get("cues", [])]
         self.suggestions = [_from_dict(Suggestion, x) for x in d.get("suggestions", [])]
         self.beat_grid = _from_dict(BeatGrid, d.get("beat_grid", {}))
+        self.sections = sorted((_from_dict(SectionMarker, m) for m in d.get("sections", [])),
+                               key=lambda m: m.time)
 
 
 def _song_attr(name: str):
@@ -265,6 +288,7 @@ class Project:
     loop = _song_attr("loop")
     view = _song_attr("view")
     tc_offset = _song_attr("tc_offset")
+    sections = _song_attr("sections")
 
     def __init__(self) -> None:
         self.name = "Untitled"

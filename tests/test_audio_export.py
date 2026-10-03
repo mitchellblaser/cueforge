@@ -298,3 +298,64 @@ def test_plugin_imports_every_song(tmp_path):
     _luac_ok(lua, tmp_path)
     desc = export_ma3_lua(p, str(tmp_path / "Show.lua"))
     assert (tmp_path / "Show.lua").exists() and desc.endswith("Show.xml")
+
+
+def test_scrub_grains():
+    e = _engine_with([("a", 0.0, 48000 * 4)])
+    ramp = np.linspace(0, 1, 48000 * 4, dtype=np.float32)
+    e.set_track("a", np.stack([ramp, ramp], 1))
+    g = e.scrub_grain(1.0, 1.0)
+    assert len(g) == int(e.GRAIN * 48000)
+    mid = len(g) // 2
+    assert g[mid, 0] == pytest.approx(ramp[48000 + mid], abs=1e-3)       # forward slice at t=1s
+    r = e.scrub_grain(2.0, -1.0)
+    assert r[mid, 0] > r[mid + 100, 0]                                   # reversed when dragging back
+    # stopped engine outputs the queued grain, then silence
+    e._scrub_buf = g
+    out = e._next_block(len(g) + 100)
+    assert np.allclose(out[:len(g)], g) and not out[len(g):].any()
+
+
+def test_ma3_roundtrip_import():
+    from cueforge.core.model import Project
+    from cueforge.export.ma3_import import import_into_song, parse_timecode_xml
+    p = _project_with_cues()
+    p.tc_offset = 7200
+    lane0 = p.lanes[0].id
+    temp = editing.add_cue(p, lane0, 30.0, label="Strobe hit")
+    temp.duration = 0.5
+    p.cues_in_lane(lane0)[1].number = 7
+    for unit in ("ticks", "seconds"):
+        p.export.ma3_time_unit = unit
+        show = parse_timecode_xml(build_ma3_xml(p))
+        assert show.offset == pytest.approx(7200)
+        q = Project()
+        q.lanes[1].ma3_sequence = 7               # lane that matches the Hits track's sequence
+        info = import_into_song(q, show)
+        assert info["cues"] == len(p.cues)
+        got = sorted((round(c.time, 3), c.label, c.duration, q.lane(c.lane_id).ma3_sequence) for c in q.cues)
+        want = sorted((round(c.time, 3), c.label, c.duration, p.lane(c.lane_id).ma3_sequence) for c in p.cues)
+        assert got == want
+        assert q.tc_offset == pytest.approx(7200)
+        assert any(c.number == 7 for c in q.cues)
+    # merging again doesn't duplicate; replace swaps the lane's cues
+    assert import_into_song(q, show, replace=False)["cues"] == 0
+
+
+def test_ma3_import_tolerates_console_layout():
+    from cueforge.core.model import Project
+    from cueforge.export.ma3_import import import_into_song, parse_timecode_xml
+    xml = """<?xml version="1.0"?><GMA3 DataVersion="2.0"><Timecode Name="From console">
+      <TrackGroup><Track Name="Front wash" Target="ShowData.DataPools.Default.Sequences.Seq 12">
+        <TimeRange><CmdSubTrack>
+          <CmdEvent Name="Look 1" Time="33554432"><RealtimeCmd Token="Go+" Status="On"/></CmdEvent>
+          <CmdEvent Time="50331648"><RealtimeCmd Token="Temp" Status="On"/></CmdEvent>
+          <CmdEvent Time="58720256"><RealtimeCmd Token="Temp" Status="Off"/></CmdEvent>
+        </CmdSubTrack></TimeRange></Track></TrackGroup></Timecode></GMA3>"""
+    q = Project()
+    info = import_into_song(q, parse_timecode_xml(xml))
+    assert info["lanes_created"] == ["Front wash"]
+    lane = next(l for l in q.lanes if l.name == "Front wash")
+    assert lane.ma3_sequence == 12
+    cues = q.cues_in_lane(lane.id)
+    assert [(c.time, c.label, c.duration) for c in cues] == [(2.0, "Look 1", None), (3.0, "", 0.5)]

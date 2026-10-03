@@ -68,6 +68,9 @@ class AudioEngine:
         self._fallback_stop = threading.Event()
         self.backend = "none"
         self.error = ""
+        # scrubbing (audio while dragging the playhead with playback stopped)
+        self._scrub_buf = np.zeros((0, 2), np.float32)
+        self._scrub_last: tuple[float, float] | None = None   # (song time, wall time)
 
     # -- configuration --------------------------------------------------
     def set_track(self, track_id: str, samples: np.ndarray) -> None:
@@ -226,10 +229,50 @@ class AudioEngine:
     def toggle(self) -> None:
         self.pause() if self._playing else self.play()
 
+    GRAIN = 0.07   # seconds of audio per scrub grain
+
+    def scrub_grain(self, t: float, speed: float = 1.0) -> np.ndarray:
+        """A short, faded slice of the mix at song time t (reversed for negative speed)."""
+        n = int(self.GRAIN * self.sr)
+        sp = max(0.25, min(4.0, abs(speed)))
+        start = t if speed >= 0 else max(0.0, t - n * sp / self.sr)
+        g = self.render(start, n, sp)
+        if speed < 0:
+            g = g[::-1].copy()
+        fade_in, fade_out = int(0.004 * self.sr), int(0.02 * self.sr)
+        g[:fade_in] *= np.linspace(0, 1, fade_in, dtype=np.float32)[:, None]
+        g[-fade_out:] *= np.linspace(1, 0, fade_out, dtype=np.float32)[:, None]
+        return g
+
+    def scrub(self, t: float) -> None:
+        """Called while the playhead is dragged: queue a grain whose speed follows the drag."""
+        if self._playing:
+            return
+        now = time.perf_counter()
+        speed = 1.0
+        if self._scrub_last is not None:
+            lt, lw = self._scrub_last
+            dw = now - lw
+            if 0.005 < dw < 0.25:
+                speed = (t - lt) / dw
+                if abs(speed) < 0.25:
+                    speed = 0.25 if speed >= 0 else -0.25
+        self._scrub_last = (t, now)
+        with self._lock:
+            grain = self.scrub_grain(t, speed)
+            self.meters = {k: 0.0 for k in self.meters}
+            self._scrub_buf = grain
+        self._ensure_output()
+
     def _next_block(self, frames: int) -> np.ndarray:
         with self._lock:
             if not self._playing:
-                return np.zeros((frames, 2), np.float32)
+                out = np.zeros((frames, 2), np.float32)
+                if len(self._scrub_buf):
+                    m = min(frames, len(self._scrub_buf))
+                    out[:m] = self._scrub_buf[:m]
+                    self._scrub_buf = self._scrub_buf[m:]
+                return out
             out = np.zeros((frames, 2), np.float32)
             done = 0
             while done < frames:
