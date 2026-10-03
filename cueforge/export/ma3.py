@@ -165,9 +165,25 @@ return main
 '''
 
 
-def export_ma3_lua(project: Project, path: str, timecode_number: int = 1, create_cues: bool = True) -> None:
+def build_ma3_plugin_xml(project: Project, lua_filename: str) -> str:
+    """Plugin descriptor that grandMA3 imports into the Plugin pool (references the .lua file)."""
+    name = project.export.ma3_name or project.name
+    return ('<?xml version="1.0" encoding="UTF-8"?>\n'
+            f'<GMA3 DataVersion="{project.export.ma3_data_version}">\n'
+            f'\t<Plugin Name={quoteattr("CueForge " + name)} Version="1.0.0">\n'
+            f'\t\t<ComponentLua Name={quoteattr("CueForge " + name)} FileName={quoteattr(lua_filename)}/>\n'
+            '\t</Plugin>\n</GMA3>\n')
+
+
+def export_ma3_lua(project: Project, path: str, timecode_number: int = 1, create_cues: bool = True) -> str:
+    """Write the .lua plugin and its .xml descriptor next to it. Returns the descriptor path."""
+    import os
     with open(path, "w", encoding="utf-8") as f:
         f.write(build_ma3_lua(project, timecode_number, create_cues))
+    xml_path = os.path.splitext(path)[0] + ".xml"
+    with open(xml_path, "w", encoding="utf-8") as f:
+        f.write(build_ma3_plugin_xml(project, os.path.basename(path)))
+    return xml_path
 
 
 def build_ma3_macro_commands(project: Project) -> list[str]:

@@ -165,6 +165,15 @@ def test_ma3_lua_and_macro():
     assert 'Label Sequence 1 Cue 2 "Verse \'1\'"' in cmds
 
 
+def test_ma3_lua_files(tmp_path):
+    from cueforge.export.ma3 import export_ma3_lua
+    p = _project_with_cues()
+    xml_path = export_ma3_lua(p, str(tmp_path / "Song.lua"))
+    root = ET.parse(xml_path).getroot()
+    assert root.find("Plugin/ComponentLua").get("FileName") == "Song.lua"
+    assert (tmp_path / "Song.lua").exists()
+
+
 def test_csv(tmp_path):
     p = _project_with_cues()
     p.tc_offset = 3600

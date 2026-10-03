@@ -693,9 +693,10 @@ class MainWindow(QMainWindow):
             elif fmt == "lua":
                 path = self._export_path("Export grandMA3 Lua plugin", ".lua", "Lua (*.lua)")
                 if path:
-                    export_ma3_lua(self.s.project, path, tc, dlg.create.isChecked())
-                    self._exported(path, "Import the plugin into a Plugin pool slot and run it. "
-                                         f"It writes Timecode {tc}.")
+                    xml_path = export_ma3_lua(self.s.project, path, tc, dlg.create.isChecked())
+                    self._exported(path, f"Also wrote {os.path.basename(xml_path)} (plugin descriptor).\n\n"
+                                         "Copy both files to gma3_library/datapools/plugins, import the plugin "
+                                         f"into a Plugin pool slot and run it. It writes Timecode {tc}.")
             else:
                 path = self._export_path("Export command list", ".txt", "Text (*.txt)")
                 if path:
