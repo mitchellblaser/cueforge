@@ -45,9 +45,13 @@ def test_downbeats_and_meter(mix_scores):
     assert mix_scores["rock_live"]["meter"] == 4
 
 
-def test_fills(mix_scores):
-    assert mean(mix_scores, "fillF") >= 0.8
-    assert mean(mix_scores, "fillR") >= 0.9
+def test_fast_fills(mix_scores):
+    """Fast fills (16ths / sextuplets / 32nd rolls into a bar line); slow 8th-note tom
+    fills are deliberately not suggested."""
+    assert mean(mix_scores, "fillF") >= 0.65
+    assert mean(mix_scores, "fillP") >= 0.75
+    for name in ("edm_club", "funk_live", "waltz_34", "pop_halftime"):
+        assert mix_scores[name]["fillF"] >= 0.75, name
 
 
 def test_hits_on_driving_material(mix_scores):
@@ -60,7 +64,7 @@ def test_chord_changes(mix_scores):
 
 
 def test_section_changes(mix_scores):
-    assert mean(mix_scores, "sectionR") >= 0.6
+    assert mean(mix_scores, "sectionR") >= 0.75
 
 
 def test_lead_lines_from_stems(stem_scores):

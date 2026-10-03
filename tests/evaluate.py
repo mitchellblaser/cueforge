@@ -49,7 +49,7 @@ def beat_scores(ref, est):
 def hit_truth(truth) -> list[float]:
     """Kicks, snares and crashes outside fills, de-duplicated within 30 ms."""
     t = sorted(truth["kicks"] + truth["snares"] + truth.get("crashes", []))
-    t = [x for x in t if not any(a - 0.05 <= x < b - 0.05 for a, b in truth["fills"])]
+    t = [x for x in t if not any(f[0] - 0.05 <= x < f[1] - 0.05 for f in truth["fills"])]
     out = []
     for x in t:
         if not out or x - out[-1] > 0.03:
@@ -57,9 +57,20 @@ def hit_truth(truth) -> list[float]:
     return out
 
 
-def interval_hits(ref_intervals, est_times, tol=0.3):
+def fast_fills(truth, min_rate=3):
+    """Fills played at 16ths / triplets or faster (what should get a strobe)."""
+    return [(f[0], f[1]) for f in truth["fills"] if len(f) < 3 or f[2] >= min_rate]
+
+
+def slow_fills(truth, min_rate=3):
+    return [(f[0], f[1]) for f in truth["fills"] if len(f) >= 3 and f[2] < min_rate]
+
+
+def interval_hits(ref_intervals, est_times, tol=0.3, ignore=()):
     """Fill detection: an estimate is correct if it starts within a reference fill
     (with tolerance); recall counts reference fills that got at least one estimate."""
+    # estimates inside "don't care" intervals (slow fills) are neither right nor wrong
+    est_times = [e for e in est_times if not any(a - tol <= e <= b for a, b in ignore)]
     if not ref_intervals and not est_times:
         return 1.0, 1.0, 1.0
     if not est_times:
@@ -113,12 +124,13 @@ def score(res, truth) -> dict:
     vis = {k: [s for s in v if s.confidence >= th.get(k, 0.5)] for k, v in kinds.items()}
     fills_ref = truth["fills"]
     # estimates inside drum fills belong to the fill, not to the hit metric
-    hits = [s.time for s in vis.get("hit", []) if not any(a - 0.05 <= s.time < b - 0.05 for a, b in fills_ref)]
+    hits = [s.time for s in vis.get("hit", []) if not any(f[0] - 0.05 <= s.time < f[1] - 0.05 for f in fills_ref)]
     out["hitF"] = f_measure(hit_truth(truth), hits, 0.05)
     out["hitP"] = out["hitF"][1]
     out["hitF"] = out["hitF"][0]
     fills = [s.time for s in vis.get("fill", [])]
-    out["fillF"], out["fillP"], out["fillR"] = interval_hits(truth["fills"], fills)
+    out["fillF"], out["fillP"], out["fillR"] = interval_hits(fast_fills(truth), fills,
+                                                             ignore=slow_fills(truth))
     phr = [s.time for s in vis.get("melody", []) if "phrase" in s.label.lower() or "enters" in s.label.lower()]
     out["phraseF"] = f_measure(truth["lead_phrases"], phr, 0.15)[0]
     chords = [s.time for s in vis.get("harmony", [])]

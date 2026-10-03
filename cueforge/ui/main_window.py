@@ -17,9 +17,9 @@ from ..core.project_io import EXTENSION
 from ..core.timecode import seconds_to_tc
 from . import theme
 from .dialogs import (AnalysisDialog, AudioDeviceDialog, CueDialog, LTCDialog, MA3ExportDialog,
-                      ProjectSettingsDialog, ShortcutsDialog, TempoDialog)
+                      ProjectSettingsDialog, ShortcutsDialog, SongDialog, TempoDialog)
 from .mixer import MixerPanel
-from .panels import CueTable, LanePanel, SuggestionPanel
+from .panels import CueTable, LanePanel, SongList, SuggestionPanel
 from .session import RESERVED_KEYS, Session
 from .timeline import TimelinePanel
 
@@ -58,6 +58,17 @@ class MainWindow(QMainWindow):
         right.setMinimumWidth(380)
         self.addDockWidget(Qt.RightDockWidgetArea, right)
 
+        # left dock: setlist
+        self.setlist = SongList(self.s)
+        self.setlist.open_settings.connect(self.song_settings)
+        self.setlist.add_requested.connect(self.add_song)
+        left = QDockWidget("Setlist", self)
+        left.setObjectName("setlist")
+        left.setWidget(self.setlist)
+        left.setFeatures(QDockWidget.DockWidgetMovable | QDockWidget.DockWidgetFloatable)
+        left.setMinimumWidth(250)
+        self.addDockWidget(Qt.LeftDockWidgetArea, left)
+
         self.mixer = MixerPanel(self.s)
         bottom = QDockWidget("Mixer", self)
         bottom.setObjectName("mixer")
@@ -73,6 +84,8 @@ class MainWindow(QMainWindow):
 
         s = self.s
         s.lanes_changed.connect(self._rebuild_tap_keys)
+        s.song_will_change.connect(self.canvas.store_view)
+        s.songs_changed.connect(self._title)
         s.project_replaced.connect(self._project_replaced)
         s.dirty_changed.connect(lambda _: self._title())
         s.status.connect(lambda m: self.statusBar().showMessage(m, 6000))
@@ -193,7 +206,12 @@ class MainWindow(QMainWindow):
         f.addAction(self._act("Save", self.save, QKeySequence.Save))
         f.addAction(self._act("Save as…", self.save_as, QKeySequence.SaveAs))
         f.addSeparator()
-        f.addAction(self._act("Import audio…", self.import_audio, "Ctrl+I"))
+        f.addAction(self._act("Import audio into this song…", self.import_audio, "Ctrl+I"))
+        f.addSeparator()
+        f.addAction(self._act("Add song to setlist…", self.add_song, "Ctrl+Shift+N"))
+        f.addAction(self._act("Song settings…", lambda: self.song_settings(self.s.project.song.id)))
+        f.addAction(self._act("Previous song", lambda: self._step_song(-1), "Ctrl+PgUp"))
+        f.addAction(self._act("Next song", lambda: self._step_song(1), "Ctrl+PgDown"))
         f.addSeparator()
         ex = f.addMenu("Export")
         ex.addAction(self._act("grandMA3…", self.export_ma3, "Ctrl+E"))
@@ -317,7 +335,30 @@ class MainWindow(QMainWindow):
 
     def _title(self) -> None:
         dirty = "•" if self.s.is_dirty() else ""
-        self.setWindowTitle(f"{dirty}{self.s.project.name} — CueForge")
+        p = self.s.project
+        song = f" — {p.song.name}" if len(p.songs) > 1 or p.song.name != "Song 1" else ""
+        self.setWindowTitle(f"{dirty}{p.name}{song} — CueForge")
+
+    # ================================================================ setlist
+    def add_song(self) -> None:
+        exts = " ".join(f"*{e}" for e in AUDIO_EXTENSIONS)
+        paths, _ = QFileDialog.getOpenFileNames(self, "Audio for the new song (mix, stems, click…)", self._dir(),
+                                                f"Audio ({exts})")
+        if paths:
+            self.s.settings.set("last_dir", os.path.dirname(paths[0]))
+            self.s.add_song(paths)
+
+    def song_settings(self, sid: str) -> None:
+        if sid and self.s.project.song_by_id(sid):
+            SongDialog(self.s, sid, self).exec()
+            self._title()
+            self.canvas.invalidate()
+
+    def _step_song(self, d: int) -> None:
+        p = self.s.project
+        i = p.current + d
+        if 0 <= i < len(p.songs):
+            self.s.switch_song(p.songs[i].id)
 
     def _sync_toggles(self) -> None:
         m = self.s.project.mixer
@@ -671,7 +712,7 @@ class MainWindow(QMainWindow):
 
     # ================================================================ export
     def _export_path(self, title: str, suffix: str, filt: str) -> str:
-        default = os.path.join(self._dir(), (self.s.project.export.ma3_name or self.s.project.name) + suffix)
+        default = os.path.join(self._dir(), self.s.project.song.name + suffix)
         path, _ = QFileDialog.getSaveFileName(self, title, default, filt)
         if path and not path.lower().endswith(suffix.lower()):
             path += suffix
@@ -687,9 +728,11 @@ class MainWindow(QMainWindow):
         return True
 
     def export_ma3(self) -> None:
-        from ..export.ma3 import build_ma3_macro_commands, export_lanes, export_ma3_lua, export_ma3_xml
-        if not export_lanes(self.s.project):
-            QMessageBox.information(self, "Export", "No cues to export (check the lanes' Export setting).")
+        from ..export.ma3 import (build_ma3_macro_commands, export_ma3_lua, export_ma3_xml, export_ma3_xml_all,
+                                  songs_with_cues)
+        p = self.s.project
+        if not songs_with_cues(p):
+            QMessageBox.information(self, "Export", "No cues to export yet.")
             return
         if not self._check_pending():
             return
@@ -697,27 +740,38 @@ class MainWindow(QMainWindow):
         if not dlg.exec():
             return
         fmt = self.s.settings.get("ma3_format", "xml")
-        tc = int(self.s.settings.get("ma3_tc_number", 1))
+        all_songs = getattr(dlg, "all_songs", False)
         try:
-            if fmt == "xml":
+            if fmt == "xml" and all_songs:
+                folder = QFileDialog.getExistingDirectory(self, "Folder for the timecode XML files", self._dir())
+                if folder:
+                    paths = export_ma3_xml_all(p, folder)
+                    self._exported(paths[0] if paths else folder,
+                                   f"{len(paths)} timecode files written (one per song):\n"
+                                   + "\n".join(os.path.basename(x) for x in paths)
+                                   + "\n\nCopy them to gma3_library/datapools/timecodes and import each into "
+                                     "its Timecode pool slot.")
+            elif fmt == "xml":
                 path = self._export_path("Export grandMA3 timecode XML", ".xml", "XML (*.xml)")
                 if path:
-                    n = export_ma3_xml(self.s.project, path, tc)
-                    self._exported(path, f"{n} cue events written.\n\nOn the console: copy the file to "
-                                         "gma3_library/datapools/timecodes (on a USB stick or onPC library "
-                                         "folder), then Import it into the Timecode pool.")
+                    n = export_ma3_xml(p, path)
+                    self._exported(path, f"{n} cue events written for '{p.song.name}'.\n\nOn the console: copy "
+                                         "the file to gma3_library/datapools/timecodes (USB stick or onPC library "
+                                         f"folder), then import it into Timecode {p.song.ma3_timecode}.")
             elif fmt == "lua":
                 path = self._export_path("Export grandMA3 Lua plugin", ".lua", "Lua (*.lua)")
                 if path:
-                    xml_path = export_ma3_lua(self.s.project, path, tc, dlg.create.isChecked())
+                    xml_path = export_ma3_lua(p, path, None, dlg.create.isChecked(), all_songs)
+                    which = "every song into its own Timecode slot" if all_songs else \
+                        f"Timecode {p.song.ma3_timecode}"
                     self._exported(path, f"Also wrote {os.path.basename(xml_path)} (plugin descriptor).\n\n"
                                          "Copy both files to gma3_library/datapools/plugins, import the plugin "
-                                         f"into a Plugin pool slot and run it. It writes Timecode {tc}.")
+                                         f"into a Plugin pool slot and run it. It writes {which}.")
             else:
                 path = self._export_path("Export command list", ".txt", "Text (*.txt)")
                 if path:
                     with open(path, "w", encoding="utf-8") as f:
-                        f.write("\n".join(build_ma3_macro_commands(self.s.project)) + "\n")
+                        f.write("\n".join(build_ma3_macro_commands(p, all_songs)) + "\n")
                     self._exported(path, "Paste these into a macro or the command line to create the cues.")
         except OSError as exc:
             QMessageBox.warning(self, "Export failed", str(exc))
@@ -731,7 +785,9 @@ class MainWindow(QMainWindow):
         path = self._export_path("Export CSV cue list", ".csv", "CSV (*.csv)")
         if path:
             try:
-                n = export_csv(self.s.project, path)
+                all_songs = len(self.s.project.songs) > 1 and QMessageBox.question(
+                    self, "CSV", "Export the whole setlist? (No = current song only)") == QMessageBox.Yes
+                n = export_csv(self.s.project, path, all_songs=all_songs)
                 self._exported(path, f"{n} cues.")
             except OSError as exc:
                 QMessageBox.warning(self, "Export failed", str(exc))

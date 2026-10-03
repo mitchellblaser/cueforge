@@ -1,11 +1,12 @@
-"""Drum fill (and snare-roll build) detection.
+"""Drum fill detection: fast runs into the next bar -> strobe suggestions.
 
-A fill is where the drummer leaves the groove for a few beats — usually busier,
-tom/snare heavy, hi-hats stop — and lands on the next downbeat (often with a
-crash). We learn the groove from the preceding bars, score how much each beat
-departs from it, and keep runs of departing beats that end at a bar line.
+What a programmer puts a strobe on is the *fast* stuff: 16ths / sextuplets / 32nd
+rolls on snare and toms that drive into a downbeat. So we count drum strokes per
+half-beat, compare with what the drummer normally plays at that point in the bar
+(the same half-beat in the surrounding bars — so a busy groove such as 16th-note
+hi-hats doesn't count), and keep fast runs that end on a bar line.
 
-For lighting: suggest a strobe (or chase) across the fill and a hit on the landing.
+Slow fills (quarter / 8th-note tom hits) are deliberately not suggested.
 """
 from __future__ import annotations
 
@@ -13,147 +14,153 @@ from dataclasses import dataclass
 
 import numpy as np
 
-HOP = 256
-SLOTS = 4  # sub-divisions per beat (16ths in 4/4)
-BANDS = [(30, 120), (70, 400), (400, 2500), (5000, 11000)]  # kick, toms/body, snare attack, hats/cymbals
+FAST_HOP = 128               # fine resolution: 32nd notes at 160 BPM are ~47 ms apart
+FILL_BAND = (70, 800)        # snare body + toms; hats/cymbals sit above this
+MAX_BARS = 2                 # longer runs are reported as snare-roll builds (up to 8 bars)
 
 
 @dataclass
 class Fill:
     start: float
     end: float          # the downbeat it lands on
-    beats: int
+    beats: float
     confidence: float
     label: str
     reason: str
+    rate: float = 0.0   # strokes per beat
 
 
-def _env_bands(y: np.ndarray, sr: int, percussive: bool, spectra=None):
+def _band_env(y: np.ndarray, sr: int, percussive: bool, spectra=None):
+    """Onset envelope + energy of the snare-body / tom band (hats barely reach it)."""
     import librosa
+    S = None
     if spectra is not None:
         S = spectra.percussive(2.0) if percussive else spectra.S
-    else:
-        S = np.abs(librosa.stft(y, n_fft=2048, hop_length=HOP))
+        hop = spectra_hop = 256
+    if S is None:
+        hop = FAST_HOP
+        S = np.abs(librosa.stft(y, n_fft=1024, hop_length=hop))
         if percussive:
             _, S = librosa.decompose.hpss(S, margin=(1.0, 2.0), kernel_size=17)
-    freqs = librosa.fft_frequencies(sr=sr, n_fft=2048)
-    envs = []
-    energy = []
-    for lo, hi in BANDS:
-        sel = (freqs >= lo) & (freqs < hi)
-        envs.append(librosa.onset.onset_strength(S=S[sel] ** 0.6, sr=sr, hop_length=HOP, lag=1, max_size=1))
-        energy.append(S[sel].sum(axis=0))
-    return np.asarray(envs), np.asarray(energy)
+    n_fft = (S.shape[0] - 1) * 2
+    freqs = librosa.fft_frequencies(sr=sr, n_fft=n_fft)
+    sel = (freqs >= FILL_BAND[0]) & (freqs < FILL_BAND[1])
+    env = librosa.onset.onset_strength(S=S[sel] ** 0.6, sr=sr, hop_length=hop, lag=1, max_size=1)
+    return env, S[sel].sum(axis=0), hop
 
 
-def _slot_features(envs: np.ndarray, energy: np.ndarray, beats: np.ndarray, sr: int) -> np.ndarray:
-    """(n_beats, n_bands * SLOTS + n_bands) features: onset peaks per sub-division, plus
-    per-band energy share (toms raise the low-mid share)."""
-    fps = sr / HOP
-    n = len(beats) - 1
-    nb = envs.shape[0]
-    F = np.zeros((n, nb * SLOTS + nb))
-    norm = np.percentile(envs, 99, axis=1)[:, None] + 1e-9
-    E = envs / norm
-    en = energy / (energy.sum(axis=0, keepdims=True) + 1e-9)
-    for i in range(n):
-        a, b = beats[i] * fps, beats[i + 1] * fps
-        edges = np.linspace(a, b, SLOTS + 1)
-        for s in range(SLOTS):
-            lo = int(edges[s] - 0.25 * (edges[1] - edges[0]))
-            hi = int(edges[s + 1] - 0.25 * (edges[1] - edges[0]))
-            lo, hi = max(lo, 0), max(min(hi, E.shape[1]), max(lo, 0) + 1)
-            F[i, s::SLOTS][:nb] = E[:, lo:hi].max(axis=1) if hi <= E.shape[1] else 0
-        fa, fb = int(a), max(int(a) + 1, int(b))
-        F[i, nb * SLOTS:] = en[:, fa:fb].mean(axis=1) if fb <= en.shape[1] else 0
-    return F
+def _fast_periodicity(env: np.ndarray, end: float, beat_frames: float) -> tuple[float, float]:
+    """How strongly the envelope repeats at 3, 4, 6 or 8 strokes per beat in the ~1.25
+    beats leading up to `end` (looking back, so a fill is measured up to the bar line and
+    not smeared into the landing). Returns (score, strokes-per-beat of the best lag)."""
+    w = int(beat_frames * 1.25)
+    seg = env[max(0, int(end - w)):int(end)]
+    if len(seg) < 8:
+        return 0.0, 0.0
+    seg = seg - seg.mean()
+    if seg.std() == 0:
+        return 0.0, 0.0
+    ac = np.correlate(seg, seg, "full")[len(seg) - 1:]
+    ac = ac / ac[0]
+    best, rate = -1.0, 0.0
+    for r in (3, 4, 6, 8):
+        lag = int(round(beat_frames / r))
+        if 1 <= lag < len(ac) and ac[lag] > best:
+            best, rate = float(ac[lag]), float(r)
+    return best, rate
 
 
 def detect_fills(y: np.ndarray, sr: int, beats: list[float], downbeats: list[float], bpb: int,
-                 percussive: bool = True, history_bars: int = 4, spectra=None) -> list[Fill]:
+                 percussive: bool = True, spectra=None, clean_source: bool = False, **_ignored) -> list[Fill]:
+    import librosa
     beats = np.asarray(beats, float)
-    if len(beats) < bpb * (history_bars + 2) or len(downbeats) < 3:
+    if len(beats) < bpb * 3 or len(downbeats) < 3:
         return []
-    envs, energy = _env_bands(y, sr, percussive, spectra)
-    F = _slot_features(envs, energy, beats, sr)
-    n = len(F)
-    db = np.asarray(downbeats)
-    # position of each beat within its bar (0 = downbeat)
+    env, level, hop = _band_env(y, sr, percussive, None)   # fine hop: 32nds need resolution
+    fps = sr / hop
+    beat_len = float(np.median(np.diff(beats)))
+    beat_frames = beat_len * fps
+    db = np.asarray(downbeats, float)
     first_db = int(np.argmin(np.abs(beats - db[0])))
-    pos = (np.arange(n) - first_db) % bpb
-    nb = len(BANDS)
-    act = F[:, :nb * SLOTS].reshape(n, nb, SLOTS)
+    edges = np.sort(np.r_[beats, (beats[:-1] + beats[1:]) / 2])   # half-beat units
+    n = len(edges) - 1
+    upb = 2 * bpb
+    pos = (np.arange(n) - 2 * first_db) % upb
 
+    fast = np.zeros(n)
+    rate = np.zeros(n)
+    energy = np.zeros(n)
+    for u in range(n):
+        fast[u], rate[u] = _fast_periodicity(env, edges[u + 1] * fps, beat_frames)
+        a, b = int(edges[u] * fps), max(int(edges[u] * fps) + 1, int(edges[u + 1] * fps))
+        energy[u] = float(level[a:b].mean()) if a < len(level) else 0.0
+    song_level = float(np.percentile(energy, 90)) + 1e-9
+
+    # contrast with the same half-beat in the surrounding bars (the groove)
     score = np.zeros(n)
-    fillish = np.zeros(n, bool)
-    detail = [""] * n
-    for i in range(n):
-        same = [j for j in range(i - bpb * history_bars, i) if j >= 0 and pos[j] == pos[i]]
-        if len(same) < 2:
+    for u in range(n):
+        nb = [u + k * upb for k in (-2, -1, 1, 2) if 0 <= u + k * upb < n]
+        if not nb:
             continue
-        if np.median(act[same, :3].max(axis=(1, 2))) < 0.15:
-            continue                   # no groove yet (drums just entering)
-        tmpl = np.median(F[same], axis=0)
-        spread = np.median(np.abs(F[same] - tmpl), axis=0) + 0.05
-        dev = np.abs(F[i] - tmpl) / spread
-        groove_break = float(np.mean(np.sort(dev)[-6:]))      # strongest departures
-        t_act = np.median(act[same], axis=0)
-        busy = float(np.sum(act[i, 1:3] > 0.3) - np.sum(t_act[1:3] > 0.3))  # toms/snare slots
-        tom_shift = float(F[i, nb * SLOTS + 1] - tmpl[nb * SLOTS + 1])         # low-mid energy share
-        hats_drop = float(np.sum(t_act[3] > 0.25) - np.sum(act[i, 3] > 0.25))
-        s = 0.15 * groove_break + 0.35 * max(0.0, busy) + 6.0 * max(0.0, tom_shift) + 0.15 * max(0.0, hats_drop)
-        loudness = float(act[i, :3].max())
-        if loudness < 0.15:            # silence / no drums is not a fill
-            s = 0.0
-        score[i] = s
-        fillish[i] = busy >= 1 or tom_shift > 0.03
-        detail[i] = f"busy {busy:+.0f}, toms {tom_shift:+.2f}, hats {-hats_drop:+.0f}"
+        acf_c = fast[u] - float(np.median(fast[nb]))
+        e_c = np.log2((energy[u] + 1e-9) / (float(np.median(energy[nb])) + 1e-9))
+        score[u] = acf_c + 0.08 * float(np.clip(e_c, -2, 2))
+        if energy[u] < 0.08 * song_level:     # nothing playing
+            score[u] = 0.0
+    pos_scores = score[score > 0]
+    thr = max(0.1, float(np.percentile(pos_scores, 85))) if len(pos_scores) else 0.1
+    if clean_source:   # an isolated drum stem: fills stand out clearly, don't over-tighten
+        thr = min(thr, 0.18)
 
-    # Contrast against the same beat in the surrounding bars (before AND after): a
-    # fill stands out from its neighbours, while drums entering or a new groove
-    # keep scoring high for several bars and cancel out.
-    raw = score.copy()
-    for i in range(n):
-        neigh = [raw[i + k * bpb] for k in (-2, -1, 1, 2) if 0 <= i + k * bpb < n]
-        if neigh:
-            score[i] = max(0.0, raw[i] - float(np.median(neigh)))
-    thr = max(1.0, float(np.percentile(score[score > 0], 75)) if np.any(score > 0) else 1.0)
+    # onsets in the band, to start the strobe on the first stroke of the run
+    on = librosa.onset.onset_detect(onset_envelope=env, sr=sr, hop_length=hop, units="time",
+                                    wait=max(1, int(0.03 * fps)), delta=0.05)
+
+    # a fill must finish in the last half-beat before a bar line
+    land_units = {upb - 1}
+
     fills: list[Fill] = []
-    i = n - 1
-    while i >= 0:
-        # a fill must finish on the last beat(s) before a downbeat
-        if pos[(i + 1) % n] != 0 if i + 1 < n else True:
-            i -= 1
+    u = n - 1
+    while u >= 0:
+        if pos[u] not in land_units or score[u] < thr or fast[u] < 0.08:
+            u -= 1
             continue
-        if score[i] < thr:
-            i -= 1
-            continue
-        j = i
-        while (j - 1 >= 0 and score[j - 1] >= thr * 0.85 and fillish[j - 1]
-               and i - (j - 1) < 2 * bpb and pos[j - 1] != bpb - 1):
+        j = u
+        while j - 1 >= 0 and score[j - 1] >= 0.6 * thr and fast[j - 1] >= 0.06 and (u - (j - 1)) < 8 * upb:
             j -= 1
-        length = i - j + 1
-        # A fill is transient: if the bar after the landing keeps playing the same
-        # pattern, this is a new groove (section change), not a fill.
-        after = [k + bpb for k in range(j, i + 1) if k + bpb < n]
-        if after:
-            d_after = float(np.mean(np.abs(F[j:j + len(after)] - F[after])))
-            hist = [k - bpb for k in range(j, i + 1) if k - bpb >= 0]
-            d_before = float(np.mean(np.abs(F[j:j + len(hist)] - F[hist]))) if hist else 1.0
-            if d_after < 0.5 * d_before:
-                i = j - 1
-                continue
-        land = beats[i + 1] if i + 1 < len(beats) else beats[i] + (beats[i] - beats[i - 1])
-        mean_s = float(score[j:i + 1].mean())
-        # landing accent (crash / big kick on the downbeat after) raises confidence
-        landing = float(act[i + 1, [0, 3], 0].max()) if i + 1 < n else 0.0
-        conf = min(1.0, 0.3 + 0.12 * mean_s / thr + 0.25 * min(1.0, landing) + 0.05 * min(length, 4))
-        if length > 2 * bpb:
-            label = f"Snare roll / build ({length // bpb} bars)"
+        end = float(edges[u + 1]) if u + 1 <= n else float(edges[-1])
+        r = float(np.median(rate[j:u + 1]))
+        # Start = first stroke of the evenly spaced fast run that leads into the bar line:
+        # walk back through the band onsets while the spacing stays at the fill's rate.
+        ioi = beat_len / max(r, 3.0)
+        before = [t for t in on if t < end - 0.02]
+        start = float(edges[j])
+        if before:
+            k = len(before) - 1
+            start = before[k]
+            while k > 0 and before[k] - before[k - 1] <= 1.6 * ioi and end - before[k - 1] <= MAX_BARS * bpb * beat_len:
+                k -= 1
+                start = before[k]
+            # never reach more than a beat before the region that sounded fast
+            start = float(max(start, edges[j] - 0.5 * beat_len))
+            if start > edges[j]:
+                start = float(min(start, edges[j] + 0.5 * beat_len))
+        length_beats = (end - start) / beat_len
+        strength = float(np.mean(score[j:u + 1]) / thr)
+        lf = int(end * fps)
+        landing = float(env[lf:lf + int(0.05 * fps) + 1].max() / (np.percentile(env, 99) + 1e-9)) \
+            if lf < len(env) else 0.0
+        rel_level = float(np.clip(np.mean(energy[j:u + 1]) / song_level, 0, 1))
+        conf = 0.4 + 0.12 * min(2.5, strength) + 0.1 * min(1.0, landing) + 0.08 * min(1.0, length_beats)
+        conf *= 0.75 + 0.25 * rel_level
+        speed = {3: "triplets", 4: "16ths", 6: "sextuplets", 8: "32nd roll"}.get(int(r), "fast")
+        if length_beats > MAX_BARS * bpb:
+            label = f"Snare roll build ({length_beats / bpb:.0f} bars)"
         else:
-            label = f"Drum fill ({length} beat{'s' if length > 1 else ''})"
-        fills.append(Fill(float(beats[j]), float(land), length, round(conf, 3), label,
-                          f"groove break into the downbeat ({detail[i]})"))
-        i = j - 1
+            bt = f"{length_beats:.1f}".rstrip("0").rstrip(".")
+            label = f"Drum fill: {speed} ({bt} beat{'s' if length_beats > 1.05 else ''})"
+        fills.append(Fill(start, end, round(length_beats, 2), round(float(min(1.0, conf)), 3), label,
+                          f"fast {speed} on snare/toms into the downbeat", r))
+        u = j - 1
     fills.reverse()
     return fills

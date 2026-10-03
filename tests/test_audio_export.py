@@ -158,7 +158,7 @@ def test_ma3_xml():
 def test_ma3_lua_and_macro():
     p = _project_with_cues()
     lua = build_ma3_lua(p, 3)
-    assert "local TC_NUMBER = 3" in lua and "seq=7" in lua and 'label="Verse \\"1\\""' in lua
+    assert "tc=3" in lua and "seq=7" in lua and 'label="Verse \\"1\\""' in lua
     assert lua.count("{t=") == 3
     cmds = build_ma3_macro_commands(p)
     assert "Store Sequence 1 Cue 1 /Merge /NoConfirm" in cmds
@@ -180,7 +180,7 @@ def test_csv(tmp_path):
     path = tmp_path / "cues.csv"
     n = export_csv(p, str(path))
     rows = list(csv.reader(open(path, encoding="utf-8")))
-    assert n == 3 and rows[1][4] == "01:00:01:00" and rows[2][1] == "7"
+    assert n == 3 and rows[1][5] == "01:00:01:00" and rows[2][2] == "7"
 
 
 def test_learn_thresholds():
@@ -203,3 +203,55 @@ def test_ma3_hold_exports_off_event():
     offs = [e for e in evs if e.find("RealtimeCmd").get("Token") == "Off"]
     assert len(offs) == 1 and int(offs[0].get("Time")) == 3 * MA3_TICKS_PER_SECOND
     assert "off=3.000000" in build_ma3_lua(p)
+
+
+def _luac_ok(src, tmp_path):
+    import shutil
+    import subprocess
+    luac = shutil.which("luac") or shutil.which("luac5.4")
+    if not luac:
+        pytest.skip("luac not installed")
+    f = tmp_path / "plugin.lua"
+    f.write_text(src)
+    r = subprocess.run([luac, "-p", str(f)], capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+
+
+def test_setlist_exports(tmp_path):
+    from cueforge.export.csv_export import export_csv
+    from cueforge.export.ma3 import cue_number_clashes, export_ma3_xml_all
+    p = _project_with_cues()
+    s2 = p.add_song("Second Song")
+    assert s2.tc_offset == pytest.approx(3600) and s2.ma3_timecode == 2 and s2.cue_start == 101
+    p.select_song(s2.id)
+    editing.add_cue(p, p.lanes[0].id, 5.0, label="Song2 intro")
+    editing.add_cue(p, p.lanes[0].id, 9.0)
+    # numbering starts at the song's cue_start
+    nums = sorted(editing.effective_cue_numbers(p, p.lanes[0].id).values())
+    assert nums == [101, 102]
+    assert not cue_number_clashes(p)
+    paths = export_ma3_xml_all(p, str(tmp_path / "xml"))
+    assert len(paths) == 2 and "Second Song" in paths[1]
+    root = ET.parse(paths[1]).getroot()
+    assert root.find("Timecode").get("Name") == "Second Song"
+    assert int(root.find("Timecode").get("Offset")) == 3600 * MA3_TICKS_PER_SECOND
+    lua = build_ma3_lua(p, all_songs=True)
+    assert lua.count("{name=") >= 2 and "tc=2" in lua and "cue=101" in lua
+    _luac_ok(lua, tmp_path)
+    cmds = build_ma3_macro_commands(p, all_songs=True)
+    assert "Store Sequence 1 Cue 101 /Merge /NoConfirm" in cmds and "Store Sequence 1 Cue 1 /Merge /NoConfirm" in cmds
+    # current song unchanged by the exports
+    assert p.song.id == s2.id
+    # clash when the second song is set to start at cue 1 too
+    s2.cue_start = 1
+    assert cue_number_clashes(p)
+    s2.seq_offset = 10
+    assert not cue_number_clashes(p)
+    path = tmp_path / "all.csv"
+    export_csv(p, str(path), all_songs=True)
+    rows = list(csv.reader(open(path, encoding="utf-8")))
+    assert rows[0][0] == "Song" and {r[0] for r in rows[1:]} == {"Song 1", "Second Song"}
+
+
+def test_lua_single_song_compiles(tmp_path):
+    _luac_ok(build_ma3_lua(_project_with_cues()), tmp_path)

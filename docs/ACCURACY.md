@@ -29,25 +29,25 @@ The thresholds and the threshold learning in the app are there to adapt to your 
 
 | song | beatF | beatAMLt | downF | meter | hitF | fillF | fillP | fillR | phraseF | chordF | sectionR | secs |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
-| rock_live | 0.96 | 0.93 | 0.97 | 4 | 0.85 | 0.93 | 0.88 | 1.00 | 0.00 | 0.97 | 0.75 | 13.4 |
-| edm_club | 0.98 | 0.95 | 0.98 | 4 | 0.92 | 0.89 | 0.80 | 1.00 | 0.00 | 0.78 | 0.67 | 11.4 |
-| funk_live | 0.98 | 0.96 | 0.98 | 4 | 0.63 | 1.00 | 1.00 | 1.00 | 0.00 | 0.98 | 0.67 | 9.7 |
-| ballad_live | 0.62 | 0.92 | 0.55 | 4 | 0.53 | 0.67 | 0.50 | 1.00 | 0.00 | 0.94 | 0.50 | 10.0 |
-| waltz_34 | 0.95 | 0.91 | 0.96 | 3 | 0.45 | 0.80 | 0.80 | 0.80 | 0.00 | 0.98 | 0.50 | 4.0 |
-| pop_halftime | 0.94 | 0.93 | 0.96 | 4 | 0.72 | 1.00 | 1.00 | 1.00 | 0.00 | 1.00 | 1.00 | 6.7 |
-| MEAN | 0.90 | 0.93 | 0.90 | 3.83 | 0.68 | 0.88 | 0.83 | 0.97 | 0.00 | 0.94 | 0.68 |
+| rock_live | 0.97 | 0.95 | 0.97 | 4 | 0.88 | 0.73 | 0.80 | 0.67 | 0.00 | 0.97 | 1.00 | 15.2 |
+| edm_club | 0.98 | 0.96 | 0.98 | 4 | 0.89 | 0.86 | 1.00 | 0.75 | 0.00 | 0.80 | 1.00 | 12.7 |
+| funk_live | 0.97 | 0.96 | 0.98 | 4 | 0.65 | 0.80 | 1.00 | 0.67 | 0.00 | 0.98 | 0.67 | 11.8 |
+| ballad_live | 0.65 | 0.95 | 0.65 | 4 | 0.50 | 0.00 | 0.00 | 0.00 | 0.00 | 0.94 | 0.50 | 12.2 |
+| waltz_34 | 0.96 | 0.92 | 0.96 | 3 | 0.43 | 1.00 | 1.00 | 1.00 | 0.00 | 0.98 | 1.00 | 4.2 |
+| pop_halftime | 0.97 | 0.94 | 0.96 | 4 | 0.69 | 1.00 | 1.00 | 1.00 | 0.00 | 1.00 | 1.00 | 6.8 |
+| MEAN | 0.92 | 0.95 | 0.92 | 3.83 | 0.67 | 0.73 | 0.80 | 0.68 | 0.00 | 0.95 | 0.86 |
 
 ## Results — with stems
 
 | song | beatF | beatAMLt | downF | meter | hitF | fillF | fillP | fillR | phraseF | chordF | sectionR | secs |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
-| rock_live | 0.95 | 0.94 | 0.97 | 4 | 0.90 | 1.00 | 1.00 | 1.00 | 1.00 | 0.81 | 0.75 | 13.8 |
-| edm_club | 0.98 | 0.95 | 0.98 | 4 | 0.81 | 0.75 | 0.75 | 0.75 | 1.00 | 0.62 | 0.67 | 12.7 |
-| funk_live | 0.98 | 0.97 | 0.98 | 4 | 0.75 | 1.00 | 1.00 | 1.00 | 0.35 | 0.93 | 1.00 | 10.8 |
-| ballad_live | 0.65 | 0.96 | 0.16 | 3 | 0.89 | 0.33 | 0.25 | 0.50 | 1.00 | 0.71 | 0.50 | 11.4 |
-| waltz_34 | 0.95 | 0.91 | 0.96 | 3 | 0.67 | 1.00 | 1.00 | 1.00 | 1.00 | 0.95 | 0.50 | 4.6 |
-| pop_halftime | 0.94 | 0.93 | 0.96 | 4 | 0.55 | 1.00 | 1.00 | 1.00 | 1.00 | 0.98 | 1.00 | 6.8 |
-| MEAN | 0.91 | 0.94 | 0.84 | 3.67 | 0.76 | 0.85 | 0.83 | 0.88 | 0.89 | 0.83 | 0.74 |
+| rock_live | 0.98 | 0.96 | 0.97 | 4 | 0.81 | 1.00 | 1.00 | 1.00 | 1.00 | 0.77 | 0.75 | 13.9 |
+| edm_club | 0.98 | 0.96 | 0.98 | 4 | 0.81 | 1.00 | 1.00 | 1.00 | 1.00 | 0.65 | 1.00 | 13.0 |
+| funk_live | 0.98 | 0.97 | 0.98 | 4 | 0.46 | 0.67 | 0.67 | 0.67 | 0.35 | 0.98 | 0.33 | 11.3 |
+| ballad_live | 0.65 | 0.96 | 0.16 | 3 | 0.88 | 0.20 | 0.11 | 1.00 | 1.00 | 0.81 | 1.00 | 11.3 |
+| waltz_34 | 0.96 | 0.92 | 0.96 | 3 | 0.70 | 0.91 | 0.83 | 1.00 | 1.00 | 0.86 | 1.00 | 4.6 |
+| pop_halftime | 0.97 | 0.94 | 0.96 | 4 | 0.54 | 1.00 | 1.00 | 1.00 | 1.00 | 0.94 | 1.00 | 7.3 |
+| MEAN | 0.92 | 0.95 | 0.84 | 3.67 | 0.70 | 0.80 | 0.77 | 0.94 | 0.89 | 0.83 | 0.85 |
 
 ## Column meanings
 
@@ -55,12 +55,18 @@ The thresholds and the threshold learning in the app are there to adapt to your 
   tempo or off-beat lock (use *Grid › Halve/Double tempo* to fix those).
 - **downF**: downbeat (bar 1) F-measure. **meter**: detected beats per bar.
 - **hitF**: kick/snare/crash hits at the default 75% threshold (±50 ms; ghost notes excluded).
-- **fillF / fillP / fillR**: drum-fill detection (a suggestion is correct if it starts inside a real fill).
+- **fillF / fillP / fillR**: *fast* drum fills (16ths, sextuplets, 32nd rolls into a bar line). A suggestion is
+  correct if it starts inside a real fast fill. Slow 8th-note tom fills are deliberately not suggested: they
+  count neither for nor against.
 - **phraseF**: lead-line phrase starts (±150 ms). Full-mix lead lines are capped at 45%
   confidence and hidden by default, so they score 0 here by design. Use stems or Demucs.
 - **chordF**: chord changes (±150 ms). **sectionR**: section changes found (±0.5 s).
 
 ## Known weak spots
+
+- **Fills on a double-tempo grid** (the ballad): fills must land on a bar line, so a grid at double tempo
+  hides them. Use *Halve tempo* and analyse again. With a correct grid the ballad scores 1.00.
+- **Very short pickups** (two 16th notes) are not reported as fills.
 
 - **Rubato / free-time passages** (ballad intro): beats are unreliable. Use the
   *Tap-along grid*.

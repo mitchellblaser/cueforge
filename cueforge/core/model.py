@@ -176,25 +176,148 @@ class ExportSettings:
     ltc_preroll: float = 2.0
 
 
+class Song:
+    """One song in the setlist: its own audio, cues, suggestions, grid and timecode."""
+
+    def __init__(self, name: str = "Song 1") -> None:
+        self.id = new_id()
+        self.name = name
+        self.tracks: list[Track] = []
+        self.cues: list[Cue] = []
+        self.suggestions: list[Suggestion] = []
+        self.beat_grid = BeatGrid()
+        self.mixer = MixerState()
+        self.loop: tuple[float, float] | None = None
+        self.view: dict[str, Any] = {}
+        self.tc_offset = 0.0         # timecode at song time 0, in seconds (e.g. 3600 = 01:00:00:00)
+        self.ma3_timecode = 1        # grandMA3 Timecode pool slot for this song
+        self.seq_offset = 0          # added to each lane's MA3 sequence number for this song
+        self.cue_start = 1.0         # first auto cue number for this song
+        self.notes = ""
+
+    def duration_hint(self) -> float:
+        end = max((c.time + (c.duration or 0) for c in self.cues), default=0.0)
+        return end
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id, "name": self.name, "notes": self.notes,
+            "tracks": [asdict(t) for t in self.tracks],
+            "cues": [asdict(c) for c in self.cues],
+            "suggestions": [asdict(s) for s in self.suggestions],
+            "beat_grid": asdict(self.beat_grid),
+            "mixer": asdict(self.mixer),
+            "loop": list(self.loop) if self.loop else None,
+            "view": self.view,
+            "tc_offset": self.tc_offset, "ma3_timecode": self.ma3_timecode,
+            "seq_offset": self.seq_offset, "cue_start": self.cue_start,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> "Song":
+        s = cls(d.get("name", "Song"))
+        s.id = d.get("id") or new_id()
+        s.notes = d.get("notes", "")
+        s.tracks = [_from_dict(Track, t) for t in d.get("tracks", [])]
+        s.restore_content(d)
+        s.mixer = _from_dict(MixerState, d.get("mixer", {}))
+        loop = d.get("loop")
+        s.loop = (float(loop[0]), float(loop[1])) if loop else None
+        s.view = d.get("view", {}) or {}
+        s.tc_offset = float(d.get("tc_offset", 0.0))
+        s.ma3_timecode = int(d.get("ma3_timecode", 1))
+        s.seq_offset = int(d.get("seq_offset", 0))
+        s.cue_start = float(d.get("cue_start", 1.0))
+        return s
+
+    def content(self) -> dict[str, Any]:
+        return {"cues": [asdict(c) for c in self.cues],
+                "suggestions": [asdict(x) for x in self.suggestions],
+                "beat_grid": asdict(self.beat_grid)}
+
+    def restore_content(self, d: dict[str, Any]) -> None:
+        self.cues = [_from_dict(Cue, c) for c in d.get("cues", [])]
+        self.suggestions = [_from_dict(Suggestion, x) for x in d.get("suggestions", [])]
+        self.beat_grid = _from_dict(BeatGrid, d.get("beat_grid", {}))
+
+
+def _song_attr(name: str):
+    """Project attribute that lives on the current song."""
+    def get(self):
+        return getattr(self.song, name)
+
+    def set_(self, value):
+        setattr(self.song, name, value)
+    return property(get, set_)
+
+
 class Project:
-    """Everything that is saved to a .cueproj file."""
+    """Everything that is saved to a .cueproj file: a setlist of songs sharing lanes
+    (MA3 sequences), frame rate and analysis settings."""
+
+    tracks = _song_attr("tracks")
+    cues = _song_attr("cues")
+    suggestions = _song_attr("suggestions")
+    beat_grid = _song_attr("beat_grid")
+    mixer = _song_attr("mixer")
+    loop = _song_attr("loop")
+    view = _song_attr("view")
+    tc_offset = _song_attr("tc_offset")
 
     def __init__(self) -> None:
         self.name = "Untitled"
         self.path: str = ""
         self.frame_rate_key = DEFAULT_RATE
-        self.tc_offset = 0.0        # timecode at song time 0, in seconds (e.g. 3600 = 01:00:00:00)
-        self.tracks: list[Track] = []
+        self.songs: list[Song] = [Song("Song 1")]
+        self.current = 0
         self.lanes: list[Lane] = []
-        self.cues: list[Cue] = []
-        self.suggestions: list[Suggestion] = []
-        self.beat_grid = BeatGrid()
-        self.mixer = MixerState()
         self.analysis = AnalysisSettings()
         self.export = ExportSettings()
-        self.loop: tuple[float, float] | None = None
-        self.view: dict[str, Any] = {}
         self.add_default_lanes()
+
+    # -- songs ------------------------------------------------------------
+    @property
+    def song(self) -> Song:
+        if not self.songs:
+            self.songs.append(Song("Song 1"))
+        self.current = max(0, min(self.current, len(self.songs) - 1))
+        return self.songs[self.current]
+
+    def song_by_id(self, sid: str) -> Song | None:
+        return next((s for s in self.songs if s.id == sid), None)
+
+    def select_song(self, sid: str) -> bool:
+        for i, s in enumerate(self.songs):
+            if s.id == sid:
+                self.current = i
+                return True
+        return False
+
+    def add_song(self, name: str = "") -> Song:
+        n = len(self.songs) + 1
+        s = Song(name or f"Song {n}")
+        prev = self.songs[-1] if self.songs else None
+        # sensible show defaults: song N starts at N:00:00:00, own timecode slot, own cue range
+        s.tc_offset = (prev.tc_offset + 3600.0) if prev else 0.0
+        s.ma3_timecode = (max(x.ma3_timecode for x in self.songs) + 1) if self.songs else 1
+        s.cue_start = float(100 * (n - 1) + 1)
+        self.songs.append(s)
+        return s
+
+    def remove_song(self, sid: str) -> None:
+        self.songs = [s for s in self.songs if s.id != sid] or [Song("Song 1")]
+        self.current = min(self.current, len(self.songs) - 1)
+
+    def move_song(self, sid: str, direction: int) -> None:
+        i = next((k for k, s in enumerate(self.songs) if s.id == sid), -1)
+        j = i + direction
+        if 0 <= i < len(self.songs) and 0 <= j < len(self.songs):
+            cur = self.song.id
+            self.songs[i], self.songs[j] = self.songs[j], self.songs[i]
+            self.select_song(cur)
+
+    def all_tracks(self) -> list[Track]:
+        return [t for s in self.songs for t in s.tracks]
 
     # -- helpers --------------------------------------------------------
     @property
@@ -255,63 +378,53 @@ class Project:
 
     # -- edit snapshots (for undo) -------------------------------------
     def edit_state(self) -> dict[str, Any]:
-        return {
-            "lanes": [asdict(l) for l in self.lanes],
-            "cues": [asdict(c) for c in self.cues],
-            "suggestions": [asdict(s) for s in self.suggestions],
-            "beat_grid": asdict(self.beat_grid),
-            "lane_for_kind": dict(self.analysis.lane_for_kind),
-        }
+        st = self.song.content()
+        st.update({"song_id": self.song.id,
+                   "lanes": [asdict(l) for l in self.lanes],
+                   "lane_for_kind": dict(self.analysis.lane_for_kind)})
+        return st
 
     def restore_edit_state(self, st: dict[str, Any]) -> None:
+        if st.get("song_id"):
+            self.select_song(st["song_id"])  # undo jumps back to the song it happened in
+        self.song.restore_content(st)
         self.lanes = [_from_dict(Lane, d) for d in st["lanes"]]
-        self.cues = [_from_dict(Cue, d) for d in st["cues"]]
-        self.suggestions = [_from_dict(Suggestion, d) for d in st["suggestions"]]
-        self.beat_grid = _from_dict(BeatGrid, st["beat_grid"])
         self.analysis.lane_for_kind = dict(st["lane_for_kind"])
 
     # -- serialisation --------------------------------------------------
     def to_dict(self) -> dict[str, Any]:
-        d = self.edit_state()
-        d.update({
+        return {
             "format": "cueforge-project",
-            "version": 1,
+            "version": 2,
             "name": self.name,
             "frame_rate": self.frame_rate_key,
-            "tc_offset": self.tc_offset,
-            "tracks": [asdict(t) for t in self.tracks],
-            "mixer": asdict(self.mixer),
+            "lanes": [asdict(l) for l in self.lanes],
             "analysis": asdict(self.analysis),
             "export": asdict(self.export),
-            "loop": list(self.loop) if self.loop else None,
-            "view": self.view,
-        })
-        return d
+            "songs": [s.to_dict() for s in self.songs],
+            "current": self.current,
+        }
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "Project":
         p = cls()
         p.name = d.get("name", "Untitled")
         p.frame_rate_key = d.get("frame_rate", DEFAULT_RATE)
-        p.tc_offset = float(d.get("tc_offset", 0.0))
-        p.tracks = [_from_dict(Track, t) for t in d.get("tracks", [])]
-        p.mixer = _from_dict(MixerState, d.get("mixer", {}))
         p.analysis = _from_dict(AnalysisSettings, d.get("analysis", {}))
         defaults = AnalysisSettings()
         for k in SUGGESTION_KINDS:  # projects saved before a kind existed
             p.analysis.thresholds.setdefault(k, defaults.thresholds[k])
             p.analysis.visible.setdefault(k, True)
         p.export = _from_dict(ExportSettings, d.get("export", {}))
-        loop = d.get("loop")
-        p.loop = (float(loop[0]), float(loop[1])) if loop else None
-        p.view = d.get("view", {}) or {}
-        p.restore_edit_state({
-            "lanes": d.get("lanes", []),
-            "cues": d.get("cues", []),
-            "suggestions": d.get("suggestions", []),
-            "beat_grid": d.get("beat_grid", {}),
-            "lane_for_kind": d.get("analysis", {}).get("lane_for_kind", {}),
-        })
+        if "songs" in d:
+            p.songs = [Song.from_dict(x) for x in d["songs"]] or [Song("Song 1")]
+            p.current = int(d.get("current", 0))
+        else:  # version 1: a single song stored at the top level
+            song = Song.from_dict({**d, "name": d.get("name", "Song 1")})
+            p.songs = [song]
+            p.current = 0
+        p.lanes = [_from_dict(Lane, x) for x in d.get("lanes", [])]
+        p.analysis.lane_for_kind = dict(d.get("analysis", {}).get("lane_for_kind", {}))
         if not p.lanes:
             p.add_default_lanes()
         return p

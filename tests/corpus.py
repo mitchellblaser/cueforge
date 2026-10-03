@@ -17,6 +17,7 @@ from dataclasses import asdict, dataclass, field
 import numpy as np
 
 SR = 44100
+CORPUS_VERSION = "3"   # bump when composition changes so cached renders are refreshed
 CACHE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".corpus_cache")
 SOUNDFONTS = ["/usr/share/sounds/sf2/FluidR3_GM.sf2", "/usr/share/soundfonts/FluidR3_GM.sf2",
               "/usr/share/sounds/sf2/default-GM.sf2"]
@@ -190,16 +191,24 @@ def compose(spec: SongSpec):
             # ---- drums
             phrase_end = sec.fill_every and (bar + 1) % sec.fill_every == 0
             section_end = bar == sec.bars - 1 and next_has_drums and sec.drums
-            fill_beats = 0
+            fill_len = 0.0
             if sec.drums and (phrase_end or section_end) and bb + bpb < len(beats) - 1:
-                fill_beats = int(rng.choice([1, 2, 2, bpb] if bpb == 4 else [1, bpb]))
-            groove_beats = bpb - fill_beats
+                # half a beat up to a whole bar, at different speeds: 8ths (slow tom fill),
+                # 16ths, sextuplets, 32nd-note rolls
+                fill_len = float(rng.choice([0.5, 1, 2, 2, bpb] if bpb == 4 else [0.5, 1, bpb]))
+                rate = int(rng.choice([2, 4, 4, 6, 8]))
+                if fill_len * rate < 2:
+                    rate = 4
+            groove_beats = bpb - int(np.ceil(fill_len))
             if sec.drums:
                 _groove(sec.drums, bb, groove_beats, bpb, v, hit, rng, first_of_section=(bar == 0))
-            if fill_beats:
-                start = bb + groove_beats
-                _fill(start, fill_beats, v, hit, rng)
-                truth["fills"].append((float(beats[start]), float(beats[bb + bpb])))
+            if fill_len:
+                if fill_len != int(fill_len):        # groove carries on into the partial beat
+                    hit(KICK, bb + groove_beats, v * 0.8)
+                    hit(HAT, bb + groove_beats, v * 0.5)
+                start = bb + bpb - fill_len
+                _fill(start, fill_len, rate, v, hit, rng)
+                truth["fills"].append((at(start, False), float(beats[bb + bpb]), rate))
             if sec.roll:
                 # snare roll that gets denser through the section (EDM build)
                 density = [1, 1, 2, 2, 2, 4, 4, 8][min(7, bar * 8 // sec.bars)]  # hits per beat
@@ -207,7 +216,7 @@ def compose(spec: SongSpec):
                 for k in range(steps):
                     hit(SNARE, bb + k * bpb / steps, 50 + 70 * (bar / sec.bars), 0.05)
                 if bar == 0:
-                    truth["fills"].append((float(beats[bb]), float(beats[b0 + sec.bars * bpb])))
+                    truth["fills"].append((float(beats[bb]), float(beats[b0 + sec.bars * bpb]), 4))
             # ---- bass
             if sec.bass:
                 root = chord[0] - 24
@@ -307,14 +316,18 @@ def _groove(style, bb, nbeats, bpb, v, hit, rng, first_of_section):
             hit(HAT, pos, v * 0.5)
 
 
-def _fill(start, nbeats, v, hit, rng):
-    steps = nbeats * 4
+def _fill(start, nbeats, rate, v, hit, rng):
+    """A fill of `nbeats` beats at `rate` notes per beat, snare first then down the toms."""
+    steps = int(round(nbeats * rate))
     toms = TOMS[:max(2, min(len(TOMS), steps // 2 + 1))]
+    roll = rate >= 8
     for q in range(steps):
         frac = q / steps
-        note = SNARE if q < steps // 4 else toms[min(len(toms) - 1, int(frac * len(toms)))]
-        hit(note, start + q / 4, v * (0.75 + 0.35 * frac), 0.12)
-
+        if roll:
+            note = SNARE if frac < 0.75 else toms[min(len(toms) - 1, int((frac - 0.75) * 4 * len(toms)))]
+        else:
+            note = SNARE if q < steps // 4 else toms[min(len(toms) - 1, int(frac * len(toms)))]
+        hit(note, start + q / rate, v * (0.7 + 0.4 * frac), 0.1)
 
 def _lead_bar(sec: Section, bar: int, bb: int, bpb: int, chord, rng):
     scale_root = chord[0] + 12
@@ -377,7 +390,8 @@ def _live_fx(y: np.ndarray, rng) -> np.ndarray:
 
 def render(spec: SongSpec, cache: bool = True):
     """Returns (mix stereo float32, {stem: mono}, truth)."""
-    key = hashlib.sha1(json.dumps(asdict(spec), sort_keys=True, default=str).encode()).hexdigest()[:12]
+    key = hashlib.sha1((CORPUS_VERSION + json.dumps(asdict(spec), sort_keys=True, default=str)).encode()
+                       ).hexdigest()[:12]
     path = os.path.join(CACHE, f"{spec.name}_{key}.npz")
     if cache and os.path.exists(path):
         z = np.load(path, allow_pickle=True)

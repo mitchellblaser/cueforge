@@ -190,8 +190,9 @@ class ProjectSettingsDialog(QDialog):
         self.rate.setCurrentIndex(self.rate.findData(p.frame_rate_key))
         form.addRow("Frame rate", self.rate)
         self.offset = QLineEdit(seconds_to_tc(0, p.frame_rate, p.tc_offset))
-        self.offset.setToolTip("Timecode at the start of the song, e.g. 01:00:00:00")
-        form.addRow("Song starts at timecode", self.offset)
+        self.offset.setToolTip("Timecode at the start of the current song, e.g. 01:00:00:00 "
+                               "(each song has its own; see the setlist ⚙)")
+        form.addRow(f"'{p.song.name}' starts at timecode", self.offset)
         form.addRow(QLabel("Changing the frame rate keeps cue times; they are re-snapped to whole frames."))
         form.addRow(_buttons(self))
 
@@ -211,6 +212,59 @@ class ProjectSettingsDialog(QDialog):
             for c in p.cues:
                 c.time = editing.snap_time(p, c.time, False)
         self.s.lanes_changed.emit()
+        super().accept()
+
+
+class SongDialog(QDialog):
+    """Per-song settings: name, start timecode, MA3 timecode slot and cue numbering."""
+
+    def __init__(self, session, song_id: str, parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Song settings")
+        self.s, self.sid = session, song_id
+        p = session.project
+        song = p.song_by_id(song_id)
+        form = QFormLayout(self)
+        self.name = QLineEdit(song.name)
+        form.addRow("Name", self.name)
+        self.tc = QLineEdit(seconds_to_tc(0, p.frame_rate, song.tc_offset))
+        self.tc.setToolTip("Timecode at the very start of this song's audio, e.g. 02:00:00:00")
+        form.addRow("Starts at timecode", self.tc)
+        self.slot = QSpinBox()
+        self.slot.setRange(1, 9999)
+        self.slot.setValue(song.ma3_timecode)
+        form.addRow("grandMA3 Timecode slot", self.slot)
+        self.cue_start = QDoubleSpinBox()
+        self.cue_start.setRange(0.001, 99999)
+        self.cue_start.setDecimals(3)
+        self.cue_start.setValue(song.cue_start)
+        self.cue_start.setToolTip("First automatic cue number for this song (explicit cue numbers are kept)")
+        form.addRow("First cue number", self.cue_start)
+        self.seq_offset = QSpinBox()
+        self.seq_offset.setRange(0, 9999)
+        self.seq_offset.setValue(song.seq_offset)
+        self.seq_offset.setToolTip("Added to every lane's sequence number for this song "
+                                   "(use it if each song has its own block of sequences)")
+        form.addRow("Sequence offset", self.seq_offset)
+        self.notes = QPlainTextEdit(song.notes)
+        self.notes.setFixedHeight(60)
+        form.addRow("Notes", self.notes)
+        seqs = ", ".join(f"{l.name} → Seq {l.ma3_sequence + song.seq_offset}" for l in p.lanes if l.export)
+        info = QLabel(f"<span style='color:{theme.FG_DIM}'>{seqs}</span>")
+        info.setWordWrap(True)
+        form.addRow(info)
+        form.addRow(_buttons(self))
+
+    def accept(self) -> None:
+        p = self.s.project
+        try:
+            off = parse_tc(self.tc.text(), p.frame_rate, 0.0)
+        except ValueError as exc:
+            QMessageBox.warning(self, "Invalid timecode", str(exc))
+            return
+        self.s.update_song(self.sid, name=self.name.text().strip() or "Song", tc_offset=off,
+                           ma3_timecode=self.slot.value(), cue_start=self.cue_start.value(),
+                           seq_offset=self.seq_offset.value(), notes=self.notes.toPlainText().strip())
         super().accept()
 
 
@@ -281,12 +335,16 @@ class MA3ExportDialog(QDialog):
             self.fmt.addItem(label, k)
         self.fmt.setCurrentIndex(max(0, self.fmt.findData(session.settings.get("ma3_format", "xml"))))
         form.addRow("Format", self.fmt)
-        self.name = QLineEdit(ex.ma3_name or p.name)
-        form.addRow("Timecode name", self.name)
+        self.scope = QComboBox()
+        self.scope.addItem(f"Current song only ('{p.song.name}')", "current")
+        self.scope.addItem(f"Whole setlist ({len(p.songs)} songs)", "all")
+        self.scope.setCurrentIndex(1 if len(p.songs) > 1 else 0)
+        form.addRow("Songs", self.scope)
         self.tc_num = QSpinBox()
         self.tc_num.setRange(1, 9999)
-        self.tc_num.setValue(int(session.settings.get("ma3_tc_number", 1)))
-        form.addRow("Timecode pool number", self.tc_num)
+        self.tc_num.setValue(p.song.ma3_timecode)
+        self.tc_num.setToolTip("For the current song; each song's slot is set in its song settings")
+        form.addRow("Timecode slot (current song)", self.tc_num)
         self.unit = QComboBox()
         self.unit.addItem("MA3 internal ticks (1/16777216 s)", "ticks")
         self.unit.addItem("Seconds", "seconds")
@@ -298,10 +356,20 @@ class MA3ExportDialog(QDialog):
         self.create = QCheckBox("Lua: create missing cues (empty, labelled) in the target sequences")
         self.create.setChecked(True)
         form.addRow(self.create)
-        lanes = [l for l in p.lanes if l.export and p.cues_in_lane(l.id)]
-        summary = "<br>".join(f"{l.name} → Sequence {l.ma3_sequence} ({len(p.cues_in_lane(l.id))} cues)"
-                              for l in lanes) or "No lanes with cues are set to export."
-        form.addRow(QLabel(f"<b>Tracks:</b><br>{summary}"))
+        rows = []
+        for song in p.songs:
+            n = sum(1 for c in song.cues if (p.lane(c.lane_id) and p.lane(c.lane_id).export))
+            rows.append(f"{song.name}: {n} cues → Timecode {song.ma3_timecode}, starts "
+                        f"{seconds_to_tc(0, p.frame_rate, song.tc_offset)}")
+        form.addRow(QLabel("<b>Setlist:</b><br>" + "<br>".join(rows)))
+        from ..export.ma3 import cue_number_clashes
+        clashes = cue_number_clashes(p)
+        if clashes:
+            w = QLabel("<span style='color:#ffb74d'><b>Cue number clash:</b> " + "; ".join(clashes[:3])
+                       + (" …" if len(clashes) > 3 else "") + "<br>Give songs different first cue numbers or "
+                       "sequence offsets (setlist ⚙, or right-click ▸ Auto-number setlist).</span>")
+            w.setWordWrap(True)
+            form.addRow(w)
         warn = QLabel("grandMA3's XML layout is not officially documented. Test the import in grandMA3 onPC "
                       "first; if your version rejects it, use the Lua plugin.")
         warn.setWordWrap(True)
@@ -311,11 +379,11 @@ class MA3ExportDialog(QDialog):
 
     def accept(self) -> None:
         ex = self.s.project.export
-        ex.ma3_name = self.name.text().strip()
         ex.ma3_time_unit = self.unit.currentData()
+        self.s.update_song(self.s.project.song.id, ma3_timecode=self.tc_num.value())
+        self.all_songs = self.scope.currentData() == "all"
         ex.ma3_data_version = self.ver.text().strip() or ex.ma3_data_version
         self.s.settings.set("ma3_format", self.fmt.currentData())
-        self.s.settings.set("ma3_tc_number", self.tc_num.value())
         super().accept()
 
 

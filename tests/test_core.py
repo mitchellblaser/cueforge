@@ -191,3 +191,51 @@ def test_grid_tools():
     assert t.downbeats[0] == pytest.approx(onsets[0]) and t.confirmed
     m = merge_grid(BeatGrid.from_tempo(100, 0.0, 20.0), BeatGrid.from_tempo(120, 4.0, 6.0))
     assert all(np.diff(m.beats) > 0)
+
+
+def test_setlist_model_roundtrip(tmp_path):
+    from cueforge.core.model import Song
+    p = Project()
+    editing.add_cue(p, p.lanes[0].id, 1.0, label="S1 cue")
+    s2 = p.add_song("Encore")
+    p.select_song(s2.id)
+    editing.add_cue(p, p.lanes[1].id, 2.0, label="S2 cue")
+    p.beat_grid = BeatGrid.from_tempo(100, 0.0, 10)
+    assert len(p.cues) == 1 and p.cues[0].label == "S2 cue"
+    path = tmp_path / "set.cueproj"
+    save_project(p, str(path))
+    q = load_project(str(path))
+    assert [s.name for s in q.songs] == ["Song 1", "Encore"]
+    assert q.song.name == "Encore" and q.cues[0].label == "S2 cue"
+    assert q.songs[0].cues[0].label == "S1 cue" and q.songs[1].tc_offset == pytest.approx(3600)
+    assert q.beat_grid.bpm() == pytest.approx(100)
+    assert len(q.songs[0].beat_grid.beats) == 0
+
+
+def test_v1_project_loads_as_single_song(tmp_path):
+    import json
+    v1 = {"format": "cueforge-project", "version": 1, "name": "Old", "frame_rate": "25", "tc_offset": 3600.0,
+          "tracks": [], "lanes": [{"name": "Main", "color": "#fff", "tap_key": "1", "ma3_sequence": 4,
+                                   "export": True, "id": "lane1"}],
+          "cues": [{"lane_id": "lane1", "time": 2.0, "label": "old cue", "id": "c1"}], "suggestions": [],
+          "beat_grid": {}, "mixer": {}, "analysis": {}, "export": {}, "loop": None, "view": {}}
+    path = tmp_path / "old.cueproj"
+    path.write_text(json.dumps(v1))
+    p = load_project(str(path))
+    assert len(p.songs) == 1 and p.tc_offset == 3600 and p.cues[0].label == "old cue"
+    assert p.lanes[0].ma3_sequence == 4 and p.frame_rate_key == "25"
+
+
+def test_undo_follows_song():
+    p = Project()
+    u = UndoStack(p)
+    s2 = p.add_song("Two")
+    p.select_song(s2.id)
+    u.push("add")
+    editing.add_cue(p, p.lanes[0].id, 1.0)
+    p.select_song(p.songs[0].id)
+    assert len(p.cues) == 0
+    u.undo()                      # undo the cue added in song two -> jumps back there
+    assert p.song.id == s2.id and len(p.cues) == 0
+    u.redo()
+    assert p.song.id == s2.id and len(p.cues) == 1

@@ -39,6 +39,9 @@ def guess_role(filename: str, is_first: bool) -> str:
 
 class Session(QObject):
     project_replaced = Signal()
+    songs_changed = Signal()       # setlist names/order/settings
+    song_changed = Signal()        # the current song switched
+    song_will_change = Signal()    # about to switch (views store their state)
     tracks_changed = Signal()
     mixer_changed = Signal()
     lanes_changed = Signal()
@@ -68,7 +71,116 @@ class Session(QObject):
         self.undo = UndoStack(self.project)
         self.undo.on_change = self._on_undo_change
         self._was_dirty = False
+        self._song_lru: list[str] = []
+        self._engine_song: str | None = None
+        self._load_current_song()
+
+    # ------------------------------------------------------------------ songs
+    AUDIO_CACHE_SONGS = 3   # keep decoded audio for this many recently used songs
+
+    def _load_current_song(self) -> None:
+        """Put the current song's tracks into the audio engine (loading if needed)."""
+        song = self.project.song
+        self.engine.pause()
+        for tid in list(self.engine.tracks):
+            self.engine.remove_track(tid)
+        self._engine_song = song.id
+        for t in song.tracks:
+            a = self.audio.get(t.id)
+            if a is not None:
+                self.engine.set_track(t.id, a.samples)
+                self.engine.update_track(t.id, gain_db=t.gain_db, mute=t.mute, solo=t.solo, offset=t.offset)
+            elif t.id not in self._loading:
+                self._load_track_audio(t)
+        self.engine.seek(0)
+        self.engine.loop = song.loop
+        self.engine.loop_enabled = False
         self._sync_engine()
+        # drop decoded audio of songs not used recently
+        self._song_lru = [song.id] + [x for x in self._song_lru if x != song.id]
+        keep = set(self._song_lru[:self.AUDIO_CACHE_SONGS])
+        keep_tracks = {t.id for s in self.project.songs if s.id in keep for t in s.tracks}
+        for tid in list(self.audio):
+            if tid not in keep_tracks:
+                del self.audio[tid]
+
+    def switch_song(self, sid: str) -> None:
+        if sid == self.project.song.id:
+            return
+        self.song_will_change.emit()
+        self.project.song.loop = self.engine.loop
+        if not self.project.select_song(sid):
+            return
+        self.sel_cues.clear()
+        self.sel_sugs.clear()
+        self._load_current_song()
+        self.song_changed.emit()
+        self.project_replaced.emit()
+        self.songs_changed.emit()
+
+    def add_song(self, paths: list[str] | None = None, name: str = "") -> str:
+        if not name and paths:
+            name = os.path.splitext(os.path.basename(paths[0]))[0]
+        song = self.project.add_song(name)
+        self._touch()
+        self.switch_song(song.id)
+        if paths:
+            self.import_audio(paths)
+        self.songs_changed.emit()
+        return song.id
+
+    def remove_song(self, sid: str) -> None:
+        song = self.project.song_by_id(sid)
+        if not song:
+            return
+        was_current = sid == self.project.song.id
+        idx = self.project.songs.index(song)
+        for t in song.tracks:
+            self.audio.pop(t.id, None)
+        self.project.remove_song(sid)
+        self._touch()
+        if was_current:
+            self.project.current = min(idx, len(self.project.songs) - 1)
+            self._load_current_song()
+            self.song_changed.emit()
+            self.project_replaced.emit()
+        self.songs_changed.emit()
+
+    def move_song(self, sid: str, direction: int) -> None:
+        self.project.move_song(sid, direction)
+        self._touch()
+        self.songs_changed.emit()
+
+    def reorder_songs(self, ids: list[str]) -> None:
+        by_id = {s.id: s for s in self.project.songs}
+        if set(ids) != set(by_id):
+            return
+        cur = self.project.song.id
+        self.project.songs = [by_id[i] for i in ids]
+        self.project.select_song(cur)
+        self._touch()
+        self.songs_changed.emit()
+
+    def update_song(self, sid: str, **fields) -> None:
+        song = self.project.song_by_id(sid)
+        if not song:
+            return
+        for k, v in fields.items():
+            setattr(song, k, v)
+        self._touch()
+        self.songs_changed.emit()
+        if sid == self.project.song.id:
+            self.cues_changed.emit()   # timecode display / ruler may change
+
+    def auto_number_setlist(self, first_tc: float = 3600.0, gap: float = 3600.0) -> None:
+        """Song N starts at first_tc + (N-1)*gap, uses Timecode slot N and cues N01..."""
+        for i, song in enumerate(self.project.songs):
+            song.tc_offset = first_tc + i * gap
+            song.ma3_timecode = i + 1
+            song.cue_start = float(100 * i + 1)
+        self._touch()
+        self.songs_changed.emit()
+        self.cues_changed.emit()
 
     # ------------------------------------------------------------------ project
     @property
@@ -89,13 +201,12 @@ class Session(QObject):
         self.undo.on_change = self._on_undo_change
         self.sel_cues.clear()
         self.sel_sugs.clear()
-        self.engine.seek(0)
-        self.engine.loop = p.loop
-        self._sync_engine()
+        self._song_lru = []
+        self._engine_song = None
         self.project_replaced.emit()
         self._emit_dirty()
-        for t in p.tracks:
-            self._load_track_audio(t)
+        self._load_current_song()
+        self.songs_changed.emit()
 
     def new_project(self) -> None:
         self._replace_project(Project())
@@ -106,7 +217,7 @@ class Session(QObject):
 
     def save(self, path: str | None = None) -> None:
         path = path or self.project.path
-        self.project.loop = self.engine.loop
+        self.project.song.loop = self.engine.loop
         save_project(self.project, path)
         self.undo.mark_clean()
         self.settings.add_recent(path)
@@ -127,6 +238,11 @@ class Session(QObject):
         self.dirty_changed.emit(True)
 
     def _on_undo_change(self) -> None:
+        if self.project.song.id != self._engine_song:   # undo jumped to another song
+            self._load_current_song()
+            self.song_changed.emit()
+            self.project_replaced.emit()
+            self.songs_changed.emit()
         # prune selection of things that no longer exist
         ids = {c.id for c in self.project.cues}
         self.sel_cues &= ids
@@ -163,11 +279,15 @@ class Session(QObject):
 
     def _track_loaded(self, tid: str, audio: AudioData) -> None:
         self._loading.discard(tid)
-        t = self.project.track(tid)
-        if not t:
+        if not any(t.id == tid for t in self.project.all_tracks()):
             return
         self.audio[tid] = audio
         self.load_errors.pop(tid, None)
+        t = self.project.track(tid)      # None if it belongs to another song
+        if not t:
+            if not self._loading:
+                self.busy.emit("")
+            return
         self.engine.set_track(tid, audio.samples)
         self.engine.update_track(tid, gain_db=t.gain_db, mute=t.mute, solo=t.solo, offset=t.offset)
         if not self._loading:
@@ -561,7 +681,8 @@ class Session(QObject):
     def run_analysis(self, opts: AnalysisOptions) -> bool:
         if self._analysis_relay is not None or self._loading:
             return False
-        audio = dict(self.audio)
+        ids = {t.id for t in self.project.tracks}
+        audio = {k: v for k, v in self.audio.items() if k in ids}
         if not audio:
             self.status.emit("Import audio first")
             return False
@@ -570,7 +691,10 @@ class Session(QObject):
             cache = analysis_cache_dir(self.project)
         except OSError:
             pass
-        job = Job(run_analysis, self.project, audio, opts, cache_dir=cache)
+        import copy
+        snapshot = copy.copy(self.project)   # pins the current song even if the user switches
+        self._analysis_song = self.project.song.id
+        job = Job(run_analysis, snapshot, audio, opts, cache_dir=cache)
         self.busy.emit("Analysing…")
         relay = start_job(job)
         relay.progress.connect(self.progress.emit)
@@ -586,6 +710,27 @@ class Session(QObject):
     def _analysis_finished(self, res: AnalysisResult) -> None:
         self._analysis_relay = None
         self.busy.emit("")
+        origin = getattr(self, "_analysis_song", self.project.song.id)
+        if not self.project.song_by_id(origin):
+            self.status.emit("Analysis finished, but its song was removed")
+            return
+        current = self.project.song.id
+        self.project.select_song(origin)   # apply results to the song that was analysed
+        try:
+            self._apply_analysis(res)
+        finally:
+            self.project.select_song(current)
+            self._sync_engine()
+            self.cues_changed.emit()
+        if origin != current:
+            name = self.project.song_by_id(origin).name
+            res.log.append(f"(results added to '{name}')")
+        self.lanes_changed.emit()
+        self.songs_changed.emit()
+        self.status.emit(res.log[-1] if res.log else "Analysis done")
+        self.analysis_done.emit(res)
+
+    def _apply_analysis(self, res: AnalysisResult) -> None:
         with self.edit("Analyse"):
             if res.grid and not res.grid.empty:
                 cur = self.project.beat_grid
@@ -599,9 +744,6 @@ class Session(QObject):
             if len(self.project.lanes) > n_lanes:
                 res.log.append("Added lanes for the new suggestion types: " +
                                ", ".join(l.name for l in self.project.lanes[n_lanes:]))
-        self.lanes_changed.emit()
-        self.status.emit(res.log[-1] if res.log else "Analysis done")
-        self.analysis_done.emit(res)
 
     def _analysis_failed(self, err: str) -> None:
         self._analysis_relay = None

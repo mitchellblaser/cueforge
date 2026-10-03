@@ -34,7 +34,8 @@ Demucs (advanced AI) · PyInstaller (packaging).
 | 3 | MA3 export — XML, Lua plugin, command list, LTC WAV | Done |
 | 4 | AI v2 — per-stem hits (imported stems / Demucs), energy, batch accept, threshold learning | Done |
 | 5 | Live music & beyond drums — tempo-following beats, meter, tap-along grid, drum fills → strobes, chord changes → colour, lead lines → chase steps, multi-genre accuracy corpus | Done (see docs/ACCURACY.md) |
-| 6 | Later — live LTC/MTC output, OSC to console | Not started |
+| 6 | Setlist: multiple songs per project with own timecode / MA3 slot / cue range; fast-fill strobe detection | Done |
+| 7 | Later — live LTC/MTC output, OSC to console | Not started |
 
 ## Known limitations / next steps
 - grandMA3 timecode XML layout is undocumented: verify an import in grandMA3 onPC; fall back to the Lua plugin.

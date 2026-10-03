@@ -81,7 +81,7 @@ def renumber_lane(project: Project, lane_id: str, start: float = 1.0, step: floa
 def effective_cue_numbers(project: Project, lane_id: str) -> dict[str, float]:
     """Cue numbers used on export: explicit numbers kept, others filled in ascending."""
     result: dict[str, float] = {}
-    last = 0.0
+    last = project.song.cue_start - 1
     used = {c.number for c in project.cues_in_lane(lane_id) if c.number is not None}
     for c in project.cues_in_lane(lane_id):
         if c.number is not None:

@@ -291,3 +291,47 @@ def test_chase_steps_and_hold(app, win):
     assert s.project.lane(cue.lane_id).name == "Strobe" and cue.duration == pytest.approx(1.0)
     pump(app, 0.1)
     win.canvas.repaint()
+
+
+def test_setlist_sidebar(app, win):
+    s = win.s
+    first = s.project.song.id
+    c1 = s.add_cue(s.project.lanes[0].id, 1.0, label="first song cue")
+    # add a second song from the click file (as if dropped on the setlist)
+    click = str(win.tmp / "click.wav")
+    sid = s.add_song([click])
+    wait(app, lambda: len([t for t in s.project.tracks if t.id in s.audio]) == 1)
+    assert s.project.song.id == sid and s.project.song.name == "click"
+    assert win.setlist.list.count() == 2
+    assert set(s.engine.tracks) == {t.id for t in s.project.tracks}   # only this song's audio plays
+    assert not s.project.cues
+    s.add_cue(s.project.lanes[0].id, 2.0, label="second song cue")
+    # switching back via the sidebar restores the first song
+    win.setlist.list.setCurrentRow(0)
+    pump(app)
+    assert s.project.song.id == first and [c.label for c in s.project.cues] == ["first song cue"]
+    assert set(s.engine.tracks) == {t.id for t in s.project.tracks}
+    # undo of the cue added in song two jumps back to song two
+    win._undo()
+    assert s.project.song.id == sid and not s.project.cues
+    # song settings / auto numbering
+    s.auto_number_setlist()
+    assert [x.tc_offset for x in s.project.songs] == [3600.0, 7200.0]
+    assert [x.cue_start for x in s.project.songs] == [1.0, 101.0]
+    win._step_song(-1)
+    assert s.project.song.id == first
+    # analysis results land in the song that was analysed, even after switching away
+    from cueforge.analysis.pipeline import AnalysisOptions
+    done = []
+    s.analysis_done.connect(done.append)
+    assert s.run_analysis(AnalysisOptions(use_deep_models=False, hits=False, harmony=False, melody=False))
+    s.switch_song(sid)
+    wait(app, lambda: done, 120)
+    assert s.project.song.id == sid
+    assert s.project.song_by_id(first).suggestions and not s.project.song_by_id(sid).suggestions
+    # save / reopen keeps the setlist
+    path = win.tmp / "set.cueproj"
+    s.project.path = str(path)
+    assert win.save()
+    s.open_project(str(path))
+    assert [x.name for x in s.project.songs] == ["Song 1", "click"]

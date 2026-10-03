@@ -178,12 +178,12 @@ def run_analysis(project: Project, audio: dict[str, AudioData], opts: AnalysisOp
         fb = list(grid_beats) + ([grid_beats[-1] + (grid_beats[-1] - grid_beats[-2])] if len(grid_beats) > 1 else [])
         bpb = grid.beats_per_bar if grid else 4
         fills = detect_fills(drum_src if drum_src is not None else y, sr, fb, grid_downbeats, bpb,
-                             percussive=drum_src is None, spectra=None if drum_src is not None else spectra)
+                             percussive=True, clean_source=drum_src is not None)
         for f in fills:
             res.suggestions.append(Suggestion(
                 "fill", round(f.start, 6), f.confidence, f.reason, label=f.label,
                 duration=round(f.end - f.start, 3),
-                idea="strobe (or fast chase) through the fill, big hit on the landing"))
+                idea="strobe through the fill (Off on the landing), big hit on the downbeat"))
 
     def in_fill(t: float) -> bool:
         return any(f.start - 0.03 <= t < f.end - 0.03 for f in fills)
@@ -211,8 +211,9 @@ def run_analysis(project: Project, audio: dict[str, AudioData], opts: AnalysisOp
                         reason += " (downbeat)"
                         conf = min(1.0, conf + 0.05)
                 if in_fill(t):
-                    reason += ", inside a drum fill"
-                    conf *= 0.85
+                    # part of a fast fill: the fill's strobe covers it, so hide it by default
+                    reason += ", inside a drum fill (covered by the fill suggestion)"
+                    conf *= 0.6
                 idea = {"Kick": "bump / flash on the kick", "Snare": "hit / strobe flash on the snare",
                         "Crash": "big hit: full-rig flash or blinder"}.get(h.label.split()[-1], "")
                 hit_sugs.append(Suggestion("hit", round(t, 6), round(conf, 3), reason,

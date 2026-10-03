@@ -6,7 +6,8 @@ tracks), plan hits and cue changes against timecode, and export the result to
 
 CueForge can also **analyse the audio and suggest** cues:
 - **Hits** on kick, snare and crash.
-- **Drum fills**, suggested as strobes held across the fill.
+- **Drum fills**: fast 16th, sextuplet or 32nd runs on snare and toms going into a new bar,
+  suggested as strobes held across the fill. Kick/snare hits inside the fill are then hidden.
 - **Section changes**: verse, chorus, drop, breakdown, build and blackout.
 - **Chord changes**, suggested as colour changes.
 - **Lead lines**: synth, guitar or vocal phrases, which you can accept as chase steps (one
@@ -18,7 +19,7 @@ analysis never creates, moves or deletes a confirmed cue. Accuracy on a six-song
 multi-genre test set (live and studio styles) is documented in
 [docs/ACCURACY.md](docs/ACCURACY.md).
 
-![lanes, waveform and suggestions](docs/screenshot.png)
+![setlist, lanes and suggestions](docs/screenshot_setlist.png)
 
 ---
 
@@ -74,6 +75,30 @@ the built-in analysis.
 
 ---
 
+## Setlist (multiple songs per project)
+
+The **Setlist** sidebar on the left lists the songs in the project. Click a song to open it
+on the timeline.
+- Each song has its own audio tracks, mixer, cues, AI suggestions, beat grid and **start
+  timecode**.
+- **Lanes** (MA3 sequences) are shared by the whole show.
+- **＋** or dropping audio files on the list adds a song. Drag to reorder.
+  **Ctrl+PgUp / PgDn** goes to the previous / next song.
+- **⚙ / double-click → Song settings**: name, start timecode, grandMA3 *Timecode slot*, first
+  cue number, and an optional sequence offset (if each song uses its own block of sequences).
+- New songs default to the next hour (song 2 at 02:00:00:00…), the next Timecode slot and
+  their own cue range (1, 101, 201…). *Right-click › Auto-number setlist* resets all songs to
+  that scheme.
+- **Export › grandMA3** can export the current song or the **whole setlist**:
+  - XML: one timecode file per song.
+  - Lua: a single plugin that builds every song's timecode show.
+  - Command list: all songs.
+  The export dialog warns if two songs would write the same cue number into the same sequence.
+- **CSV** export can include the whole setlist, with a Song column.
+- Analysis runs on the current song. If you switch songs while it runs, the results still go
+  to the song that was analysed.
+- Undo jumps back to the song where the change happened.
+
 ## Workflow
 
 1. **Import audio.** Use *File › Import audio* or drag files onto the window. Each file
@@ -98,7 +123,7 @@ the built-in analysis.
    | Type | Lane (default) | What it finds | Idea |
    |---|---|---|---|
    | ◇ Hits | Hits | kick, snare and crash (not hats, ride or ghost notes) | bump / flash / blinder |
-   | ⚡ Drum fills | Strobe | the drummer leaving the groove into a downbeat | strobe held across the fill (Off at the landing) |
+   | ⚡ Drum fills | Strobe | fast runs (16ths / sextuplets / 32nd rolls) on snare and toms into the next bar; the hits inside are folded into the fill | strobe from the first fast note, Off on the landing |
    | □ Sections | Main Cues | verse / chorus / bridge changes, moved onto the downbeat a fill lands on | new look |
    | △ Energy | Main Cues | drops, breakdowns, builds, blackouts, returns | |
    | ○ Chord changes | Colour | harmony changes, e.g. "Chord → F#m" | colour change |
@@ -187,6 +212,8 @@ the built-in analysis.
 | C / B | Click / cue blips on-off |
 | F / Z | Follow playhead / zoom to fit |
 | Ctrl + wheel, + / − | Zoom |
+| Ctrl+PgUp / Ctrl+PgDn | Previous / next song in the setlist |
+| Ctrl+Shift+N | Add a song |
 | Ctrl+Z / Ctrl+Shift+Z | Undo / redo |
 
 ---

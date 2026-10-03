@@ -13,7 +13,7 @@ def save_project(project: Project, path: str) -> None:
     path = os.path.abspath(path)
     base = os.path.dirname(path)
     data = project.to_dict()
-    for t in data["tracks"]:
+    for t in [t for song in data["songs"] for t in song["tracks"]]:
         t["abs_path"] = os.path.abspath(t["path"])
         try:
             t["path"] = os.path.relpath(t["abs_path"], base)
@@ -34,7 +34,8 @@ def load_project(path: str) -> Project:
     if data.get("format") != "cueforge-project":
         raise ValueError("Not a CueForge project file")
     base = os.path.dirname(path)
-    for t in data.get("tracks", []):
+    all_tracks = list(data.get("tracks", [])) + [t for song in data.get("songs", []) for t in song.get("tracks", [])]
+    for t in all_tracks:
         rel = os.path.normpath(os.path.join(base, t.get("path", "")))
         if os.path.exists(rel):
             t["path"] = rel

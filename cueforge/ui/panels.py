@@ -5,7 +5,7 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QColorDialog, QComboBox, QGridLayout, QGroupBox,
                                QHBoxLayout, QHeaderView, QInputDialog, QLabel, QMenu, QMessageBox, QPushButton,
-                               QScrollArea, QSlider, QSpinBox, QSplitter, QTableWidget, QTableWidgetItem, QTreeWidget, QTreeWidgetItem,
+                               QScrollArea, QSlider, QSpinBox, QSplitter, QTableWidget, QTableWidgetItem, QTreeWidget, QTreeWidgetItem, QListWidget, QListWidgetItem,
                                QVBoxLayout, QWidget, QLineEdit)
 
 from ..core.model import KIND_LABELS, SUGGESTION_KINDS
@@ -565,3 +565,158 @@ class LanePanel(QWidget):
         step, ok = QInputDialog.getDouble(self, "Renumber cues", "Step:", 1, 0.001, 1000, 3)
         if ok:
             self.s.renumber_lane(lid, start, step)
+
+
+# ============================================================== setlist
+class SongList(QWidget):
+    """Left sidebar: the project's setlist. Click a song to open it on the timeline."""
+    open_settings = Signal(str)
+    add_requested = Signal()
+
+    def __init__(self, session: Session, parent=None) -> None:
+        super().__init__(parent)
+        self.s = session
+        self._syncing = False
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(4, 4, 4, 4)
+        self.list = _SongListWidget(self)
+        self.list.setDragDropMode(QAbstractItemView.InternalMove)
+        self.list.setDefaultDropAction(Qt.MoveAction)
+        self.list.setAlternatingRowColors(True)
+        self.list.setSpacing(2)
+        self.list.setWordWrap(True)
+        self.list.setTextElideMode(Qt.ElideRight)
+        self.list.setStyleSheet("QListWidget::item { padding: 4px 6px; border-bottom: 1px solid #2a2e36; }"
+                                f"QListWidget::item:selected {{ background: #2f5d73; }}")
+        self.list.currentItemChanged.connect(self._picked)
+        self.list.itemDoubleClicked.connect(lambda it: self.open_settings.emit(it.data(Qt.UserRole)))
+        self.list.model().rowsMoved.connect(self._reordered)
+        self.list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.list.customContextMenuRequested.connect(self._menu)
+        lay.addWidget(self.list, 1)
+        row = QHBoxLayout()
+        for txt, tip, fn in (("＋", "Add a song (choose its audio files)", self.add_requested.emit),
+                             ("－", "Remove the selected song", self._remove),
+                             ("↑", "Move up", lambda: self._move(-1)), ("↓", "Move down", lambda: self._move(1)),
+                             ("⚙", "Song settings: name, start timecode, MA3 timecode slot, cue numbers",
+                              lambda: self.open_settings.emit(self._sid()) if self._sid() else None)):
+            b = QPushButton(txt)
+            b.setToolTip(tip)
+            b.setFixedWidth(34)
+            b.clicked.connect(fn)
+            row.addWidget(b)
+        row.addStretch()
+        lay.addLayout(row)
+        hint = QLabel("Drop audio files here to add a song.\nCtrl+PgUp / PgDn: previous / next song")
+        hint.setStyleSheet(f"color: {theme.FG_DIM}; font-size: 10px;")
+        lay.addWidget(hint)
+        for sig in (session.songs_changed, session.project_replaced, session.cues_changed):
+            sig.connect(self.rebuild)
+        self.rebuild()
+
+    def _sid(self) -> str | None:
+        it = self.list.currentItem()
+        return it.data(Qt.UserRole) if it else None
+
+    def rebuild(self) -> None:
+        from ..core.timecode import format_seconds
+        p = self.s.project
+        self._syncing = True
+        self.list.clear()
+        for i, song in enumerate(p.songs, 1):
+            n_cues = len(song.cues)
+            pend = sum(1 for x in song.suggestions if x.status == "pending")
+            dur = max((self.s.audio[t.id].duration + t.offset for t in song.tracks if t.id in self.s.audio),
+                      default=0.0)
+            sub = f"{seconds_to_tc(0, p.frame_rate, song.tc_offset)}   TC {song.ma3_timecode}"
+            if dur:
+                sub += f"   {format_seconds(dur).split('.')[0]}"
+            sub2 = f"{n_cues} cue{'s' if n_cues != 1 else ''}" + (f" · {pend} AI pending" if pend else "")
+            it = QListWidgetItem(f"{i}.  {song.name}\n{sub}\n{sub2}")
+            it.setData(Qt.UserRole, song.id)
+            it.setToolTip(f"{song.name}\nStarts at {seconds_to_tc(0, p.frame_rate, song.tc_offset)}\n"
+                          f"grandMA3 Timecode {song.ma3_timecode}, cues from {song.cue_start:g}"
+                          + (f", sequences +{song.seq_offset}" if song.seq_offset else "")
+                          + (f"\n{song.notes}" if song.notes else ""))
+            if song.id == p.song.id:
+                f = it.font()
+                f.setBold(True)
+                it.setFont(f)
+                it.setForeground(QColor(theme.ACCENT))
+            self.list.addItem(it)
+            if song.id == p.song.id:
+                self.list.setCurrentItem(it)
+        self._syncing = False
+
+    def _picked(self, cur, prev) -> None:
+        if self._syncing or cur is None:
+            return
+        self.s.switch_song(cur.data(Qt.UserRole))
+
+    def _reordered(self, *args) -> None:
+        if self._syncing:
+            return
+        ids = [self.list.item(i).data(Qt.UserRole) for i in range(self.list.count())]
+        from PySide6.QtCore import QTimer
+        QTimer.singleShot(0, lambda: self.s.reorder_songs(ids))  # not while the view is mid-move
+
+    def _remove(self) -> None:
+        sid = self._sid()
+        song = self.s.project.song_by_id(sid) if sid else None
+        if not song:
+            return
+        if QMessageBox.question(self, "Remove song", f"Remove '{song.name}' and its {len(song.cues)} cue(s) "
+                                "from the project? (The audio files are not deleted.)") != QMessageBox.Yes:
+            return
+        self.s.remove_song(sid)
+
+    def _move(self, d: int) -> None:
+        sid = self._sid()
+        if sid:
+            self.s.move_song(sid, d)
+
+    def _menu(self, pos) -> None:
+        it = self.list.itemAt(pos)
+        m = QMenu(self)
+        if it:
+            sid = it.data(Qt.UserRole)
+            m.addAction("Song settings…", lambda: self.open_settings.emit(sid))
+            m.addAction("Remove song", self._remove)
+            m.addSeparator()
+        m.addAction("Add song…", self.add_requested.emit)
+        m.addAction("Auto-number setlist (01:00:00:00, 02:00:00:00 …; TC slots 1…; cues 1, 101, 201 …)",
+                    self.s.auto_number_setlist)
+        m.exec(self.list.viewport().mapToGlobal(pos))
+
+
+class _SongListWidget(QListWidget):
+    """Accepts audio files dropped from the file manager (creates a new song)."""
+
+    def __init__(self, panel: SongList) -> None:
+        super().__init__()
+        self.panel = panel
+        self.setAcceptDrops(True)
+
+    def dragEnterEvent(self, e) -> None:
+        if e.mimeData().hasUrls():
+            e.acceptProposedAction()
+        else:
+            super().dragEnterEvent(e)
+
+    def dragMoveEvent(self, e) -> None:
+        if e.mimeData().hasUrls():
+            e.acceptProposedAction()
+        else:
+            super().dragMoveEvent(e)
+
+    def dropEvent(self, e) -> None:
+        if e.mimeData().hasUrls():
+            import os
+            from ..audio.loader import AUDIO_EXTENSIONS
+            paths = [u.toLocalFile() for u in e.mimeData().urls()
+                     if u.isLocalFile() and os.path.splitext(u.toLocalFile())[1].lower() in AUDIO_EXTENSIONS]
+            if paths:
+                self.panel.s.add_song(paths)
+            e.acceptProposedAction()
+            return
+        super().dropEvent(e)

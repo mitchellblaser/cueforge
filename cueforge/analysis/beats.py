@@ -237,11 +237,17 @@ def _regularise(beats: np.ndarray, on_t: np.ndarray, win: float = 0.06) -> tuple
     support = np.abs(near - beats) < win
     med = float(np.median(np.diff(beats)))
     lag = float(np.median((near - beats)[support])) if support.sum() >= 4 else 0.0
-    idx = np.round((beats - beats[0]) / med)
+    idx = np.r_[0, np.cumsum(np.maximum(1, np.round(np.diff(beats) / med)))]  # beat numbers, no drift
     if support.sum() >= 8:
         slope, icpt = np.polyfit(idx[support], near[support], 1)
         resid = near[support] - (icpt + slope * idx[support])
-        if np.std(resid) < 0.012 and abs(slope - med) / med < 0.03:
+        # robust: a few beats pulled around by fills must not make a steady song "live"
+        keep = np.abs(resid) < 0.03
+        if keep.sum() >= 8:
+            slope, icpt = np.polyfit(idx[support][keep], near[support][keep], 1)
+            resid = near[support] - (icpt + slope * idx[support])
+        mad = 1.4826 * float(np.median(np.abs(resid - np.median(resid))))
+        if mad < 0.030 and np.mean(np.abs(resid) < 0.035) > 0.85 and abs(slope - med) / med < 0.03:
             n0 = int(np.floor(icpt / slope))
             grid = np.arange(icpt - n0 * slope, beats[-1] + slope / 2, slope)
             return grid, True

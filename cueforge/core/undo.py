@@ -40,6 +40,7 @@ class UndoStack:
         if not self._undo:
             return False
         label, state = self._undo.pop()
+        self._focus(state)
         self._redo.append((label, self.project.edit_state()))
         self.project.restore_edit_state(state)
         self._changed()
@@ -49,10 +50,17 @@ class UndoStack:
         if not self._redo:
             return False
         label, state = self._redo.pop()
+        self._focus(state)
         self._undo.append((label, self.project.edit_state()))
         self.project.restore_edit_state(state)
         self._changed()
         return True
+
+    def _focus(self, state: dict[str, Any]) -> None:
+        """Snapshots belong to one song: switch to it before snapshotting the other side."""
+        sid = state.get("song_id")
+        if sid and hasattr(self.project, "select_song"):
+            self.project.select_song(sid)
 
     def clear(self) -> None:
         self._undo.clear()
