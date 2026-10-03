@@ -82,6 +82,7 @@ def build_ma3_xml(project: Project, timecode_number: int | None = None, duration
                      f'Target="ShowData.DataPools.Default.Sequences.{seq}">')
         lines.append(f'\t\t\t\t<TimeRange Guid="{_guid()}" Duration="{_fmt_time(duration, unit)}">')
         lines.append(f'\t\t\t\t\t<CmdSubTrack Guid="{_guid()}">')
+        tokens = cue_tokens(project, lane.id)
         for c in project.cues_in_lane(lane.id):
             num = nums[c.id]
             label = c.label or f"Cue {num:g}"
@@ -91,7 +92,7 @@ def build_ma3_xml(project: Project, timecode_number: int | None = None, duration
                 lines += _event(label, c.time, unit, "Temp", "On", cue_ref)
                 lines += _event(label + " (release)", c.time + c.duration, unit, "Temp", "Off", cue_ref)
             else:
-                lines += _event(label, c.time, unit, "Goto", "On", cue_ref)
+                lines += _event(label, c.time, unit, tokens[c.id], "On", cue_ref)
         lines.append('\t\t\t\t\t</CmdSubTrack>')
         lines.append('\t\t\t\t</TimeRange>')
         lines.append('\t\t\t</Track>')
@@ -99,6 +100,43 @@ def build_ma3_xml(project: Project, timecode_number: int | None = None, duration
     lines.append('\t</Timecode>')
     lines.append('</GMA3>')
     return "\n".join(lines) + "\n"
+
+
+def cue_tokens(project: Project, lane_id: str) -> dict[str, str]:
+    """MA3 command per normal (non-Temp) cue in a lane: Go+ by default (doesn't retrigger the
+    way a Goto can), with the first cue a Goto so the sequence is in sync whenever the
+    timecode starts. Temps are always Temp On / Temp Off."""
+    ex = project.export
+    tok = "Goto" if ex.ma3_cue_token == "Goto" else "Go+"
+    out = {}
+    first = True
+    for c in project.cues_in_lane(lane_id):
+        if c.duration:
+            continue
+        out[c.id] = "Goto" if (first and ex.ma3_first_goto) else tok
+        first = False
+    return out
+
+
+def go_plus_warnings(project: Project, all_songs: bool = True) -> list[str]:
+    """Go+ steps through the sequence in cue-number order, so cue numbers must rise with
+    time, and Temps are best kept in a lane of their own."""
+    if project.export.ma3_cue_token != "Go+":
+        return []
+    out = []
+    for song in (project.songs if all_songs else [project.song]):
+        with in_song(project, song):
+            for lane in export_lanes(project):
+                nums = effective_cue_numbers(project, lane.id)
+                cues = project.cues_in_lane(lane.id)
+                plain = [nums[c.id] for c in cues if not c.duration]
+                if any(b <= a for a, b in zip(plain, plain[1:])):
+                    out.append(f"{song.name} / {lane.name}: cue numbers are not in time order "
+                               "(Go+ would play them in the wrong order)")
+                if plain and any(c.duration for c in cues):
+                    out.append(f"{song.name} / {lane.name}: mixes Temps and Go+ cues in one sequence "
+                               "(put Temps in their own lane, e.g. Strobe)")
+    return out
 
 
 def _event(name: str, t: float, unit: str, token: str, status: str, cue_ref: str) -> list[str]:
@@ -143,21 +181,28 @@ def _song_lua(project: Project, tc_number: int) -> str:
     lanes_lua = []
     for lane in export_lanes(project):
         nums = effective_cue_numbers(project, lane.id)
+        toks = cue_tokens(project, lane.id)
         evs = ",\n".join(
             f"        {{t={c.time:.6f}, cue={nums[c.id]:g}, label={_lua_str(c.label or '')}"
-            + (f", off={c.time + c.duration:.6f}" if c.duration else "") + "}"
+            + (f", off={c.time + c.duration:.6f}" if c.duration else f", tok={_lua_str(toks[c.id])}") + "}"
             for c in project.cues_in_lane(lane.id))
         lanes_lua.append(f"      {{name={_lua_str(lane.name)}, seq={seq_number(project, lane)}, events={{\n{evs}\n      }}}}")
     lanes_src = ",\n".join(lanes_lua)
-    return (f"  {{name={_lua_str(project.song.name)}, tc={tc_number}, offset={project.tc_offset:.6f}, lanes={{\n"
-            f"{lanes_src}\n    }}}}")
+    xml = build_ma3_xml(project, tc_number)
+    assert "]==]" not in xml
+    return (f"  {{name={_lua_str(project.song.name)}, tc={tc_number}, offset={project.tc_offset:.6f},\n"
+            f"    xml=[==[{xml}]==],\n    lanes={{\n{lanes_src}\n    }}}}")
 
 
 def build_ma3_lua(project: Project, timecode_number: int | None = None, create_cues: bool = True,
-                  all_songs: bool = False) -> str:
-    """A grandMA3 Lua plugin that (optionally) creates labelled empty cues and builds one
-    timecode show per song. Cue creation uses plain command-line syntax; the timecode
-    events use the object API (Acquire / property set)."""
+                  all_songs: bool = True) -> str:
+    """One grandMA3 plugin that does everything for the whole setlist when run:
+
+    1. creates (empty, labelled) cues in the target sequences — plain command line;
+    2. for every song, writes its timecode XML (embedded below) into the MA3 timecode
+       library and runs the console's own `Import Timecode` into the song's slot;
+    3. if that import is not possible, builds the timecode show through the Lua object API.
+    """
     if all_songs:
         songs_src = []
         for song in project.songs:
@@ -170,27 +215,61 @@ def build_ma3_lua(project: Project, timecode_number: int | None = None, create_c
         title = project.song.name
     songs = ",\n".join(songs_src)
     return f'''-- CueForge export: {title}
--- Import: copy this file (and its .xml) into your MA3 plugin library, import it into a
--- plugin pool slot and run it. Each song is written to its own Timecode pool slot.
+-- Copy this .lua and its .xml into your MA3 plugin library (gma3_library/datapools/plugins),
+-- import the plugin into a Plugin pool slot and run it once. It creates the cues and
+-- imports every song's timecode show into its own Timecode slot. No separate XML import.
 local CREATE_CUES = {"true" if create_cues else "false"}
 local SONGS = {{
 {songs}
 }}
 
-local function write_song(song)
-  if CREATE_CUES then
-    for _, lane in ipairs(song.lanes) do
-      for _, ev in ipairs(lane.events) do
-        local addr = "Sequence " .. lane.seq .. " Cue " .. ev.cue
-        Cmd("Store " .. addr .. " /Merge /NoConfirm")
-        if ev.label ~= "" then
-          Cmd("Label " .. addr .. ' "' .. ev.label:gsub('"', "'") .. '"')
-        end
+local function q(s) return (s:gsub('"', "'")) end
+
+local function create_cues(song)
+  for _, lane in ipairs(song.lanes) do
+    for _, ev in ipairs(lane.events) do
+      local addr = "Sequence " .. lane.seq .. " Cue " .. ev.cue
+      Cmd("Store " .. addr .. " /Merge /NoConfirm")
+      if ev.label ~= "" then Cmd("Label " .. addr .. ' "' .. q(ev.label) .. '"') end
+    end
+  end
+end
+
+-- Where the console imports timecode XML from (gma3_library/datapools/timecodes)
+local function timecode_dirs()
+  local dirs = {{}}
+  local function add(fn)
+    local ok, p = pcall(fn)
+    if ok and type(p) == "string" and p ~= "" then dirs[#dirs + 1] = p end
+  end
+  add(function() return GetPath(Enums.PathType.Library) .. "/datapools/timecodes" end)
+  add(function() return GetPath("library", true) .. "/datapools/timecodes" end)
+  add(function() return GetPath(Enums.PathType.UserTimecodes) end)
+  return dirs
+end
+
+local function import_xml(song)
+  for _, dir in ipairs(timecode_dirs()) do
+    local fname = "CueForge_" .. song.tc .. ".xml"
+    local f = io.open(dir .. "/" .. fname, "w")
+    if f then
+      f:write(song.xml)
+      f:close()
+      Cmd("Delete Timecode " .. song.tc .. " /NoConfirm")
+      Cmd("Import Timecode " .. song.tc .. ' /File "' .. fname .. '" /NoConfirm')
+      if DataPool().Timecodes[song.tc] then
+        Printf("CueForge: imported '%s' into Timecode %d", song.name, song.tc)
+        return true
       end
     end
   end
+  return false
+end
+
+-- Fallback: build the show with the object API
+local function build_via_api(song)
   Cmd("Store Timecode " .. song.tc .. " /Overwrite /NoConfirm")
-  Cmd("Label Timecode " .. song.tc .. ' "' .. song.name:gsub('"', "'") .. '"')
+  Cmd("Label Timecode " .. song.tc .. ' "' .. q(song.name) .. '"')
   local tc = DataPool().Timecodes[song.tc]
   if not tc then
     ErrPrintf("CueForge: could not create Timecode %d", song.tc)
@@ -206,8 +285,7 @@ local function write_song(song)
       local track = group:Acquire()
       track.name = lane.name
       track.target = seq
-      local range = track:Acquire()
-      local sub = range:Acquire()
+      local sub = track:Acquire():Acquire()
       for _, ev in ipairs(lane.events) do
         local cue = seq:Find("Cue " .. ev.cue) or seq[ev.cue + 1]
         local e = sub:Acquire()
@@ -215,7 +293,6 @@ local function write_song(song)
         if cue then e.cue = cue end
         if ev.label ~= "" then e.name = ev.label end
         if ev.off then
-          -- Temp: Temp On now, Temp Off when the hold ends
           e.token = "Temp"
           e.status = "On"
           local o = sub:Acquire()
@@ -224,22 +301,27 @@ local function write_song(song)
           o.status = "Off"
           if cue then o.cue = cue end
         else
-          e.token = "Goto"
+          e.token = ev.tok
         end
       end
     end
   end
-  Printf("CueForge: '%s' written to Timecode %d", song.name, song.tc)
+  Printf("CueForge: built '%s' in Timecode %d", song.name, song.tc)
 end
 
 local function main()
   local names = {{}}
   for _, song in ipairs(SONGS) do names[#names + 1] = song.name .. " -> Timecode " .. song.tc end
-  if not Confirm("CueForge", "Write " .. #SONGS .. " timecode show(s)?\\n" .. table.concat(names, "\\n")) then
+  if not Confirm("CueForge", "Create cues and timecode for " .. #SONGS .. " song(s)?\\n" ..
+                 table.concat(names, "\\n")) then
     return
   end
   Cmd("CmdDelay 0")
-  for _, song in ipairs(SONGS) do write_song(song) end
+  for _, song in ipairs(SONGS) do
+    if CREATE_CUES then create_cues(song) end
+    if not import_xml(song) then build_via_api(song) end
+  end
+  Printf("CueForge: done (%d songs)", #SONGS)
 end
 
 return main
@@ -257,7 +339,7 @@ def build_ma3_plugin_xml(project: Project, lua_filename: str) -> str:
 
 
 def export_ma3_lua(project: Project, path: str, timecode_number: int | None = None, create_cues: bool = True,
-                   all_songs: bool = False) -> str:
+                   all_songs: bool = True) -> str:
     """Write the .lua plugin and its .xml descriptor next to it. Returns the descriptor path."""
     import os
     with open(path, "w", encoding="utf-8") as f:

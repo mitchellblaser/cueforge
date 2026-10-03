@@ -319,8 +319,8 @@ class CueDialog(QDialog):
 
 
 class MA3ExportDialog(QDialog):
-    FORMATS = [("xml", "Timecode show XML (import into the Timecode pool)"),
-               ("lua", "Lua plugin (creates cues + timecode show on the console)"),
+    FORMATS = [("lua", "Plugin — run once: creates cues + imports every song's timecode (recommended)"),
+               ("xml", "Timecode XML files only (import each into the Timecode pool yourself)"),
                ("cmd", "Command list (create & label cues only)")]
 
     def __init__(self, session, parent=None) -> None:
@@ -333,8 +333,19 @@ class MA3ExportDialog(QDialog):
         self.fmt = QComboBox()
         for k, label in self.FORMATS:
             self.fmt.addItem(label, k)
-        self.fmt.setCurrentIndex(max(0, self.fmt.findData(session.settings.get("ma3_format", "xml"))))
+        self.fmt.setCurrentIndex(max(0, self.fmt.findData(session.settings.get("ma3_format", "lua"))))
         form.addRow("Format", self.fmt)
+        self.token = QComboBox()
+        self.token.addItem("Go+ (steps to the next cue; phasers keep running)", "Go+")
+        self.token.addItem("Goto (jumps to the exact cue; safe when scrubbing)", "Goto")
+        self.token.setCurrentIndex(max(0, self.token.findData(ex.ma3_cue_token)))
+        form.addRow("Normal cues fire", self.token)
+        self.first_goto = QCheckBox("First cue of each lane is a Goto (puts the sequence on the right cue "
+                                    "whenever the song starts)")
+        self.first_goto.setChecked(ex.ma3_first_goto)
+        form.addRow(self.first_goto)
+        form.addRow(QLabel(f"<span style='color:{theme.FG_DIM}'>Temps always fire Temp On, then Temp Off "
+                           "after their hold.</span>"))
         self.scope = QComboBox()
         self.scope.addItem(f"Current song only ('{p.song.name}')", "current")
         self.scope.addItem(f"Whole setlist ({len(p.songs)} songs)", "all")
@@ -353,7 +364,7 @@ class MA3ExportDialog(QDialog):
         self.ver = QLineEdit(ex.ma3_data_version)
         self.ver.setToolTip("Set to your console/onPC software version, e.g. 2.1.1.5")
         form.addRow("XML DataVersion", self.ver)
-        self.create = QCheckBox("Lua: create missing cues (empty, labelled) in the target sequences")
+        self.create = QCheckBox("Plugin: create missing cues (empty, labelled) in the target sequences")
         self.create.setChecked(True)
         form.addRow(self.create)
         rows = []
@@ -370,16 +381,34 @@ class MA3ExportDialog(QDialog):
                        "sequence offsets (setlist ⚙, or right-click ▸ Auto-number setlist).</span>")
             w.setWordWrap(True)
             form.addRow(w)
-        warn = QLabel("grandMA3's XML layout is not officially documented. Test the import in grandMA3 onPC "
-                      "first; if your version rejects it, use the Lua plugin.")
+        from ..export.ma3 import go_plus_warnings
+        self.gp_warn = QLabel()
+        self.gp_warn.setWordWrap(True)
+        form.addRow(self.gp_warn)
+        self.token.currentIndexChanged.connect(self._update_warnings)
+        self._update_warnings()
+        warn = QLabel("grandMA3's timecode XML layout is not officially documented. Test in grandMA3 onPC "
+                      "first. The plugin falls back to building the timecode itself if the import fails.")
         warn.setWordWrap(True)
         warn.setStyleSheet(f"color: {theme.FG_DIM};")
         form.addRow(warn)
         form.addRow(_buttons(self, "Export…"))
 
+    def _update_warnings(self) -> None:
+        from ..export.ma3 import go_plus_warnings
+        ex = self.s.project.export
+        old = ex.ma3_cue_token
+        ex.ma3_cue_token = self.token.currentData()
+        ws = go_plus_warnings(self.s.project)
+        ex.ma3_cue_token = old
+        self.gp_warn.setText("" if not ws else "<span style='color:#ffb74d'><b>Go+:</b> " + "<br>".join(ws[:4])
+                             + (" …" if len(ws) > 4 else "") + "</span>")
+
     def accept(self) -> None:
         ex = self.s.project.export
         ex.ma3_time_unit = self.unit.currentData()
+        ex.ma3_cue_token = self.token.currentData()
+        ex.ma3_first_goto = self.first_goto.isChecked()
         self.s.update_song(self.s.project.song.id, ma3_timecode=self.tc_num.value())
         self.all_songs = self.scope.currentData() == "all"
         ex.ma3_data_version = self.ver.text().strip() or ex.ma3_data_version

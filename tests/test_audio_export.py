@@ -157,7 +157,7 @@ def test_ma3_xml():
 
 def test_ma3_lua_and_macro():
     p = _project_with_cues()
-    lua = build_ma3_lua(p, 3)
+    lua = build_ma3_lua(p, 3, all_songs=False)
     assert "tc=3" in lua and "seq=7" in lua and 'label="Verse \\"1\\""' in lua
     assert lua.count("{t=") == 3
     cmds = build_ma3_macro_commands(p)
@@ -260,3 +260,41 @@ def test_setlist_exports(tmp_path):
 
 def test_lua_single_song_compiles(tmp_path):
     _luac_ok(build_ma3_lua(_project_with_cues()), tmp_path)
+
+
+def test_go_plus_tokens_and_warnings():
+    from cueforge.export.ma3 import cue_tokens, go_plus_warnings
+    p = _project_with_cues()
+    lane = p.lanes[0].id
+    editing.add_cue(p, lane, 20.0, label="Chorus")
+    toks = [cue_tokens(p, lane)[c.id] for c in p.cues_in_lane(lane)]
+    assert toks == ["Goto", "Go+", "Go+"]          # first cue resyncs, then Go+
+    root = ET.fromstring(build_ma3_xml(p))
+    assert [e.find("RealtimeCmd").get("Token") for e in root.findall(".//Track")[0].findall(".//CmdEvent")] \
+        == ["Goto", "Go+", "Go+"]
+    p.export.ma3_first_goto = False
+    assert set(cue_tokens(p, lane).values()) == {"Go+"}
+    p.export.ma3_cue_token = "Goto"
+    assert set(cue_tokens(p, lane).values()) == {"Goto"}
+    p.export.ma3_cue_token = "Go+"
+    assert not go_plus_warnings(p)
+    p.cues_in_lane(lane)[-1].number = 0.5           # last cue numbered before the others
+    assert any("not in time order" in w for w in go_plus_warnings(p))
+    p.cues_in_lane(lane)[-1].number = None
+    p.cues_in_lane(lane)[1].duration = 0.5          # Temp mixed with Go+ cues -> warning
+    assert any("Temps" in w for w in go_plus_warnings(p))
+
+
+def test_plugin_imports_every_song(tmp_path):
+    from cueforge.export.ma3 import export_ma3_lua
+    p = _project_with_cues()
+    s2 = p.add_song("Encore")
+    p.select_song(s2.id)
+    editing.add_cue(p, p.lanes[0].id, 3.0, label="Encore go")
+    lua = build_ma3_lua(p)                          # whole setlist by default
+    assert lua.count("xml=[==[") == 2 and lua.count("<GMA3") == 2
+    assert "Import Timecode" in lua and 'name="Encore"' in lua and "tc=2" in lua
+    assert 'tok="Go+"' in lua or 'tok="Goto"' in lua
+    _luac_ok(lua, tmp_path)
+    desc = export_ma3_lua(p, str(tmp_path / "Show.lua"))
+    assert (tmp_path / "Show.lua").exists() and desc.endswith("Show.xml")

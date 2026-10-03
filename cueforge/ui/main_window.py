@@ -828,7 +828,7 @@ class MainWindow(QMainWindow):
         dlg = MA3ExportDialog(self.s, self)
         if not dlg.exec():
             return
-        fmt = self.s.settings.get("ma3_format", "xml")
+        fmt = self.s.settings.get("ma3_format", "lua")
         all_songs = getattr(dlg, "all_songs", False)
         try:
             if fmt == "xml" and all_songs:
@@ -851,11 +851,12 @@ class MainWindow(QMainWindow):
                 path = self._export_path("Export grandMA3 Lua plugin", ".lua", "Lua (*.lua)")
                 if path:
                     xml_path = export_ma3_lua(p, path, None, dlg.create.isChecked(), all_songs)
-                    which = "every song into its own Timecode slot" if all_songs else \
-                        f"Timecode {p.song.ma3_timecode}"
+                    which = f"all {len(p.songs)} songs, each into its own Timecode slot" if all_songs else \
+                        f"'{p.song.name}' into Timecode {p.song.ma3_timecode}"
                     self._exported(path, f"Also wrote {os.path.basename(xml_path)} (plugin descriptor).\n\n"
                                          "Copy both files to gma3_library/datapools/plugins, import the plugin "
-                                         f"into a Plugin pool slot and run it. It writes {which}.")
+                                         "into a Plugin pool slot and run it once. It creates the cues and "
+                                         f"imports the timecode for {which}. No separate XML import needed.")
             else:
                 path = self._export_path("Export command list", ".txt", "Text (*.txt)")
                 if path:

@@ -177,14 +177,24 @@ on the timeline.
      playback with **[** (0.75×, 0.5×).
 
 7. **Export** (*File › Export*)
-   - **grandMA3**: each lane becomes a timecode track targeting the lane's **MA3
-     sequence**. Normal cues become *Goto* events. **Temps** (cues with a hold time, e.g.
-     from ＋ Temp or an accepted drum-fill strobe) become **Temp On** at the cue and
-     **Temp Off** when the hold ends. Cue numbers you
-     leave blank are filled in automatically. Three formats:
-     - **Timecode XML**: import into the Timecode pool.
-     - **Lua plugin**: creates any missing (empty, labelled) cues and builds the timecode
-       show on the console. It also writes the `.xml` descriptor MA3 needs to import a plugin.
+   - **grandMA3**: each lane becomes a timecode track targeting the lane's **MA3 sequence**.
+     - **Normal cues fire Go+** by default, which steps to the next cue without
+       retriggering the way a Goto can. The first cue of each lane is a **Goto** (optional,
+       on by default), so the sequence is on the right cue whenever the song starts. You can
+       switch everything to Goto in the export dialog.
+     - The dialog warns when Go+ would misbehave: cue numbers not rising with time, or a
+       lane mixing Temps with Go+ cues. Keep Temps in their own lane, e.g. Strobe.
+     - **Temps** (cues with a hold time, e.g. from ＋ Temp or an accepted drum-fill strobe)
+       fire **Temp On** at the cue and **Temp Off** when the hold ends.
+     - Cue numbers you leave blank are filled in automatically from each song's first cue
+       number.
+     - **Plugin (recommended)**: one `.lua` file (plus its `.xml` descriptor) for the whole
+       setlist. Copy both to `gma3_library/datapools/plugins`, import it into a Plugin pool
+       slot and run it once. It creates and labels the cues, then for every song writes the
+       embedded timecode XML into the timecode library and runs `Import Timecode` into that
+       song's slot. If the import isn't possible on your version, it builds the timecode show
+       through the Lua object API instead. No separate XML import.
+     - **Timecode XML files** (one per song), if you prefer to import them yourself.
      - **Command list**: `Store`/`Label` lines that create the cues.
    - **CSV** cue list, for paperwork.
    - **LTC WAV**: SMPTE timecode audio, optionally stereo with the song mix on L and LTC on R.
@@ -196,8 +206,9 @@ on the timeline.
 > **grandMA3 note:** MA doesn't publish the timecode XML schema. CueForge's XML follows
 > the layout grandMA3 itself exports (v1.9–2.x). Times are stored in MA's internal units
 > (1/16 777 216 s), and *Seconds* is also offered. **Test the import in grandMA3 onPC
-> before a show.** If your version rejects it, use the **Lua plugin** export, which builds
-> the show through the console's own object API.
+> before a show.** The plugin's import step relies on MA3's `Import Timecode` command and
+> library paths. If those fail on your version, it falls back to building the show through
+> the Lua object API, and prints what it did in the command-line feedback.
 
 ---
 

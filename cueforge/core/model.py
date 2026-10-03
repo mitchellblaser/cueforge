@@ -171,6 +171,8 @@ class ExportSettings:
     ma3_name: str = ""
     ma3_time_unit: str = "ticks"     # "ticks" (1/16777216 s) or "seconds"
     ma3_data_version: str = "2.1.1.5"
+    ma3_cue_token: str = "Go+"        # command for normal cues: "Go+" or "Goto"
+    ma3_first_goto: bool = True       # first cue of each lane is a Goto (resyncs the sequence)
     ltc_sample_rate: int = 48000
     ltc_level_db: float = -12.0
     ltc_preroll: float = 2.0
