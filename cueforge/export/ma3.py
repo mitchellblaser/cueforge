@@ -85,18 +85,13 @@ def build_ma3_xml(project: Project, timecode_number: int | None = None, duration
         for c in project.cues_in_lane(lane.id):
             num = nums[c.id]
             label = c.label or f"Cue {num:g}"
-            lines.append(
-                f'\t\t\t\t\t\t<CmdEvent Name={quoteattr(label)} Guid="{_guid()}" Time="{_fmt_time(c.time, unit)}">')
-            lines.append(
-                f'\t\t\t\t\t\t\t<RealtimeCmd Type="Key" Source="Original" UserProfile="0" Status="On" '
-                f'Token="Goto" Cue="ShowData.DataPools.Default.Sequences.{seq}.Cues.{num:g}"/>')
-            lines.append('\t\t\t\t\t\t</CmdEvent>')
+            cue_ref = f"ShowData.DataPools.Default.Sequences.{seq}.Cues.{num:g}"
             if c.duration:
-                lines.append(f'\t\t\t\t\t\t<CmdEvent Name={quoteattr(label + " off")} Guid="{_guid()}" '
-                             f'Time="{_fmt_time(c.time + c.duration, unit)}">')
-                lines.append('\t\t\t\t\t\t\t<RealtimeCmd Type="Key" Source="Original" UserProfile="0" '
-                             'Status="Off" Token="Off"/>')
-                lines.append('\t\t\t\t\t\t</CmdEvent>')
+                # Temp: Temp On at the start, Temp Off when the hold ends
+                lines += _event(label, c.time, unit, "Temp", "On", cue_ref)
+                lines += _event(label + " (release)", c.time + c.duration, unit, "Temp", "Off", cue_ref)
+            else:
+                lines += _event(label, c.time, unit, "Goto", "On", cue_ref)
         lines.append('\t\t\t\t\t</CmdSubTrack>')
         lines.append('\t\t\t\t</TimeRange>')
         lines.append('\t\t\t</Track>')
@@ -104,6 +99,13 @@ def build_ma3_xml(project: Project, timecode_number: int | None = None, duration
     lines.append('\t</Timecode>')
     lines.append('</GMA3>')
     return "\n".join(lines) + "\n"
+
+
+def _event(name: str, t: float, unit: str, token: str, status: str, cue_ref: str) -> list[str]:
+    return [f'\t\t\t\t\t\t<CmdEvent Name={quoteattr(name)} Guid="{_guid()}" Time="{_fmt_time(t, unit)}">',
+            f'\t\t\t\t\t\t\t<RealtimeCmd Type="Key" Source="Original" UserProfile="0" Status="{status}" '
+            f'Token="{token}" Cue="{cue_ref}"/>',
+            '\t\t\t\t\t\t</CmdEvent>']
 
 
 def export_ma3_xml(project: Project, path: str, timecode_number: int | None = None) -> int:
@@ -210,13 +212,19 @@ local function write_song(song)
         local cue = seq:Find("Cue " .. ev.cue) or seq[ev.cue + 1]
         local e = sub:Acquire()
         e.time = ev.t
-        e.token = "Goto"
         if cue then e.cue = cue end
         if ev.label ~= "" then e.name = ev.label end
         if ev.off then
+          -- Temp: Temp On now, Temp Off when the hold ends
+          e.token = "Temp"
+          e.status = "On"
           local o = sub:Acquire()
           o.time = ev.off
-          o.token = "Off"
+          o.token = "Temp"
+          o.status = "Off"
+          if cue then o.cue = cue end
+        else
+          e.token = "Goto"
         end
       end
     end

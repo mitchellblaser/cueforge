@@ -158,7 +158,16 @@ on the timeline.
    - Over time CueForge learns thresholds from your decisions (*Apply learned
      thresholds*). It only offers them; it never applies them by itself.
 
-6. **Program manually**
+6. **Program manually (fast)**
+   - The **active lane** is highlighted with ▶. Click a lane header (or empty space in a lane),
+     use **↑ / ↓**, or pick it in the toolbar's *Active lane* box.
+   - **＋ Cue (Q)** drops a normal cue at the playhead in the active lane.
+   - **＋ Temp (W)** drops a **Temp**: a cue with a hold time. Set the hold in the **Hold**
+     box (default 0.5 s, or *= 1 beat*).
+   - Both work while playing (at the heard position, latency-compensated) or stopped, and
+     snap to the grid when Snap is on.
+   - Selecting a Temp shows its hold in the Hold box; change it there to edit it.
+     **Shift+W / Shift+Q** turn selected cues into Temps / normal cues.
    - Press a lane's **tap key** (1, 2, 3, …) during playback to drop a cue at the playhead.
    - Double-click a lane to add a cue. Drag cues to move them (they snap to beats when
      **Snap** is on; hold Alt to stop snapping), or drag them into another lane.
@@ -169,8 +178,9 @@ on the timeline.
 
 7. **Export** (*File › Export*)
    - **grandMA3**: each lane becomes a timecode track targeting the lane's **MA3
-     sequence**, and each cue becomes a *Goto* event. Cues with a **Hold** time (e.g. an
-     accepted drum-fill strobe) also get an *Off* event when the hold ends. Cue numbers you
+     sequence**. Normal cues become *Goto* events. **Temps** (cues with a hold time, e.g.
+     from ＋ Temp or an accepted drum-fill strobe) become **Temp On** at the cue and
+     **Temp Off** when the hold ends. Cue numbers you
      leave blank are filled in automatically. Three formats:
      - **Timecode XML**: import into the Timecode pool.
      - **Lua plugin**: creates any missing (empty, labelled) cues and builds the timecode
@@ -201,6 +211,9 @@ on the timeline.
 | ← / → | Nudge selection 1 frame (no selection: playhead 1 beat) |
 | Shift + ← / → | Nudge selection 1 beat (no selection: playhead 1 bar) |
 | Tab / Shift+Tab | Next / previous suggestion |
+| Q / W | ＋ Cue / ＋ Temp in the active lane at the playhead |
+| ↑ / ↓ | Previous / next active lane |
+| Shift+W / Shift+Q | Make selected cues Temps / normal cues |
 | A / X | Accept / reject selected suggestions |
 | Right-click lead line | Accept as chase steps (one cue per note) |
 | T | Tap a grid beat (in *Grid › Tap-along grid* mode) |

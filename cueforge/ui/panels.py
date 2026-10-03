@@ -17,7 +17,7 @@ from .session import RESERVED_KEYS, Session
 # ============================================================== cue list
 class CueTable(QWidget):
     seek_requested = Signal(float)
-    COLS = ["Timecode", "Lane", "Cue", "Label", "Fade", "Hold", "Notes", "Src"]
+    COLS = ["Timecode", "Lane", "Cue", "Label", "Fade", "Temp", "Notes", "Src"]
 
     def __init__(self, session: Session, parent=None) -> None:
         super().__init__(parent)

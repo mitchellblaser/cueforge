@@ -7,7 +7,7 @@ import os
 import numpy as np
 from PySide6.QtCore import QSize, Qt, QTimer
 from PySide6.QtGui import QAction, QFont, QKeySequence, QShortcut
-from PySide6.QtWidgets import (QComboBox, QDockWidget, QFileDialog, QLabel, QMainWindow, QMessageBox,
+from PySide6.QtWidgets import (QComboBox, QDoubleSpinBox, QDockWidget, QFileDialog, QLabel, QMainWindow, QMessageBox,
                                QProgressBar, QPushButton, QTabWidget, QToolBar, QWidget, QSizePolicy)
 
 from .. import __version__
@@ -84,6 +84,10 @@ class MainWindow(QMainWindow):
 
         s = self.s
         s.lanes_changed.connect(self._rebuild_tap_keys)
+        s.lanes_changed.connect(self._sync_lane_combo)
+        s.active_lane_changed.connect(self._sync_lane_combo)
+        s.project_replaced.connect(self._sync_lane_combo)
+        s.selection_changed.connect(self._sel_hold)
         s.song_will_change.connect(self.canvas.store_view)
         s.songs_changed.connect(self._title)
         s.project_replaced.connect(self._project_replaced)
@@ -193,8 +197,91 @@ class MainWindow(QMainWindow):
         tb.addWidget(self.analyse_btn)
         self.a_snap.setChecked(self.s.snap)
         self.a_follow.setChecked(True)
+        self._build_cue_bar()
         # extra zoom keys
         self._act("Zoom in", lambda: self.canvas.zoom(1.5), "=")
+
+    def _build_cue_bar(self) -> None:
+        """Second toolbar row: fast cue entry into the active lane."""
+        self.addToolBarBreak()
+        tb = QToolBar("Cues")
+        tb.setObjectName("cuebar")
+        tb.setMovable(False)
+        self.addToolBar(tb)
+        tb.addWidget(QLabel("  Active lane "))
+        self.lane_combo = QComboBox()
+        self.lane_combo.setMinimumWidth(150)
+        self.lane_combo.setToolTip("Lane that ＋ Cue / ＋ Temp drop into. Also: click a lane header, or ↑ / ↓")
+        self.lane_combo.activated.connect(lambda _: self.s.set_active_lane(self.lane_combo.currentData()))
+        tb.addWidget(self.lane_combo)
+        tb.addSeparator()
+        self.a_add_cue = self._act("＋ Cue", lambda: self._drop(False), "Q",
+                                   tip="Add a cue at the playhead in the active lane (Q) — works while playing")
+        self.a_add_temp = self._act("＋ Temp", lambda: self._drop(True), "W",
+                                    tip="Add a Temp (cue with a hold time: Temp On, then Temp Off after the hold) "
+                                        "at the playhead in the active lane (W)")
+        tb.addAction(self.a_add_cue)
+        tb.addAction(self.a_add_temp)
+        tb.addWidget(QLabel("  Hold "))
+        self.hold_spin = QDoubleSpinBox()
+        self.hold_spin.setRange(0.05, 60.0)
+        self.hold_spin.setDecimals(2)
+        self.hold_spin.setSingleStep(0.1)
+        self.hold_spin.setSuffix(" s")
+        self.hold_spin.setValue(self.s.temp_hold)
+        self.hold_spin.setToolTip("Hold time for new Temps. With a cue selected, also changes that cue's hold.")
+        self.hold_spin.valueChanged.connect(self._hold_changed)
+        tb.addWidget(self.hold_spin)
+        beat_btn = QPushButton("= 1 beat")
+        beat_btn.setToolTip("Set the hold to one beat of the grid")
+        beat_btn.clicked.connect(self._hold_one_beat)
+        tb.addWidget(beat_btn)
+        self.cue_hint = QLabel("")
+        self.cue_hint.setStyleSheet(f"color: {theme.FG_DIM}; padding-left: 12px;")
+        tb.addWidget(self.cue_hint)
+        self._act("Previous lane", lambda: self.s.step_active_lane(-1), "Up")
+        self._act("Next lane", lambda: self.s.step_active_lane(1), "Down")
+        self._sync_lane_combo()
+
+    def _sel_hold(self) -> None:
+        """Selecting a Temp shows its hold in the Hold box (and edits it there)."""
+        sel = [self.s.project.cue(c) for c in self.s.sel_cues]
+        if len(sel) == 1 and sel[0] and sel[0].duration:
+            self.hold_spin.blockSignals(True)
+            self.hold_spin.setValue(sel[0].duration)
+            self.hold_spin.blockSignals(False)
+        if len(sel) == 1 and sel[0]:
+            self.s.set_active_lane(sel[0].lane_id)
+
+    def _sync_lane_combo(self) -> None:
+        self.lane_combo.blockSignals(True)
+        self.lane_combo.clear()
+        for lane in self.s.project.lanes:
+            key = f"  [{lane.tap_key.upper()}]" if lane.tap_key else ""
+            self.lane_combo.addItem(f"{lane.name}{key}", lane.id)
+        self.lane_combo.setCurrentIndex(max(0, self.lane_combo.findData(self.s.active_lane_id)))
+        self.lane_combo.blockSignals(False)
+        lane = self.s.project.lane(self.s.active_lane_id)
+        if lane:
+            self.lane_combo.setStyleSheet(f"QComboBox {{ border: 1px solid {lane.color}; color: {lane.color}; }}")
+            self.cue_hint.setText(f"Q / W drop into {lane.name} (MA3 Seq {lane.ma3_sequence + self.s.project.song.seq_offset})")
+
+    def _drop(self, temp: bool) -> None:
+        c = self.s.add_at_playhead(temp)
+        if c is not None:
+            self.canvas.ensure_visible(c.time)
+
+    def _hold_changed(self, v: float) -> None:
+        self.s.set_temp_hold(v)
+        sel = [self.s.project.cue(c) for c in self.s.sel_cues]
+        sel = [c for c in sel if c and c.duration]
+        if len(sel) == 1 and abs(sel[0].duration - v) > 1e-6:
+            self.s.update_cue(sel[0].id, duration=v)
+
+    def _hold_one_beat(self) -> None:
+        g = self.s.project.beat_grid
+        if len(g.beats) > 1:
+            self.hold_spin.setValue(round(g.bpm() and 60.0 / g.bpm(), 3))
 
     def _build_menus(self) -> None:
         mb = self.menuBar()
@@ -235,6 +322,8 @@ class MainWindow(QMainWindow):
         e.addAction(self._act("Delete selected", self.s.delete_selected, QKeySequence.Delete))
         self._act("Delete selected", self.s.delete_selected, "Backspace")
         e.addAction(self._act("Snap selected to grid", self.s.snap_selected, "G"))
+        e.addAction(self._act("Make selected Temp", lambda: self.s.set_selected_temp(True), "Shift+W"))
+        e.addAction(self._act("Make selected normal cue", lambda: self.s.set_selected_temp(False), "Shift+Q"))
         e.addAction(self._act("Edit selected cue…", self._edit_selected, "Ctrl+Return"))
         e.addSeparator()
         self._act("Nudge left", lambda: self._arrow(-1, False), "Left")

@@ -23,7 +23,7 @@ def export_csv(project: Project, path: str, lane_ids: list[str] | None = None, a
             rows += sorted(song_rows, key=lambda r: r[1])
     with open(path, "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
-        w.writerow(["Song", "Lane", "MA3 Sequence", "Cue", "Label", "Timecode", "Seconds", "Fade", "Hold", "Source",
+        w.writerow(["Song", "Lane", "MA3 Sequence", "Cue", "Label", "Timecode", "Seconds", "Fade", "Temp hold", "Source",
                     "Notes"])
         for _, t, lane, c, num, song, seq in rows:
             project_offset = song.tc_offset

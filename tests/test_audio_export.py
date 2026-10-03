@@ -194,15 +194,20 @@ def test_learn_thresholds():
     assert "section" not in res
 
 
-def test_ma3_hold_exports_off_event():
+def test_ma3_temp_exports_temp_on_off(tmp_path):
     p = _project_with_cues()
-    c = p.cues_in_lane(p.lanes[0].id)[0]
-    c.duration = 2.0
+    c = p.cues_in_lane(p.lanes[0].id)[0]      # at 1.0 s
+    c.duration = 0.5                            # a Temp with 0.5 s hold
     root = ET.fromstring(build_ma3_xml(p))
-    evs = root.findall(".//Track")[0].findall(".//CmdEvent")
-    offs = [e for e in evs if e.find("RealtimeCmd").get("Token") == "Off"]
-    assert len(offs) == 1 and int(offs[0].get("Time")) == 3 * MA3_TICKS_PER_SECOND
-    assert "off=3.000000" in build_ma3_lua(p)
+    cmds = [(int(e.get("Time")), e.find("RealtimeCmd").get("Token"), e.find("RealtimeCmd").get("Status"))
+            for e in root.findall(".//Track")[0].findall(".//CmdEvent")]
+    t = MA3_TICKS_PER_SECOND
+    assert cmds[0] == (1 * t, "Temp", "On")
+    assert cmds[1] == (int(1.5 * t), "Temp", "Off")
+    assert cmds[2] == (16 * t, "Goto", "On")       # the normal cue stays a Goto
+    lua = build_ma3_lua(p)
+    assert "off=1.500000" in lua and 'e.token = "Temp"' in lua
+    _luac_ok(lua, tmp_path)
 
 
 def _luac_ok(src, tmp_path):

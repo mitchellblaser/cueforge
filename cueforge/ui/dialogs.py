@@ -287,8 +287,8 @@ class CueDialog(QDialog):
         self.fade = QLineEdit("" if c.fade is None else f"{c.fade:g}")
         self.fade.setPlaceholderText("console default")
         self.hold = QLineEdit("" if not c.duration else f"{c.duration:g}")
-        self.hold.setPlaceholderText("none (stays on)")
-        self.hold.setToolTip("Seconds until the sequence is switched Off again (e.g. a strobe through a fill)")
+        self.hold.setPlaceholderText("empty = normal cue")
+        self.hold.setToolTip("Set a hold time to make this a Temp: Temp On at the cue, Temp Off after the hold")
         self.notes = QPlainTextEdit(c.notes)
         self.notes.setFixedHeight(70)
         form.addRow("Label", self.label)
@@ -296,7 +296,7 @@ class CueDialog(QDialog):
         form.addRow("Lane", self.lane)
         form.addRow("MA3 cue number", self.number)
         form.addRow("Fade (s)", self.fade)
-        form.addRow("Hold, then Off (s)", self.hold)
+        form.addRow("Temp hold (s)", self.hold)
         form.addRow("Notes", self.notes)
         if c.source == "ai-accepted":
             form.addRow(QLabel("<i>Accepted from an AI suggestion</i>"))
@@ -454,7 +454,11 @@ SHORTCUTS = [
                    ("Shift + ← / →", "Nudge selected cues 1 beat"),
                    ("[ / ]", "Playback speed down / up"), ("I / O", "Loop in / out at playhead"),
                    ("L", "Loop on/off"), ("C", "Click on/off"), ("B", "Cue blips on/off")]),
-    ("Cues", [("1 … 9 (lane tap keys)", "Drop a cue in that lane at the playhead (works while playing)"),
+    ("Cues", [("Q", "＋ Cue: drop a cue in the active lane at the playhead (works while playing)"),
+              ("W", "＋ Temp: drop a Temp (cue with the Hold time: Temp On, then Temp Off)"),
+              ("↑ / ↓ or click a lane header", "Change the active lane"),
+              ("Shift+W / Shift+Q", "Make selected cues Temps / normal cues"),
+              ("1 … 9 (lane tap keys)", "Drop a cue in that lane at the playhead (works while playing)"),
               ("Double-click lane", "Add cue (Alt = don't snap)"), ("Double-click cue", "Edit cue"),
               ("Drag cue", "Move (snaps to beats when Snap is on; hold Alt to disable); drag to another lane to move it"),
               ("Shift-drag in ruler", "Set loop region"), ("Delete / Backspace", "Delete selected"),

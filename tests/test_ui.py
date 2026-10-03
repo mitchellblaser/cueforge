@@ -335,3 +335,51 @@ def test_setlist_sidebar(app, win):
     assert win.save()
     s.open_project(str(path))
     assert [x.name for x in s.project.songs] == ["Song 1", "click"]
+
+
+def test_cue_and_temp_buttons(app, win, monkeypatch):
+    s = win.s
+    c = win.canvas
+    c.set_view(t0=0, pps=100)
+    pump(app)
+    # click the Strobe lane header -> active lane
+    strobe = next(l for l in s.project.lanes if l.name == "Strobe")
+    idx = s.project.lanes.index(strobe)
+    QTest.mouseClick(c, Qt.LeftButton, Qt.NoModifier, QPoint(40, lane_y(win, idx)))
+    pump(app)
+    assert s.active_lane_id == strobe.id
+    assert win.lane_combo.currentData() == strobe.id
+    # Q drops a cue, W a Temp with the hold from the toolbar, at the (heard) playhead
+    monkeypatch.setattr(s.engine, "position", lambda: 4.0)
+    QTest.keyClick(win, Qt.Key_Q)
+    win.hold_spin.setValue(0.75)
+    monkeypatch.setattr(s.engine, "position", lambda: 6.0)
+    QTest.keyClick(win, Qt.Key_W)
+    cues = s.project.cues_in_lane(strobe.id)
+    assert [round(x.time, 3) for x in cues] == [4.0, 6.0]
+    assert cues[0].duration is None and cues[1].duration == pytest.approx(0.75)
+    assert s.temp_hold == pytest.approx(0.75)
+    # editing the Hold box with the Temp selected changes its hold
+    win.hold_spin.setValue(1.0)
+    assert s.project.cue(cues[1].id).duration == pytest.approx(1.0)
+    # ↓ moves the active lane
+    QTest.keyClick(win, Qt.Key_Down)
+    assert s.active_lane_id == s.project.lanes[idx + 1].id
+    # toolbar buttons do the same as the keys
+    monkeypatch.setattr(s.engine, "position", lambda: 8.0)
+    win.a_add_temp.trigger()
+    lane2 = s.project.lanes[idx + 1].id
+    assert s.project.cues_in_lane(lane2)[0].duration == pytest.approx(1.0)
+    # convert: make the plain cue a Temp and back
+    s.select(cues={cues[0].id})
+    QTest.keyClick(win, Qt.Key_W, Qt.ShiftModifier)
+    assert s.project.cue(cues[0].id).duration == pytest.approx(1.0)
+    QTest.keyClick(win, Qt.Key_Q, Qt.ShiftModifier)
+    assert s.project.cue(cues[0].id).duration is None
+    # export: Temp -> Temp On + Temp Off, cue -> Goto
+    from cueforge.export.ma3 import build_ma3_xml
+    root = ET.fromstring(build_ma3_xml(s.project))
+    tokens = [(e.find("RealtimeCmd").get("Token"), e.find("RealtimeCmd").get("Status"))
+              for e in root.findall(".//CmdEvent")]
+    assert ("Goto", "On") in tokens and ("Temp", "On") in tokens and ("Temp", "Off") in tokens
+    assert sum(1 for t in tokens if t == ("Temp", "Off")) == 2

@@ -183,7 +183,7 @@ def run_analysis(project: Project, audio: dict[str, AudioData], opts: AnalysisOp
             res.suggestions.append(Suggestion(
                 "fill", round(f.start, 6), f.confidence, f.reason, label=f.label,
                 duration=round(f.end - f.start, 3),
-                idea="strobe through the fill (Off on the landing), big hit on the downbeat"))
+                idea="strobe Temp through the fill (released on the landing), big hit on the downbeat"))
 
     def in_fill(t: float) -> bool:
         return any(f.start - 0.03 <= t < f.end - 0.03 for f in fills)

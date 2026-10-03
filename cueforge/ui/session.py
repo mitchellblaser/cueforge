@@ -23,7 +23,7 @@ from .workers import Job, start_job
 
 
 # single-key shortcuts that lanes may not use as tap keys
-RESERVED_KEYS = set("axsgiolcbfzpt")
+RESERVED_KEYS = set("axsgiolcbfzptqw")
 
 
 def guess_role(filename: str, is_first: bool) -> str:
@@ -42,6 +42,7 @@ class Session(QObject):
     songs_changed = Signal()       # setlist names/order/settings
     song_changed = Signal()        # the current song switched
     song_will_change = Signal()    # about to switch (views store their state)
+    active_lane_changed = Signal()
     tracks_changed = Signal()
     mixer_changed = Signal()
     lanes_changed = Signal()
@@ -375,6 +376,57 @@ class Session(QObject):
             self.sel_cues = {c.id}
             self.sel_sugs.clear()
         return c
+
+    # ------------------------------------------------------------------ active lane
+    @property
+    def active_lane_id(self) -> str:
+        lid = getattr(self, "_active_lane", "")
+        if not self.project.lane(lid):
+            lid = self.project.lanes[0].id if self.project.lanes else ""
+            self._active_lane = lid
+        return lid
+
+    def set_active_lane(self, lane_id: str) -> None:
+        if self.project.lane(lane_id) and lane_id != getattr(self, "_active_lane", ""):
+            self._active_lane = lane_id
+            self.active_lane_changed.emit()
+
+    def step_active_lane(self, d: int) -> None:
+        ids = [l.id for l in self.project.lanes]
+        if ids:
+            i = ids.index(self.active_lane_id) if self.active_lane_id in ids else 0
+            self.set_active_lane(ids[max(0, min(len(ids) - 1, i + d))])
+
+    @property
+    def temp_hold(self) -> float:
+        return float(self.settings.get("temp_hold", 0.5))
+
+    def set_temp_hold(self, seconds: float) -> None:
+        self.settings.set("temp_hold", round(max(0.0, seconds), 3))
+
+    def add_at_playhead(self, temp: bool = False, lane_id: str | None = None):
+        """Drop a cue (or a Temp with the current hold time) into the active lane at the
+        playhead — the heard position while playing."""
+        lane_id = lane_id or self.active_lane_id
+        if not lane_id:
+            return None
+        t = self.engine.position()
+        with self.edit("Add temp" if temp else "Add cue"):
+            c = editing.add_cue(self.project, lane_id, t, self.snap)
+            if temp:
+                c.duration = self.temp_hold if self.temp_hold > 0 else None
+            self.sel_cues = {c.id}
+            self.sel_sugs.clear()
+        return c
+
+    def set_selected_temp(self, temp: bool) -> None:
+        """Turn the selected cues into Temps (with the current hold) or back into cues."""
+        if not self.sel_cues:
+            return
+        with self.edit("Make temp" if temp else "Make cue"):
+            for c in self.project.cues:
+                if c.id in self.sel_cues:
+                    c.duration = (c.duration or self.temp_hold) if temp else None
 
     def tap(self, lane_id: str) -> None:
         """Tap a cue at the current (heard) playback position. Live taps are not

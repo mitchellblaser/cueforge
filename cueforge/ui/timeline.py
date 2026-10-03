@@ -66,7 +66,7 @@ class TimelineCanvas(QWidget):
         self.font_bold.setBold(True)
 
         for sig in (session.tracks_changed, session.mixer_changed, session.lanes_changed, session.cues_changed,
-                    session.selection_changed, session.project_replaced):
+                    session.selection_changed, session.project_replaced, session.active_lane_changed):
             sig.connect(self.invalidate)
         session.project_replaced.connect(self._on_project)
 
@@ -201,6 +201,8 @@ class TimelineCanvas(QWidget):
                 continue
             if r.kind == "track":
                 p.fillRect(rr, QColor("#191c21"))
+            elif r.id == self.s.active_lane_id:
+                p.fillRect(rr, QColor("#232a33"))
             else:
                 p.fillRect(rr, QColor("#1c1f25" if i % 2 else "#1f2229"))
             p.setPen(QColor("#2a2e36"))
@@ -370,7 +372,7 @@ class TimelineCanvas(QWidget):
                 p.fillRect(QRectF(x, rr.top() + 20, max(2.0, c.duration * self.pps), rr.height() - 24), bar)
             p.setPen(QPen(QColor(theme.SELECT) if sel else col, 2))
             p.drawLine(QPointF(x, rr.top() + 2), QPointF(x, rr.bottom() - 2))
-            label = c.label or (f"{c.number:g}" if c.number is not None else "")
+            label = c.label or (f"{c.number:g}" if c.number is not None else ("Temp" if c.duration else ""))
             if x < label_end and not sel:
                 label = ""
             tw = min(fm.horizontalAdvance(label) + 8, 140) if label else 6
@@ -447,7 +449,12 @@ class TimelineCanvas(QWidget):
             lane = self.s.project.lane(r.id)
             if not lane:
                 return
-            p.fillRect(QRect(0, hr.top(), 4, hr.height()), QColor(lane.color))
+            active = lane.id == self.s.active_lane_id
+            if active:
+                p.fillRect(hr, QColor("#2a3340"))
+                p.setPen(QPen(QColor(lane.color), 1))
+                p.drawRect(hr.adjusted(0, 0, -1, -1))
+            p.fillRect(QRect(0, hr.top(), 7 if active else 4, hr.height()), QColor(lane.color))
             p.setPen(QColor(theme.FG))
             p.setFont(self.font_bold)
             p.drawText(hr.adjusted(10, 4, -4, 0), Qt.AlignTop | Qt.AlignLeft,
@@ -456,7 +463,7 @@ class TimelineCanvas(QWidget):
             p.setPen(QColor(theme.FG_DIM))
             n = len(self.s.project.cues_in_lane(lane.id))
             pend = sum(1 for s in self.s.project.visible_suggestions() if s.lane_id == lane.id)
-            sub = f"Seq {lane.ma3_sequence} · {n} cues"
+            sub = ("▶ " if active else "") + f"Seq {lane.ma3_sequence} · {n} cues"
             if pend:
                 sub += f" · {pend} AI"
             p.drawText(hr.adjusted(10, 22, -4, 0), Qt.AlignTop | Qt.AlignLeft, sub)
@@ -582,9 +589,11 @@ class TimelineCanvas(QWidget):
                 self._drag = {"mode": "scrub"}
             self.update()
             return
-        if pos.x() < HEADER_W:
-            return
         r = self.row_at(pos.y())
+        if pos.x() < HEADER_W:
+            if r is not None and r.kind == "lane":
+                self.s.set_active_lane(r.id)     # click a lane header to make it the active lane
+            return
         if r is None:
             return
         if r.kind == "track":
@@ -609,6 +618,7 @@ class TimelineCanvas(QWidget):
             return
         if not add:
             self.s.select()
+        self.s.set_active_lane(r.id)
         self._drag = {"mode": "band", "start": pos, "cur": pos, "add": add, "moved": False}
 
     def mouseMoveEvent(self, e) -> None:
@@ -734,7 +744,7 @@ class TimelineCanvas(QWidget):
             if c.source == "ai-accepted":
                 tip += "<br><i>accepted AI suggestion</i>"
             if c.duration:
-                tip += f"<br>Held {c.duration:.2f}s (Off event at the end)"
+                tip += f"<br><b>Temp</b>: held {c.duration:.2f}s (Temp On → Temp Off)"
             if c.notes:
                 tip += f"<br>{c.notes}"
             QToolTip.showText(e.globalPosition().toPoint(), tip, self)
@@ -776,6 +786,8 @@ class TimelineCanvas(QWidget):
                 m.addAction("Edit cue…", lambda: self.edit_cue_requested.emit(cid))
             m.addAction(f"Delete {len(s.sel_cues)} cue(s)", s.delete_selected)
             m.addAction("Snap to grid", s.snap_selected)
+            m.addAction(f"Make Temp (hold {s.temp_hold:g}s)", lambda: s.set_selected_temp(True))
+            m.addAction("Make normal cue", lambda: s.set_selected_temp(False))
             sub = m.addMenu("Move to lane")
             for lane in s.project.lanes:
                 sub.addAction(lane.name, lambda lid=lane.id: s.move_selected_to_lane(lid))
