@@ -125,7 +125,10 @@ def test_sync_creates_labels_pins_and_deletes(link):
     assert f'Label Sequence {seq} "{main.name}"' in cmds
     assert cmds.index(f'Label Sequence {seq} "{main.name}"') > cmds.index(f"Store Sequence {seq} Cue 1 /Merge /NoConfirm")
     # numbers are now fixed: a cue inserted in between gets 1.1 and nothing shifts
-    assert all(c.number is not None for c in p.cues)
+    # (except Temps in a shared lane: that lane's one Temp cue is fixed by rule)
+    from cueforge.core.model import lane_per_song
+    assert all(c.number is not None for c in p.cues if lane_per_song(p.lane(c.lane_id)) or not c.duration)
+    assert all(c.number is None for c in p.cues if not lane_per_song(p.lane(c.lane_id)) and c.duration)
     p.cues.append(Cue(lane_id=main.id, time=3.0, label='Big "drop"'))
     p.sort_cues()
     assert sorted(effective_cue_numbers(p, main.id).values()) == [1, 1.1, 2]
@@ -490,7 +493,7 @@ def test_shared_lane_temps_fire_one_cue_in_every_song(link):
         if c.lane_id == strobe.id:
             c.number = None
     d = p.to_dict()
-    d.pop("shared_temps")
+    d.pop("shared_temps2")
     q = Project.from_dict(d)
     q.select_song(q.songs[1].id)
     assert {n for cid, n in effective_cue_numbers(q, strobe.id).items() if q.cue(cid).duration} == {1.0}
@@ -532,3 +535,30 @@ def test_auto_timecode_push_waits_for_stop_and_skips_unchanged(link):
     link._maybe_push_timecode()
     assert len(link.log) == n                                            # unchanged: not pushed again
     assert link.push_timecode()                                          # the button always pushes
+
+
+def test_new_shared_lane_used_only_in_song_two(link):
+    """'Strobe Plate Hit' (a user lane, shared by its name), not used in song 1: song 2's
+    Temps fire the setlist's shared cue 1 — also after an older version fixed them at 101 —
+    and the link never fixes a shared lane's Temp number again."""
+    from cueforge.core.model import Lane, Project, lane_per_song
+    s = link.s
+    p = s.project
+    lane = Lane("Strobe Plate Hit", ma3_sequence=9)
+    p.lanes.append(lane)
+    assert not lane_per_song(lane)
+    s2 = p.add_song("Second")
+    p.select_song(s2.id)
+    p.cues += [Cue(lane_id=lane.id, time=t, duration=0.2) for t in (3.0, 7.0)]
+    assert set(effective_cue_numbers(p, lane.id).values()) == {1.0}
+    link.sync_cues()
+    assert all(c.number is None for c in p.cues_in_lane(lane.id))       # not fixed by the link
+    # what an older version left behind: both Temps fixed at 101, no matching console record
+    for c in p.cues_in_lane(lane.id):
+        c.number = 101.0
+    p.console = {}
+    d = p.to_dict()
+    d.pop("shared_temps2")
+    q = Project.from_dict(d)
+    q.select_song(q.songs[1].id)
+    assert set(effective_cue_numbers(q, lane.id).values()) == {1.0}

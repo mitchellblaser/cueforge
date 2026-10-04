@@ -539,7 +539,10 @@ class MA3Link(QObject):
         for song in self._scope():
             with in_song(p, song):
                 for lane, seq, nums, cues in self._lane_cues(p):
+                    shared = not lane_per_song(lane)
                     for c in cues:
+                        if shared and c.duration:
+                            continue           # a shared lane's Temp cue is one cue for the setlist
                         if c.number is None and c.id in rec:
                             c.number = nums[c.id]
                             lanes.add(lane.id)
