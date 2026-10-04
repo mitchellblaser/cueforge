@@ -259,8 +259,11 @@ on the timeline.
    - **Temp pads** use the Hold time, or optionally *how long you hold the pad*, for live
      strobes. In that mode a quick tap still gets the standard Hold length, and the end snaps
      to the grid.
-   - **Feedback**: pads light in their lane's colour, sent back on the channel the controller
-     uses. *Automatic* picks the colour scheme for the connected device: a Launchpad / APC mini
+   - **Feedback (pad lights)**: if you don't pick an *Output*, CueForge uses the same device's
+     output automatically. Pads light in their lane's colour, sent back on the channel the
+     controller uses. Change a lane's colour to change its pads. To fix a pad's light, type an
+     LED value (0–127) into its **Pad light** column. **Test lights** lights every pad with a
+     different value, so you can see which number gives which colour on your controller. *Automatic* picks the colour scheme for the connected device: a Launchpad / APC mini
      mk2-style palette, or approximate Midi Fighter colours. You can also choose plain on/off.
      The active lane's Temp pad is full brightness and pads flash on a hit.
    - **OSC** (TouchOSC, Open Stage Control, a Stream Deck plugin…): listens on port 8100 by

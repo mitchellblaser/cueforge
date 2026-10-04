@@ -49,6 +49,7 @@ class MidiMapping:
     channel: int       # 0-15, or -1 = any channel (pad controllers send on all sorts of channels)
     number: int        # note or controller number
     action: str
+    led: int = -1      # pad light: -1 = follow the lane colour, 0-127 = this velocity always
 
     def key(self) -> tuple:
         return (self.kind, self.channel, self.number)
@@ -72,7 +73,7 @@ def default_midi_map() -> list[MidiMapping]:
 def _old_default_map() -> list[dict]:
     m = [MidiMapping("note", 0, 36 + i, f"cue:lane:{i + 1}") for i in range(8)]
     m += [MidiMapping("note", 0, 44 + i, f"temp:lane:{i + 1}") for i in range(8)]
-    return [asdict(x) for x in m]
+    return [{k: v for k, v in asdict(x).items() if k != "led"} for x in m]
 
 
 @dataclass
@@ -89,7 +90,8 @@ class ControlSettings:
     osc_feedback_port: int = 9000
 
     def mappings(self) -> list[MidiMapping]:
-        if self.midi_map == _old_default_map():   # settings saved before "any channel" existed
+        bare = [{k: v for k, v in m.items() if k != "led"} for m in self.midi_map]
+        if bare == _old_default_map():            # settings saved before "any channel" existed
             self.midi_map = [asdict(m) for m in default_midi_map()]
         return [MidiMapping(**m) for m in self.midi_map]
 

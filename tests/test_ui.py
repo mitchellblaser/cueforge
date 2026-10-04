@@ -1054,3 +1054,36 @@ def test_temp_lengths_snap_and_short_taps_are_even(app, win):
     # ＋Temp (W): the Hold box length, end snapped to the grid
     c3 = s.add_at_playhead(temp=True, lane_id=s.project.lanes[2].id, t=20.0)
     assert on_grid(c3.time + c3.duration)
+
+
+def test_pad_lights_output_and_overrides(app, win, monkeypatch):
+    import mido
+    from cueforge.control.hub import match_port
+    hub = win.control
+    sent = []
+
+    class FakeOut:
+        def send(self, msg):
+            sent.append(msg)
+    # no output chosen: the input device's own output is used
+    monkeypatch.setattr(type(hub), "midi_ports", staticmethod(lambda: (["Midi Fighter Spectra 0"],
+                                                                          ["Midi Fighter Spectra 1"])))
+    opened = []
+    monkeypatch.setattr(mido, "open_input", lambda name, callback=None: opened.append(("in", name)) or object())
+    monkeypatch.setattr(mido, "open_output", lambda name: opened.append(("out", name)) or FakeOut())
+    hub.cfg.midi_in, hub.cfg.midi_out = "Midi Fighter Spectra 0", ""
+    hub.apply()
+    assert ("out", "Midi Fighter Spectra 1") in opened
+    assert sent and all(m.channel == 2 for m in sent)              # lit on the Spectra's channel
+    # a fixed pad light overrides the lane colour
+    maps = hub.cfg.mappings()
+    maps[0].led = 77
+    from dataclasses import asdict
+    hub.cfg.midi_map = [asdict(m) for m in maps]
+    sent.clear()
+    hub.send_feedback()
+    assert any(m.note == maps[0].number and m.velocity == 77 for m in sent)
+    shown = hub.test_lights()
+    assert shown and shown[0][1] == 0 and len({v for _, v in shown}) == len(shown)
+    hub.cfg.midi_in = hub.cfg.midi_out = ""
+    hub.apply()

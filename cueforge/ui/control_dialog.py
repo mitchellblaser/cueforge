@@ -55,7 +55,8 @@ class ControlDialog(QDialog):
                 box.addItem(f"{cur} (not connected)", cur)
             box.setCurrentIndex(max(0, box.findData(cur)))
         mf.addRow("Input", self.min)
-        mf.addRow("Output (feedback)", self.mout)
+        mf.addRow("Output (pad lights)", self.mout)
+        self.min.currentIndexChanged.connect(self._auto_output)
         self.fb = QComboBox()
         self.fb.addItem("Automatic (picks the colour scheme for the connected controller)", "auto")
         self.fb.addItem("Pad colours = lane colours (Launchpad / APC mini mk2 style palette)", "palette")
@@ -74,12 +75,13 @@ class ControlDialog(QDialog):
 
         tg = QGroupBox("MIDI mapping")
         tl = QVBoxLayout(tg)
-        self.table = QTableWidget(0, 2)
-        self.table.setHorizontalHeaderLabels(["Control", "Action"])
+        self.table = QTableWidget(0, 3)
+        self.table.setHorizontalHeaderLabels(["Control", "Action", "Pad light"])
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
         self.table.setColumnWidth(0, 150)
+        self.table.setColumnWidth(2, 110)
         tl.addWidget(self.table)
         row = QHBoxLayout()
         self.learn_btn = QPushButton("Learn")
@@ -91,9 +93,16 @@ class ControlDialog(QDialog):
             b.clicked.connect(fn)
             row.addWidget(b)
         row.addWidget(self.learn_btn)
+        test = QPushButton("Test lights")
+        test.setToolTip("Light every pad with a different LED value (0, 8, 16 …) to see which value gives "
+                        "which colour on your controller; then type a value into a pad's Pad light")
+        test.clicked.connect(self._test_lights)
+        row.addWidget(test)
         row.addStretch()
         tl.addLayout(row)
-        self.learn_label = QLabel("Default: notes 36–43 = cue into lanes 1–8, notes 44–51 = Temp into lanes 1–8.")
+        self.learn_label = QLabel("Default: notes 36–43 = cue into lanes 1–8, notes 44–51 = Temp into lanes 1–8 "
+                                  "(any MIDI channel). Pads light in their lane's colour unless you set a Pad light.")
+        self.learn_label.setWordWrap(True)
         self.learn_label.setStyleSheet(f"color: {theme.FG_DIM};")
         tl.addWidget(self.learn_label)
         lay.addWidget(tg)
@@ -143,6 +152,39 @@ class ControlDialog(QDialog):
             box.setCurrentIndex(max(0, box.findData(m.action)))
             box.currentIndexChanged.connect(lambda _, r=r, b=box: setattr(self.maps[r], "action", b.currentData()))
             self.table.setCellWidget(r, 1, box)
+            led = QSpinBox()
+            led.setRange(-1, 127)
+            led.setSpecialValueText("lane colour")
+            led.setValue(m.led if m.kind == "note" else -1)
+            led.setEnabled(m.kind == "note")
+            led.setToolTip("LED value sent to this pad. 'lane colour' follows the lane's colour; a number "
+                           "(0-127) always lights it that way. Use Test lights to see the values.")
+            led.valueChanged.connect(lambda v, r=r: setattr(self.maps[r], "led", int(v)))
+            self.table.setCellWidget(r, 2, led)
+
+    def _auto_output(self) -> None:
+        """Choosing an input with no output yet picks the same device's output (pad lights)."""
+        from ..control.hub import match_port
+        name = self.min.currentData() or ""
+        if name and not self.mout.currentData():
+            outs = [self.mout.itemData(i) for i in range(self.mout.count()) if self.mout.itemData(i)]
+            hit = match_port(name, outs)
+            if hit:
+                self.mout.setCurrentIndex(self.mout.findData(hit))
+
+    def _test_lights(self) -> None:
+        cfg = self.hub.cfg
+        cfg.midi_in = self.min.currentData() or ""
+        cfg.midi_out = self.mout.currentData() or ""
+        cfg.feedback = self.fb.currentData()
+        cfg.midi_map = [asdict(m) for m in self.maps]
+        self.hub.apply()
+        shown = self.hub.test_lights()
+        if not shown:
+            self.learn_label.setText("No pad lights sent: choose the controller as Output (pad lights).")
+            return
+        self.learn_label.setText("Pads lit with LED values: " + ", ".join(f"note {n} = {v}" for n, v in shown[:16])
+                                 + ". Note the colours you like and type them into Pad light.")
 
     def _add(self) -> None:
         nxt = max((m.number for m in self.maps if m.kind == "note"), default=35) + 1

@@ -108,8 +108,9 @@ class ControlHub(QObject):
                 self.status.emit(f"MIDI in: {name}")
             except Exception as exc:
                 self.status.emit(f"MIDI in failed ({self.cfg.midi_in}): {exc}")
-        if self.cfg.midi_out:
-            name = match_port(self.cfg.midi_out, outs) or self.cfg.midi_out
+        out_wanted = self.cfg.midi_out or (self._in_name and match_port(self._in_name, outs)) or ""
+        if out_wanted:                             # no output chosen: the input device's own output
+            name = match_port(out_wanted, outs) or out_wanted
             try:
                 self._out = mido.open_output(name)
                 self._out_name = name
@@ -286,9 +287,28 @@ class ControlHub(QObject):
         for m in self.cfg.mappings():
             if m.kind != "note":
                 continue
-            v = self._pad_velocity(m.action)
-            out.append(mido.Message("note_on", channel=self.feedback_channel(m), note=m.number, velocity=v))
+            v = m.led if m.led >= 0 else self._pad_velocity(m.action)
+            out.append(mido.Message("note_on", channel=self.feedback_channel(m), note=m.number,
+                                    velocity=max(0, min(127, int(v)))))
         return out
+
+    def test_lights(self, step: int = 8) -> list[tuple[int, int]]:
+        """Light every mapped pad with a different LED value (0, 8, 16 …) so you can see which
+        number gives which colour on your controller. Returns [(note, velocity)]."""
+        import mido
+        shown = []
+        if self._out is None:
+            return shown
+        notes = sorted({m.number for m in self.cfg.mappings() if m.kind == "note"})
+        ch = next((self.feedback_channel(m) for m in self.cfg.mappings() if m.kind == "note"), 0)
+        for i, n in enumerate(notes):
+            v = min(127, i * step)
+            try:
+                self._out.send(mido.Message("note_on", channel=ch, note=n, velocity=v))
+            except Exception:
+                break
+            shown.append((n, v))
+        return shown
 
     def send_feedback(self) -> None:
         if self._out is not None:
