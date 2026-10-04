@@ -39,6 +39,9 @@ class LinkSettings:
     push_timecode: bool = False   # send + import timecode automatically after changes
     timecode_dir: str = ""        # unused (kept so old settings load); the push needs no path
     max_cmd: int = 200            # longest command the push sends (the console cuts long ones)
+    auto_pull: bool = True        # bring timecode edits made on the console back (while linked)
+    reply_port: int = 8001        # CueForge listens here for the console's replies
+    reply_line: int = 2           # the console's OSC line that sends to CueForge (SendOSC <line>)
     pin_numbers: bool = True      # fix a cue's number once it exists on the console
     # command templates ({seq}, {cue}, {label}) — edit if your MA3 version wants other syntax
     cmd_goto: str = "Goto Sequence {seq} Cue {cue}"
@@ -208,6 +211,8 @@ def _num(n: float) -> str:
 class MA3Link(QObject):
     status = Signal(str)
     sent = Signal(str)            # every command (for the log)
+    pulled = Signal(int, str)     # the console's timecode for a slot (from the reply thread)
+    console_changed = Signal(str)  # a summary after console edits were brought in
 
     def __init__(self, session) -> None:
         super().__init__()
@@ -222,6 +227,7 @@ class MA3Link(QObject):
         self._offs: list[tuple[float, int]] = []            # pending Temp releases (time, sequence)
         self._sender = OscSender(lambda msg: self.status.emit(msg))
         self._pushed_tc: dict[str, str] = {}               # song id -> timecode script last pushed
+        self._pushed_items: dict[str, list] = {}            # song id -> its events as last pushed
         self._sync_timer = QTimer(self)
         self._sync_timer.setSingleShot(True)
         self._sync_timer.setInterval(600)
@@ -236,6 +242,16 @@ class MA3Link(QObject):
         for sig in (session.cues_changed, session.lanes_changed, session.songs_changed):
             sig.connect(self._changed)
         session.project_replaced.connect(self._project_replaced)
+        # the other way: timecode edits made on the console come back (ma3pull)
+        self._receiver = None
+        self._pull_base: dict[str, tuple] = {}            # song id -> console version last seen
+        self._pull_defined = False                        # CF_PULL sent to the console
+        self._pull_unanswered = 0
+        self._pull_manual = False
+        self.pulled.connect(self._on_pulled)
+        self._pull_timer = QTimer(self)
+        self._pull_timer.setInterval(10000)
+        self._pull_timer.timeout.connect(self._poll_pull)
 
     # ------------------------------------------------------------------ setup
     def cmd(self, name: str, seq, cue: float | None = None, label: str = "", fade: float = 0.0) -> str:
@@ -267,6 +283,13 @@ class MA3Link(QObject):
         self._was_playing = False
         self._preview_cache = None
         self._pushed_tc = {}                   # a new connection may be a different console
+        self._pull_timer.stop()
+        self._pull_base = {}
+        self._pull_defined = False
+        self._pull_unanswered = 0
+        if self._receiver is not None:
+            self._receiver.close()
+            self._receiver = None
         if not self.cfg.enabled:
             self.status.emit("MA3 link off")
             return
@@ -280,6 +303,121 @@ class MA3Link(QObject):
         self.status.emit(f"MA3 link → {self.cfg.host}:{self.cfg.port} {self.cfg.address}")
         if self.cfg.sync_cues:
             self._sync_timer.start()
+        self._start_receiver()
+        if self.cfg.auto_pull:
+            self._pull_timer.start()
+
+    # ------------------------------------------------------------------ console -> CueForge
+    def _start_receiver(self) -> bool:
+        if self._receiver is not None:
+            return True
+        try:
+            from .ma3pull import PullReceiver
+            self._receiver = PullReceiver(int(self.cfg.reply_port), lambda slot, text: self.pulled.emit(slot, text))
+            return True
+        except Exception as exc:
+            self.status.emit(f"MA3 link: can't listen for the console on port {self.cfg.reply_port}: {exc}")
+            return False
+
+    def _pull_cmds(self, force: bool, slots: list[int]) -> list[str]:
+        from .ma3pull import PULL_LUA
+        cmds = []
+        if not self._pull_defined:
+            cmds += push_commands(CONSOLE_DIR_LUA + PULL_LUA, int(self.cfg.max_cmd or MAX_CMD))
+            self._pull_defined = True
+        args = ",".join(str(int(s)) for s in slots)
+        cmds.append(f'Lua "CF_PULL({int(self.cfg.reply_line)},{"true" if force else "false"},{args})"')
+        return cmds
+
+    def pull_now(self) -> list[str]:
+        """Ask the console for the open song's timecode and take its version (the button)."""
+        if not self.active or not self._start_receiver():
+            return []
+        self._pull_manual = True
+        self._pull_unanswered = 0
+        cmds = self._pull_cmds(True, [self.s.project.song.ma3_timecode])
+        for c in cmds:
+            self.send(c, bulk=True)
+        self.status.emit("Asked the console for its timecode…")
+        return cmds
+
+    def _poll_pull(self) -> None:
+        """Every few seconds while linked and stopped: has the open song's timecode been
+        edited on the console? (The console answers 'same' when nothing changed.)"""
+        if not (self.active and self.cfg.auto_pull) or getattr(self.s.engine, "playing", False):
+            return
+        if self._sync_timer.isActive() or self._tc_timer.isActive() or not self._sender.wait_idle(0):
+            return                              # CueForge's own changes are still going out
+        if self._pull_unanswered >= 2:
+            self._pull_defined = False          # console restarted? send CF_PULL again
+        if self._pull_unanswered >= 5:
+            self._pull_timer.stop()
+            self.status.emit(f"MA3 link: no reply from the console — set up an OSC line that sends to this "
+                             f"computer, port {self.cfg.reply_port} (see the live link settings)")
+            return
+        self._pull_unanswered += 1
+        for c in self._pull_cmds(False, [self.s.project.song.ma3_timecode]):
+            self.send(c, bulk=True)
+
+    def _on_pulled(self, slot: int, text: str) -> None:
+        """The console's version of a timecode show arrived (UI thread)."""
+        from .ma3pull import SPECIAL, merge_into_song, own_items, parse_pull, signature
+        from ..export.ma3_import import show_to_cues
+        self._pull_unanswered = 0
+        manual, self._pull_manual = self._pull_manual, False
+        p = self.s.project
+        song = p.song
+        if song.ma3_timecode != slot:
+            return                              # the user moved to another song meanwhile
+        if text in SPECIAL:
+            if manual and text != "same":
+                self.status.emit(f"MA3 link: Timecode {slot} " + ("doesn't exist on the console" if text == "none"
+                                                                 else "could not be exported on the console"))
+            return
+        items = show_to_cues(parse_pull(text))
+        theirs = signature(items)
+        ours = signature(own_items(p))
+        base = self._pull_base.get(song.id)
+        if theirs == ours:
+            self._pull_base[song.id] = theirs
+            if manual:
+                self.status.emit("MA3 link: the console's timecode matches CueForge")
+            return
+        if not manual:
+            if base is None:
+                self._pull_base[song.id] = theirs
+                self.status.emit(f"MA3 link: '{song.name}' differs on the console — Pull from console takes the "
+                                 "console's version, Push timecode sends CueForge's")
+                return
+            if theirs == base:
+                return                          # the console didn't change: CueForge's edits will be pushed
+            if ours != signature(self._last_pushed_items(song)):
+                self._pull_base[song.id] = theirs
+                self.status.emit(f"MA3 link: '{song.name}' was edited on the console and in CueForge — "
+                                 "kept CueForge's; Pull from console takes the console's version")
+                return
+        with self.s.edit("Timecode edits from the console"):
+            stats = merge_into_song(p, items)
+        self._pull_base[song.id] = theirs
+        self._remember_pushed(song)             # in line with the console now: nothing to push back
+        self.s.cues_changed.emit()
+        msg = (f"From the console: {stats['moved']} moved, {stats['added']} added, {stats['removed']} removed"
+               + (f" (no lane for {', '.join(stats['unmatched'])})" if stats["unmatched"] else ""))
+        self.status.emit(msg)
+        self.console_changed.emit(msg)
+
+    def _last_pushed_items(self, song):
+        """What CueForge last pushed for a song, as items (its current items if never pushed)."""
+        from .ma3pull import own_items
+        return self._pushed_items.get(song.id) or own_items(self.s.project)
+
+    def _remember_pushed(self, song) -> None:
+        from ..export.ma3 import SEQ_FIX_LUA, build_ma3_xml, offset_text, seq_table
+        from .ma3pull import own_items
+        p = self.s.project
+        self._pushed_items[song.id] = own_items(p)
+        self._pushed_tc[song.id] = import_script(build_ma3_xml(p, placeholders=True), song.ma3_timecode,
+                                                 SEQ_FIX_LUA, [n for n, _ in seq_table(p)], offset_text(p.tc_offset))
 
     @property
     def active(self) -> bool:
@@ -616,6 +754,8 @@ class MA3Link(QObject):
                 if only_changed and self._pushed_tc.get(song.id) == script:
                     continue
                 self._pushed_tc[song.id] = script
+                from .ma3pull import own_items
+                self._pushed_items[song.id] = own_items(p)
                 cmds += push_commands(script, int(self.cfg.max_cmd or MAX_CMD))
                 songs += 1
         for c in cmds:

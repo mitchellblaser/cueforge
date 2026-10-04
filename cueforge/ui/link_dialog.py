@@ -17,6 +17,10 @@ string", command). Check <b>Receive Command</b> = Yes, the line and <b>Enable In
 address matches the Prefix: empty Prefix → <code>/cmd</code>; Prefix <code>gma3</code> (no slash) →
 <code>/gma3/cmd</code>. <i>Send test</i> prints "CueForge link OK" in the console's command line
 feedback.<br>
+<b>Console edits back to CueForge</b>: add a second OSC line: Destination IP = this computer, Port =
+the reply port below, <b>Send</b> = Yes, enabled, and <b>Enable Output</b> on. Put that line's number
+(1 = first line) in <i>Console OSC line</i>. CueForge then checks the open song's timecode every 10 s
+while stopped and brings edits made on the console back (moved, added, deleted events).<br>
 <span style='color:#ffb74d'>Creating cues uses <code>Store … /Merge</code>: keep the programmer
 clear while the link creates cues, or your programmer values go into the new cue.</span>"""
 
@@ -27,7 +31,7 @@ TEST_CMD = 'Lua "Printf(\'CueForge link OK\')"'   # harmless: only prints on the
 def short_cmd(cmd: str) -> str:
     """Log text for a command: the timecode push's long Lua chunks shown as one short line."""
     if cmd.startswith('Lua "CF_P=CF_P or {} CF_P['):
-        return "Lua … timecode piece " + cmd.split("[", 1)[1].split("]", 1)[0]
+        return "Lua … piece " + cmd.split("[", 1)[1].split("]", 1)[0]
     if cmd.startswith('Lua "') and len(cmd) > 160:
         return f"Lua … ({len(cmd)} chars)"
     return cmd
@@ -53,6 +57,17 @@ class LinkDialog(QDialog):
         f.addRow("Port", self.port)
         self.addr = QLineEdit(c.address)
         f.addRow("Command address", self.addr)
+        self.reply_port = QSpinBox()
+        self.reply_port.setRange(1, 65535)
+        self.reply_port.setValue(int(c.reply_port))
+        self.reply_port.setToolTip("CueForge listens here for what the console sends back")
+        f.addRow("Reply port (this computer)", self.reply_port)
+        self.reply_line = QSpinBox()
+        self.reply_line.setRange(1, 99)
+        self.reply_line.setValue(int(c.reply_line))
+        self.reply_line.setToolTip("The number of the console's OSC line that sends to this computer "
+                                   "(SendOSC <line>); 1 = the first line in In & Out ▸ OSC")
+        f.addRow("Console OSC line (replies)", self.reply_line)
         lay.addWidget(g)
 
         g2 = QGroupBox("What to send")
@@ -69,7 +84,9 @@ class LinkDialog(QDialog):
         self.tc.setChecked(c.push_timecode)
         self.pin = QCheckBox("Fix cue numbers once they exist on the console (new cues get 5.1, 5.2 …)")
         self.pin.setChecked(c.pin_numbers)
-        for w in (self.preview, self.sync, self.pin, self.delete, self.all, self.tc):
+        self.pull = QCheckBox("Bring timecode edits made on the console back into CueForge")
+        self.pull.setChecked(c.auto_pull)
+        for w in (self.preview, self.sync, self.pin, self.delete, self.all, self.tc, self.pull):
             f2.addRow(w)
         self.seq_start = QSpinBox()
         self.seq_start.setRange(1, 99999)
@@ -107,7 +124,7 @@ class LinkDialog(QDialog):
 
         btns = QHBoxLayout()
         for txt, fn in (("Send test", self._test), ("Push all cues now", self._push_cues),
-                        ("Push timecode now", self._push_tc)):
+                        ("Push timecode now", self._push_tc), ("Pull from console", self._pull)):
             b = QPushButton(txt)
             b.clicked.connect(fn)
             btns.addWidget(b)
@@ -142,6 +159,9 @@ class LinkDialog(QDialog):
         c.allow_delete = self.delete.isChecked()
         c.all_songs = self.all.isChecked()
         c.push_timecode = self.tc.isChecked()
+        c.auto_pull = self.pull.isChecked()
+        c.reply_port = self.reply_port.value()
+        c.reply_line = self.reply_line.value()
         self.link.s.project.export.ma3_seq_start = self.seq_start.value()
         c.pin_numbers = self.pin.isChecked()
         for k, e in self.tpl.items():
@@ -161,6 +181,10 @@ class LinkDialog(QDialog):
     def _push_tc(self) -> None:
         self._store()
         self.link.push_timecode()
+
+    def _pull(self) -> None:
+        self._store()
+        self.link.pull_now()
 
     def accept(self) -> None:
         self._store()

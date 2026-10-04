@@ -637,3 +637,200 @@ def test_old_number_records_adopt_sequences_once(link):
     assert f'Lua "CF_ENSURE([[Second {main.name}]],{plan(p)["Second " + main.name]},1)"' in cmds   # own one
     assert f'Store Sequence "Second {main.name}" Cue 1 /Merge /NoConfirm' in cmds
     assert not any(f'Store Sequence "Song 1 {main.name}"' in c for c in cmds)           # already there
+
+
+# ---------------------------------------------------------------- console -> CueForge
+MA_EXPORT = """<?xml version="1.0" encoding="UTF-8"?>
+<GMA3 DataVersion="2.1.1.5">
+  <Timecode Name="Song 1" Guid="AA" OffsetTCSlot="1h00m00.000">
+    <TrackGroup>
+      <Track Name="Song 1 Main Cues" Guid="BB" Target="ShowData.DataPools.Default.Sequences.1">
+        <TimeRange Duration="To End">
+          <CmdSubTrack>
+            <CmdEvent Name="Goto" Time="1.250" CueDestination="Intro, &quot;big&quot;">
+              <RealtimeCmd Type="Key" Status="On" Object="12.12.0.5.0" ExecToken="Goto" ValCueDestination="12.12.0.5.0.1000"/>
+            </CmdEvent>
+            <CmdEvent Name="Go+" Time="9.000" CueDestination="New one">
+              <RealtimeCmd Type="Key" Status="On" Object="12.12.0.5.0" ExecToken="Go+" ValCueDestination="12.12.0.5.0.3000"/>
+            </CmdEvent>
+          </CmdSubTrack>
+        </TimeRange>
+      </Track>
+      <Track Name="Hits" Guid="CC" Target="ShowData.DataPools.Default.Sequences.2">
+        <TimeRange Duration="To End">
+          <CmdSubTrack>
+            <CmdEvent Name="Temp" Time="3.000" CueDestination="Hits">
+              <RealtimeCmd Type="Key" Status="On" ExecToken="Temp" ValCueDestination="12.12.0.5.1.1000"/>
+            </CmdEvent>
+            <CmdEvent Name="Temp" Time="3.750" CueDestination="Hits">
+              <RealtimeCmd Type="Key" Status="Off" ExecToken="Temp" ValCueDestination="12.12.0.5.1.1000"/>
+            </CmdEvent>
+          </CmdSubTrack>
+        </TimeRange>
+      </Track>
+    </TrackGroup>
+  </Timecode>
+</GMA3>
+"""
+
+
+def _console_pull(tmp_path, export_xml, force=True, runs=1):
+    """Run CF_PULL on the mock console (its Export writes `export_xml`); returns the text
+    CueForge would assemble from the SendOSC replies, one per run."""
+    import shutil
+    import subprocess
+    from cueforge.control.ma3link import CONSOLE_DIR_LUA, push_commands
+    from cueforge.control.ma3pull import PULL_LUA
+    lua = shutil.which("lua") or shutil.which("lua5.4") or shutil.which("lua5.3")
+    if not lua:
+        pytest.skip("no Lua interpreter")
+    disk = tmp_path / "console"
+    (disk / "datapools" / "timecodes").mkdir(parents=True, exist_ok=True)
+    src = tmp_path / "export.xml"
+    src.write_text(export_xml)
+    mock = ("local function tcode(no) local t = {no=no} "
+            f"function t:Export(d, f) local i = io.open([[{src}]]) local x = i:read('*a') i:close() "
+            "local o = io.open(d .. '/' .. f, 'w') o:write(x) o:close() return true end return t end "
+            "local tcs = {tcode(1)} "
+            "function DataPool() return {Sequences={Children=function() return {} end}, "
+            "Timecodes={Children=function() return tcs end}} end "
+            "Enums = {PathType={Library='lib'}} "
+            f"function GetPath(k) if k == 'lib' then return [[{disk}]] end error('no') end "
+            "function ErrPrintf(f, ...) print('ERR ' .. string.format(f, ...)) end "
+            "function Printf(f, ...) print(string.format(f, ...)) end "
+            "function Cmd(c) print('CMD ' .. c) end\n")
+    cmds = push_commands(CONSOLE_DIR_LUA + PULL_LUA)
+    cmds += [f'Lua "CF_PULL(2,{"true" if force else "false"},1)"'] * runs
+    body = "".join(";(function() " + c[len('Lua "'):-1] + " end)()\n" for c in cmds)
+    (tmp_path / "pull.lua").write_text(mock + body)
+    out = subprocess.run([lua, str(tmp_path / "pull.lua")], check=True, capture_output=True, text=True).stdout
+    sends = [l for l in out.splitlines() if l.startswith("CMD SendOSC")]
+    assert all(len(l) - 4 <= 200 for l in sends)                    # short commands
+    assert all(l.startswith('CMD SendOSC 2 "/cueforge/tc,s,') and l.count('"') == 2 and l.count(",") == 1 + 1
+               for l in sends)                                       # one string argument, no stray commas
+    # reassemble like PullReceiver
+    texts, parts = [], {}
+    import re
+    for l in sends:
+        slot, i, n, payload = re.fullmatch(r'CMD SendOSC 2 "/cueforge/tc,s,(\d+):(\d+):(\d+):(.*)"', l).groups()
+        parts[int(i)] = payload
+        if len(parts) == int(n):
+            texts.append("".join(parts[k] for k in range(1, int(n) + 1)))
+            parts = {}
+    return texts
+
+
+def test_console_pull_round_trip(tmp_path):
+    from cueforge.control.ma3pull import parse_pull
+    from cueforge.export.ma3_import import show_to_cues
+    texts = _console_pull(tmp_path, MA_EXPORT)
+    show = parse_pull(texts[0])
+    items = show_to_cues(show)
+    got = sorted((t, c.time, c.duration, c.number, c.label) for _, t, c in items)
+    assert got == [("Hits", 3.0, 0.75, 1.0, "Hits"),
+                   ("Song 1 Main Cues", 1.25, None, 1.0, 'Intro, "big"'),          # commas and quotes survive
+                   ("Song 1 Main Cues", 9.0, None, 3.0, "New one")]
+    # unchanged on the next look: the console only says "same"
+    texts = _console_pull(tmp_path / "again", MA_EXPORT, force=False, runs=2)
+    assert texts[1] == "same"
+
+
+def test_merge_keeps_labels_fades_and_notes(link):
+    from cueforge.control.ma3pull import merge_into_song, parse_pull
+    from cueforge.export.ma3_import import TcEvent, TcShow, TcTrack, show_to_cues
+    p = link.s.project
+    main = p.lanes[0]
+    intro, verse = p.cues_in_lane(main.id)[:2]               # cues 1 (1.0 s) and 2 (5.0 s)
+    intro.fade, intro.notes = 2.0, "keep me"
+    show = TcShow("Song 1", None, [TcTrack("Song 1 Main Cues", None, [
+        TcEvent(1.25, "Goto", "On", 1.0, "Intro"),            # cue 1 moved
+        TcEvent(9.0, "Go+", "On", 3.0, "New one")])])         # cue 3 added; cue 2 deleted on the console
+    stats = merge_into_song(p, show_to_cues(show))
+    assert stats["moved"] == 1 and stats["added"] == 1 and stats["removed"] == 1
+    c1 = p.cue(intro.id)
+    assert c1.time == 1.25 and c1.fade == 2.0 and c1.notes == "keep me" and c1.label == "Intro"
+    assert p.cue(verse.id) is None
+    assert any(c.label == "New one" and c.number == 3.0 for c in p.cues_in_lane(main.id))
+
+
+def test_auto_pull_takes_console_edits_only_when_cueforge_is_unchanged(link):
+    """First look: remember the console's version. Console edited since: bring it in (one
+    undo step). Edited on both sides: keep CueForge's and say so."""
+    from cueforge.control.ma3pull import own_items
+    s = link.s
+    s._sync_engine = lambda: None
+    p = s.project
+    main = p.lanes[0]
+    intro = p.cues_in_lane(main.id)[0]
+    msgs = []
+    link.status.connect(msgs.append)
+
+    def console_text(items):
+        lines = []
+        for tname in sorted({t for _, t, _ in items}):
+            lines.append(f"T|{tname}|")
+            for _, t, c in items:
+                if t != tname:
+                    continue
+                h = f"12.12.0.5.0.{int(round((c.number or 1) * 1000))}"
+                lines.append(f"E|{c.time:.3f}|{'Temp' if c.duration else 'Goto'}|On|{h}|{c.label}")
+                if c.duration:
+                    lines.append(f"E|{c.time + c.duration:.3f}|Temp|Off|{h}|")
+        return "%0A".join(lines)
+    slot = p.song.ma3_timecode
+    same = console_text(own_items(p))
+    link._on_pulled(slot, same)                                     # in sync: nothing happens
+    assert p.cue(intro.id).time == 1.0
+    link._on_pulled(slot, same.replace("E|1.000|", "E|1.500|", 1))   # cue 1 moved on the console
+    assert p.cue(intro.id).time == 1.5 and msgs[-1].startswith("From the console: 1 moved")
+    s.undo.undo()
+    p = s.project
+    assert p.cue(intro.id).time == 1.0                               # one undo step
+    # edited on both sides: CueForge's version stays
+    p.cue(intro.id).time = 1.5
+    link._on_pulled(slot, console_text(own_items(p)))               # console == CueForge again
+    link._pushed_items[p.song.id] = own_items(p)                    # what was pushed: 1.5
+    p.cue(intro.id).time = 2.0                                      # then edited in CueForge
+    link._on_pulled(slot, same.replace("E|1.000|", "E|1.750|", 1))   # and on the console
+    assert p.cue(intro.id).time == 2.0 and "kept CueForge's" in msgs[-1]
+    # the button takes the console's version anyway
+    link._pull_manual = True
+    link._on_pulled(slot, same.replace("E|1.000|", "E|1.750|", 1))
+    assert p.cue(intro.id).time == 1.75
+
+
+def test_pull_receiver_assembles_parts_over_udp():
+    import time as _t
+    from pythonosc.udp_client import SimpleUDPClient
+    from cueforge.control.ma3pull import PullReceiver
+    got = []
+    r = PullReceiver(0, lambda slot, text: got.append((slot, text)))
+    try:
+        c = SimpleUDPClient("127.0.0.1", r.port)
+        for msg in ("4:1:3:T|Hits|", "4:2:3:%0AE|3.000|Temp|On|", "4:3:3:12.12.0.5.1.1000|Hits"):
+            c.send_message("/cueforge/tc", msg)
+        c.send_message("/cueforge/tc", "5:1:1:same")
+        t0 = _t.time()
+        while len(got) < 2 and _t.time() - t0 < 3:
+            _t.sleep(0.02)
+    finally:
+        r.close()
+    assert (4, "T|Hits|%0AE|3.000|Temp|On|12.12.0.5.1.1000|Hits") in got and (5, "same") in got
+
+
+def test_polling_defines_cf_pull_once_and_gives_up_without_replies(link):
+    link.cfg.auto_pull = True
+    link.s.engine.playing = False
+    link._poll_pull()
+    first = list(link.log)
+    assert any("CF_P[1]=" in c for c in first) and first[-1].startswith('Lua "CF_PULL(2,false,')
+    link._sender.wait_idle(5)                              # polls never pile up on a busy sender
+    n = len(link.log)
+    link._poll_pull()
+    assert link.log[n:] == [first[-1]]                     # just the call: CF_PULL is defined already
+    msgs = []
+    link.status.connect(msgs.append)
+    for _ in range(6):
+        link._sender.wait_idle(5)
+        link._poll_pull()
+    assert any("no reply from the console" in m for m in msgs) and not link._pull_timer.isActive()

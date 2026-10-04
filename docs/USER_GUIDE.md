@@ -553,8 +553,24 @@ Open **File › grandMA3 live link…** (Ctrl+L):
 | **Push timecode shows automatically** | Sends each song's timecode show over the network and imports it into the song's Timecode slot, a few seconds after you stop editing — never while playing, and only songs that changed. Works with onPC or a networked console; no files to copy and no folders to set. |
 | **Fix cue numbers once they exist on the console** | On by default. Cues already on the console keep their numbers; a new cue between 5 and 6 becomes 5.1. |
 
-Buttons: **Push all cues now** (recreate everything, e.g. for a fresh show file) and **Push
-timecode now**. *Last commands sent* shows exactly what went out.
+Buttons: **Push all cues now** (recreate everything, e.g. for a fresh show file), **Push
+timecode now** and **Pull from console**. *Last commands sent* shows exactly what went out.
+
+### Edits made on the console come back
+
+With **Bring timecode edits made on the console back into CueForge** on, CueForge checks the
+open song's timecode show every 10 seconds while you are stopped. Events moved, added or
+deleted in MA's timecode editor come back into the lanes as one undo step. Moved cues keep
+their labels, fades and notes.
+
+- If only the console changed, its version comes in.
+- If both the console and CueForge changed since the last push, CueForge keeps its own and
+  says so in the status bar. **Pull from console** takes the console's version anyway.
+
+For this the console needs a second OSC line that sends back: Destination IP = this
+computer, Port = the *Reply port* (8001), **Send** = Yes, **Enable Output** on. Put that line's
+number in *Console OSC line* (1 = the first line). If nothing answers, CueForge stops checking
+and says so.
 
 > ⚠ **Keep the programmer clear** while the link creates cues. Cues are created with
 > `Store … /Merge`, so anything in the programmer goes into the new cue.
