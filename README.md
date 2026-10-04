@@ -127,6 +127,8 @@ on the timeline.
 2. **Mix.** Each strip has a fader (double-click resets to 0 dB), meter, **M**ute and
    **S**olo. There is also a generated **Click** (from the beat grid, with an accent on bar 1),
    **Cue blips** (a tick on every confirmed cue, so you can hear whether hits land) and **Master**.
+   Cues in several lanes at the same moment give one blip, not a louder stack, and the Click
+   and Cue blips strips have meters too.
 
 3. **Analyse** (✦ Analyse, Ctrl+R). Suggestions appear in the lanes as dashed, ghosted
    markers, more opaque when confidence is higher. Each one comes with an **idea** for
@@ -174,7 +176,8 @@ on the timeline.
 
 5. **Review**
    - **Tab / Shift+Tab** jumps between suggestions; **A** accepts, **X** rejects. Either one
-     moves on to the next suggestion.
+     moves on to the next suggestion. Untick *Jump to the next suggestion after Accept /
+     Reject* (AI Suggestions tab, or the AI menu) to stay where you are.
    - **P** plays from 2 s before the selected suggestion or cue.
    - The *AI Suggestions* tab has a **confidence threshold** per type, the target lane per
      type, and **Accept all** / **Reject all**.
@@ -188,6 +191,8 @@ on the timeline.
 6. **Program manually (fast)**
    - **Scrub**: drag in the ruler or a waveform while stopped to hear the audio under the
      playhead. Speed and direction follow your drag (*View › Scrub audio* turns it off).
+   - **Reorder lanes** by dragging a lane header on the timeline, or the ≡ handle in the
+     *Lanes* panel. Keys 1–9 follow the new order: the top lane is key 1.
    - The **active lane** is highlighted with ▶. Click a lane header (or empty space in a lane),
      use **↑ / ↓**, or pick it in the toolbar's *Active lane* box.
    - **＋ Cue (Q)** drops a normal cue at the playhead in the active lane.
@@ -200,6 +205,11 @@ on the timeline.
      hold Alt for free movement. With several Temps selected, they all change together.
      **Shift+W / Shift+Q** turn selected cues into Temps / normal cues.
    - Press a lane's **tap key** (1, 2, 3, …) during playback to drop a cue at the playhead.
+     **Press and hold** it to drop a **Temp** for as long as you hold the key, e.g. hold 3 for
+     a strobe. The Temp grows on the timeline while you hold. With Snap on, its start and end
+     snap to the grid.
+   - **Snap resolution** (next to *Snap* in the toolbar) is 1 beat, ½ or ¼ beat. It applies to
+     new cues, drags, Temp ends and held Temps.
    - Double-click a lane to add a cue. Drag cues to move them (they snap to beats when
      **Snap** is on; hold Alt to stop snapping), or drag them into another lane.
    - **←/→** nudges by a frame, **Shift+←/→** by a beat. **G** snaps to the grid.
@@ -209,8 +219,13 @@ on the timeline.
 
 7. **Sections, copy & paste, patterns** (*Arrange* menu)
    - The **section band** under the ruler holds your song sections. Add a marker with
-     **M** (or click *＋ M*). Drag its edge to move it, double-click to rename. *Create
-     sections from AI suggestions* turns the analysis into markers you can then fix.
+     **M** (or click *＋ M*). Double-click to rename. *Create sections from AI suggestions*
+     turns the analysis into markers you can then fix.
+     - **Resize:** drag a section's start or end edge. A boundary shared with the next
+       section moves for both.
+     - **Move:** drag the middle of a section to move it, keeping its length; its neighbours
+       grow or shrink.
+     - Sections snap to bar lines when Snap is on (Alt = free), and every change can be undone.
    - Sections with the same name (*Chorus 1*, *Chorus 2*) are repeats. Right-click a section
      › **Copy cues to all repeats**, or to any one section. Cues are placed by beats from the
      section start, so they land correctly even if a live band drifted, and they're cut at
@@ -249,8 +264,12 @@ on the timeline.
        lane mixing Temps with Go+ cues. Keep Temps in their own lane, e.g. Strobe.
      - **Temps** (cues with a hold time, e.g. from ＋ Temp or an accepted drum-fill strobe)
        fire **Temp On** at the cue and **Temp Off** when the hold ends.
-     - Cue numbers you leave blank are filled in automatically from each song's first cue
-       number.
+     - **Cue numbers are automatic.** Each lane's cues are numbered in time order from the
+       song's first cue number. The numbers show dimmed in the Cue list and on the timeline.
+       - Type a number to fix one. A cue added between fixed numbers gets a point number,
+         e.g. 5.1.
+       - *Lanes › Numbering* clears fixed numbers, renumbers a lane, or gives the lanes MA3
+         sequences 1, 2, 3… in order. A warning shows if two lanes share a sequence.
      - **Plugin (recommended)**: one `.lua` file (plus its `.xml` descriptor) for the whole
        setlist. Copy both to `gma3_library/datapools/plugins`, import it into a Plugin pool
        slot and run it once. It creates and labels the cues, then for every song writes the
@@ -335,6 +354,9 @@ colour, plus any Temp that is still holding. Cues that just fired flash bold, an
 scrolls to keep them in view. If you scroll by hand, following pauses for a few seconds.
 Untick *Follow* to stop it.
 
+The timeline's own **Follow** (F) scrolls smoothly: once the playhead reaches about 40% of the
+width, the timeline glides under it instead of jumping a page at a time.
+
 ## Migrating from CuePoints
 
 *File › Import CuePoints CSV / spreadsheet…* reads CuePoints' CSV / TAB cue exports (columns
@@ -391,6 +413,7 @@ and cue numbers and labels are kept. Choose **Replace** (console is master) or *
 | Ctrl+Alt+← / → | Move bar 1 one beat earlier / later |
 | Ctrl+Shift+R | Analyse all songs |
 | Ctrl+Alt+S | Scrub audio on/off |
+| Hold 1–9 | Hold a lane key during playback to drop a Temp for as long as it's held |
 
 ---
 

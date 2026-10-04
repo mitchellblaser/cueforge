@@ -199,11 +199,13 @@ SECTION_COLORS = ["#5C6BC0", "#26A69A", "#EF5350", "#AB47BC", "#FFA726", "#66BB6
 
 @dataclass
 class SectionMarker:
-    """Start of a song section (verse, chorus…). A section runs to the next marker."""
+    """A song section (verse, chorus…). It runs to the next marker, or to `end` when that
+    comes first (the last section of a song, or a gap before the next one)."""
     name: str
     time: float
     color: str = ""
     id: str = field(default_factory=new_id)
+    end: float | None = None
 
     @property
     def kind(self) -> str:
@@ -320,6 +322,7 @@ class Project:
         # what the grandMA3 live link has already created on the console (not undoable:
         # it records the console's state): {"cues": {cue id: [seq, number, label]}, "seqs": {seq: name}}
         self.console: dict[str, Any] = {}
+        self.snap_div = 1                # snap to beats (1), half beats (2) or quarter beats (4)
         self.add_default_lanes()
 
     # -- songs ------------------------------------------------------------
@@ -451,6 +454,7 @@ class Project:
             "songs": [s.to_dict() for s in self.songs],
             "current": self.current,
             "console": self.console,
+            "snap_div": self.snap_div,
         }
 
     @classmethod
@@ -465,6 +469,7 @@ class Project:
             p.analysis.visible.setdefault(k, True)
         p.export = _from_dict(ExportSettings, d.get("export", {}))
         p.console = d.get("console") or {}
+        p.snap_div = int(d.get("snap_div", 1) or 1)
         if "songs" in d:
             p.songs = [Song.from_dict(x) for x in d["songs"]] or [Song("Song 1")]
             p.current = int(d.get("current", 0))

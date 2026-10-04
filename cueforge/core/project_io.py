@@ -9,6 +9,20 @@ from .model import Project
 EXTENSION = ".cueproj"
 
 
+def _jsonable(o):
+    """numpy numbers / arrays and sets that slipped into the model still save."""
+    if hasattr(o, "item") and callable(o.item):
+        try:
+            return o.item()
+        except (ValueError, TypeError):
+            pass
+    if hasattr(o, "tolist"):
+        return o.tolist()
+    if isinstance(o, (set, tuple)):
+        return list(o)
+    raise TypeError(f"Cannot save a value of type {type(o).__name__}")
+
+
 def save_project(project: Project, path: str) -> None:
     path = os.path.abspath(path)
     base = os.path.dirname(path)
@@ -20,8 +34,15 @@ def save_project(project: Project, path: str) -> None:
         except ValueError:  # different drive on Windows
             t["path"] = t["abs_path"]
     tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=1)
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=1, default=_jsonable)
+    except BaseException:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
     os.replace(tmp, path)
     project.path = path
     project.name = os.path.splitext(os.path.basename(path))[0]

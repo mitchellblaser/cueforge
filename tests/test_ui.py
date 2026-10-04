@@ -750,3 +750,205 @@ def test_new_project_cancels_analysis(app, win):
     pump(app, 0.5)
     assert set(glob.glob(os.path.join(tempfile.gettempdir(), "cueforge-analysis-*"))) <= before
     assert s.run_analysis(AnalysisOptions()) is False        # nothing to analyse in the new project
+
+
+def test_auto_advance_toggle(app, win):
+    from cueforge.core.model import Suggestion
+    s = win.s
+    s.project.suggestions = [Suggestion("hit", 1.0, 0.9, "x", lane_id=s.project.lanes[1].id),
+                             Suggestion("hit", 2.0, 0.9, "x", lane_id=s.project.lanes[1].id)]
+    first = s.project.suggestions[0].id
+    win.a_advance.setChecked(False)
+    assert not s.auto_advance and not win.suggestions.advance.isChecked()
+    s.select(sugs={first})
+    win.accept_selected()
+    assert not s.sel_sugs                               # stayed put
+    s.select(sugs={s.project.suggestions[1].id})
+    win.a_advance.setChecked(True)
+    assert win.suggestions.advance.isChecked()
+
+
+def test_enter_in_cue_table_commits_not_restart(app, win):
+    s = win.s
+    c = s.add_cue(s.project.lanes[0].id, 2.0)
+    s.engine.seek(7.0)
+    table = win.cue_table.table
+    win._show_panel(win.dock_cues)
+    pump(app, 0.1)
+    row = win.cue_table._rows[c.id]
+    table.setCurrentCell(row, 3)
+    table.editItem(table.item(row, 3))
+    pump(app, 0.1)
+    from PySide6.QtWidgets import QLineEdit
+    ed = table.findChild(QLineEdit)
+    assert ed is not None
+    ed.setFocus()
+    QTest.keyClicks(ed, "Drop")
+    _orig_key_click(ed, Qt.Key_Return)
+    pump(app, 0.2)
+    assert s.project.cue(c.id).label == "Drop"
+    assert abs(s.engine.position() - 7.0) < 0.05          # Return did not jump to the start
+    # the automatic cue number is shown (dim) without being stored
+    assert table.item(win.cue_table._rows[c.id], 2).text() == "1" and s.project.cue(c.id).number is None
+
+
+def test_hold_lane_key_makes_snapped_temp(app, win):
+    s = win.s
+    from cueforge.core.model import BeatGrid
+    s.set_grid(BeatGrid.from_tempo(120, 0.0, 30.0, 4))
+    s.snap = True
+    lane = s.project.lanes[2]
+    s.engine.seek(1.02)
+    s.engine.play()
+    try:
+        pump(app, 0.1)
+        win._tap_press(lane.id, lane.tap_key)
+        pump(app, 0.8)
+        hp = win.canvas.hold_preview
+        assert hp and hp[0] == lane.id and hp[2] - hp[1] > 0.2      # growing while held (overlay)
+        win._tap_release(lane.tap_key)
+    finally:
+        s.engine.pause()
+    cue = s.project.cues_in_lane(lane.id)[0]
+    assert abs(cue.time / 0.5 - round(cue.time / 0.5)) < 0.04          # start on a beat
+    end = cue.time + cue.duration
+    assert abs(end / 0.5 - round(end / 0.5)) < 0.04 and cue.duration >= 0.5 - 1e-6
+    # a quick tap stays a normal cue
+    s.engine.seek(5.0)
+    s.engine.play()
+    try:
+        win._tap_press(lane.id, lane.tap_key)
+        win._tap_release(lane.tap_key)
+    finally:
+        s.engine.pause()
+    assert s.project.cues_in_lane(lane.id)[-1].duration is None
+    # playback stops while the key is held: the Temp is finished (snapped), not left half-done
+    s.engine.seek(8.02)
+    s.engine.play()
+    try:
+        win._tap_press(lane.id, lane.tap_key)
+        pump(app, 0.7)
+    finally:
+        s.engine.pause()
+    pump(app, 0.1)
+    held = [c for c in s.project.cues_in_lane(lane.id) if c.time > 7.5][0]
+    assert held.duration and abs((held.time + held.duration) / 0.5 - round((held.time + held.duration) / 0.5)) < 0.04
+    assert win._held is None and win.canvas.hold_preview is None
+    # a second key while the first is held finishes the first
+    other = s.project.lanes[3]
+    s.engine.seek(12.02)
+    s.engine.play()
+    try:
+        win._tap_press(lane.id, lane.tap_key)
+        pump(app, 0.6)
+        win._tap_press(other.id, other.tap_key)
+        win._tap_release(other.tap_key)
+    finally:
+        s.engine.pause()
+    first = [c for c in s.project.cues_in_lane(lane.id) if c.time > 11.5][0]
+    assert first.duration and first.duration >= 0.5 - 1e-6
+
+
+def test_reorder_lanes_keys_follow(app, win):
+    s = win.s
+    names = [l.name for l in s.project.lanes]
+    s.move_lane_to(s.project.lanes[3].id, 0)
+    assert [l.name for l in s.project.lanes][0] == names[3]
+    assert [l.tap_key for l in s.project.lanes[:5]] == ["1", "2", "3", "4", "5"]
+    win._undo()
+    assert [l.name for l in s.project.lanes] == names
+    # dragging a lane header on the timeline
+    c = win.canvas
+    c.set_view(t0=0, pps=100)
+    pump(app)
+    y0, y1 = lane_y(win, 0), lane_y(win, 2) + 10
+    QTest.mousePress(c, Qt.LeftButton, Qt.NoModifier, QPoint(40, y0))
+    QTest.mouseMove(c, QPoint(40, y0 + 20))
+    QTest.mouseMove(c, QPoint(40, y1))
+    QTest.mouseRelease(c, Qt.LeftButton, Qt.NoModifier, QPoint(40, y1))
+    pump(app)
+    assert [l.name for l in s.project.lanes][:3] == [names[1], names[2], names[0]]
+
+
+def test_section_resize_and_move(app, win):
+    s = win.s
+    s.snap = False
+    from cueforge.core.model import SectionMarker
+    s.project.sections = [SectionMarker("Verse", 0.0), SectionMarker("Chorus", 4.0)]
+    c = win.canvas
+    c.set_view(t0=0, pps=100)
+    pump(app)
+    from cueforge.ui.timeline import RULER_H, SECTION_H
+    y = RULER_H + SECTION_H // 2
+    # drag the Chorus start edge (= Verse end) from 4 s to 5 s
+    x = int(c.x_of(4.0))
+    QTest.mousePress(c, Qt.LeftButton, Qt.NoModifier, QPoint(x, y))
+    QTest.mouseMove(c, QPoint(x + 50, y))
+    QTest.mouseMove(c, QPoint(x + 100, y))
+    QTest.mouseRelease(c, Qt.LeftButton, Qt.NoModifier, QPoint(x + 100, y))
+    pump(app)
+    ch = next(m for m in s.project.sections if m.name == "Chorus")
+    assert abs(ch.time - 5.0) < 0.05, (c.pps, c.t0, x, [(m.name, m.time) for m in s.project.sections])
+    # move the Chorus body 1 s earlier: it keeps its length, the Verse gives way
+    from cueforge.core.arrange import section_bounds
+    a, b = section_bounds(s.project, ch, s.duration)
+    x = int(c.x_of(a + 1.0))
+    QTest.mousePress(c, Qt.LeftButton, Qt.NoModifier, QPoint(x, y))
+    QTest.mouseMove(c, QPoint(x - 50, y))
+    QTest.mouseMove(c, QPoint(x - 100, y))
+    QTest.mouseRelease(c, Qt.LeftButton, Qt.NoModifier, QPoint(x - 100, y))
+    pump(app)
+    ch = next(m for m in s.project.sections if m.name == "Chorus")
+    a2, b2 = section_bounds(s.project, ch, s.duration)
+    assert abs(a2 - (a - 1.0)) < 0.05 and abs((b2 - a2) - (b - a)) < 0.05
+    # it can't be pushed past the end of the song
+    n_undo = len(s.undo._undo) if hasattr(s.undo, "_undo") else None
+    x = int(c.x_of(a2 + 1.0))
+    QTest.mousePress(c, Qt.LeftButton, Qt.NoModifier, QPoint(x, y))
+    QTest.mouseMove(c, QPoint(x + 300, y))
+    QTest.mouseMove(c, QPoint(x + 600, y))
+    QTest.mouseRelease(c, Qt.LeftButton, Qt.NoModifier, QPoint(x + 600, y))
+    pump(app)
+    ch = next(m for m in s.project.sections if m.name == "Chorus")
+    a3, b3 = section_bounds(s.project, ch, s.duration)
+    assert b3 <= s.duration + 1e-6 and abs((b3 - a3) - (b - a)) < 0.05
+    if n_undo is not None and len(s.undo._undo) > n_undo:
+        win._undo()                                   # the push to the end (if it moved at all)
+    ch = next(m for m in s.project.sections if m.name == "Chorus")
+    assert abs(section_bounds(s.project, ch, s.duration)[0] - a2) < 0.05
+    win._undo()                                       # the move 1 s earlier
+    ch = next(m for m in s.project.sections if m.name == "Chorus")     # undo restores new objects
+    assert abs(section_bounds(s.project, ch, s.duration)[0] - a) < 0.05
+
+
+def test_follow_glides(app, win):
+    s = win.s
+    c = win.canvas
+    c.set_view(t0=0, pps=100)
+    c.follow = True
+    eng = s.engine
+    eng.seek(1.0)
+    eng.play()
+    try:
+        xs = []
+        for _ in range(60):
+            pump(app, 0.03)
+            xs.append(c._last_playhead_x)
+            if c.t0 > 0.5:
+                break
+        assert c.t0 > 0 or eng.position() < c.visible_seconds * 0.4
+        pump(app, 0.3)
+        target = c.x_of(eng.position())
+        assert abs(target - (HEADER_W + (c.width() - HEADER_W) * c.FOLLOW_AT)) < 40 or c.t0 == 0
+    finally:
+        eng.pause()
+
+
+def test_save_with_numpy_values_updates_title(app, win, monkeypatch):
+    s = win.s
+    from cueforge.core.model import Cue
+    s.project.cues.append(Cue(lane_id=s.project.lanes[0].id, time=np.float32(1.5)))
+    path = win.tmp / "Show.cueproj"
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *a, **k: (str(path), ""))
+    assert win.save_as()
+    assert win.windowTitle().startswith("Show") and path.exists()

@@ -270,13 +270,14 @@ class MA3Link(QObject):
         from ..export.ma3 import in_song
         p = self.s.project
         rec = self.record
+        unpin = set(self.s.project.console.get("unpin", []))   # numbered automatically on purpose
         want: dict[str, tuple[int, float, str]] = {}
         for song in self._scope():
             with in_song(p, song):
                 for lane, seq, nums, cues in self._lane_cues(p):
                     for c in cues:
                         if c.number is None and c.id in rec and self.cfg.pin_numbers \
-                                and int(rec[c.id][0]) == seq:
+                                and int(rec[c.id][0]) == seq and c.id not in unpin:
                             c.number = float(rec[c.id][1])       # undo removed a pinned number
                             nums = effective_cue_numbers(p, lane.id)
                     for c in cues:
@@ -324,6 +325,8 @@ class MA3Link(QObject):
                 if old is not None and self.cfg.allow_delete and (int(old[0]), float(old[1])) not in taken:
                     cmds.append(self.cmd("delete", int(old[0]), float(old[1])))   # renumbered
             rec[cid] = [seq, num, label or (old[2] if old and (int(old[0]), float(old[1])) == (seq, num) else "")]
+            if cid in p.console.get("unpin", []):
+                p.console["unpin"].remove(cid)            # the console now has the new number
         existing = {c.id for song in p.songs for c in song.cues}
         for cid in [c for c in rec if c not in existing]:
             seq, num = int(rec[cid][0]), float(rec[cid][1])

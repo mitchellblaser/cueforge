@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import bisect
 import os
+import time
 
 import numpy as np
 from PySide6.QtCore import QSize, Qt, QTimer
@@ -136,6 +137,7 @@ class MainWindow(QMainWindow):
         s.busy.connect(self._busy)
         s.progress.connect(self._progress)
         s.grid_rephased.connect(self._grid_rephased)
+        s.auto_advance_changed.connect(self._sync_advance)
         s.analysis_done.connect(self._analysis_done)
         s.cues_changed.connect(self._refresh_actions)
         s.selection_changed.connect(self._refresh_actions)
@@ -156,7 +158,29 @@ class MainWindow(QMainWindow):
 
     def eventFilter(self, obj, ev) -> bool:
         from PySide6.QtCore import QEvent
-        from PySide6.QtWidgets import QAbstractSpinBox, QLineEdit, QPlainTextEdit
+        from PySide6.QtWidgets import QAbstractSpinBox, QLineEdit, QPlainTextEdit, QTextEdit
+        et = ev.type()
+        if getattr(self, "_held", None):
+            if et == QEvent.KeyRelease and not ev.isAutoRepeat():
+                self._tap_release(ev.text(), ev.key())          # matched on the key, not its text
+            elif et in (QEvent.ApplicationStateChange, QEvent.WindowDeactivate) and \
+                    QApplication.applicationState() != Qt.ApplicationActive:
+                self._finish_hold()                             # the release would go elsewhere
+        if et in (QEvent.ShortcutOverride, QEvent.KeyPress) and isinstance(obj, QWidget) \
+                and isinstance(obj, (QLineEdit, QPlainTextEdit, QTextEdit, QAbstractSpinBox)):
+            mods = ev.modifiers() & (Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier)
+            if et == QEvent.ShortcutOverride and not mods:
+                # typing in a text box: Return, Space, letters, digits… belong to the box, not
+                # to the transport / tap shortcuts (Return = go to start, Q, W, 1-9 …)
+                ev.accept()
+                return False
+            if et == QEvent.KeyPress and ev.key() in (Qt.Key_Return, Qt.Key_Enter, Qt.Key_Escape) \
+                    and obj.window() in (self, self.panels_window) and not isinstance(obj, QPlainTextEdit):
+                # after committing a label / number, hand the keyboard back to the timeline
+                if obj.window() is self:
+                    QTimer.singleShot(0, self.canvas.setFocus)
+                else:
+                    QTimer.singleShot(0, obj.clearFocus)        # panels window: shortcuts are app-wide
         if ev.type() == QEvent.KeyPress and ev.key() in (Qt.Key_Tab, Qt.Key_Backtab) \
                 and isinstance(obj, QWidget) and obj.window() in (self, self.panels_window):
             if not isinstance(obj, (QLineEdit, QPlainTextEdit, QAbstractSpinBox)):
@@ -339,7 +363,15 @@ class MainWindow(QMainWindow):
         self.a_blips = self._act("Blips", lambda v: self.s.update_mixer(blips_enabled=v), "B", True,
                                  "Tick on every cue (B)")
         self.a_follow = self._act("Follow", self._set_follow, "F", True, "Follow playhead (F)")
-        for a in (self.a_snap, self.a_loop, self.a_click, self.a_blips, self.a_follow):
+        tb.addAction(self.a_snap)
+        self.snap_div = QComboBox()
+        for txt, d in (("1 beat", 1), ("½ beat", 2), ("¼ beat", 4)):
+            self.snap_div.addItem(txt, d)
+        self.snap_div.setToolTip("Snap resolution: cues, drags and held Temps snap to beats, half or quarter beats")
+        self.snap_div.setFocusPolicy(Qt.NoFocus)
+        self.snap_div.activated.connect(lambda _i: self._set_snap_div(self.snap_div.currentData()))
+        tb.addWidget(self.snap_div)
+        for a in (self.a_loop, self.a_click, self.a_blips, self.a_follow):
             tb.addAction(a)
         tb.addSeparator()
         self.a_zoom_in = self._act("＋", lambda: self.canvas.zoom(1.5), "+", tip="Zoom in")
@@ -568,6 +600,10 @@ class MainWindow(QMainWindow):
         a.addAction(prv)
         a.addAction(self._act("Accept selected", self.accept_selected, "A"))
         a.addAction(self._act("Reject selected", self.reject_selected, "X"))
+        self.a_advance = self._act("Jump to the next suggestion after Accept / Reject", self.set_auto_advance,
+                                   checkable=True)
+        self.a_advance.setChecked(self.s.auto_advance)
+        a.addAction(self.a_advance)
         a.addSeparator()
         a.addAction(self._act("Accept all visible suggestions in loop region",
                               self.accept_in_loop))
@@ -664,6 +700,7 @@ class MainWindow(QMainWindow):
     # ================================================================ state sync
     def _project_replaced(self) -> None:
         self.canvas._on_project()
+        self._sync_snap_div()
         self._title()
         self._sync_toggles()
         self.a_loop.setChecked(False)
@@ -760,8 +797,94 @@ class MainWindow(QMainWindow):
             sc = QShortcut(QKeySequence(k.upper()), self)
             sc.setAutoRepeat(False)
             sc.setContext(Qt.ApplicationShortcut if self.panels_window is not None else Qt.WindowShortcut)
-            sc.activated.connect(lambda lid=lane.id: self.s.tap(lid))
+            sc.activated.connect(lambda lid=lane.id, key=k: self._tap_press(lid, key))
             self._tap_shortcuts.append(sc)
+
+    # press & hold a lane key: tap = cue, hold = Temp for as long as the key is down
+    HOLD_MIN = 0.22          # seconds held before a tap becomes a Temp
+
+    def _tap_press(self, lane_id: str, key: str) -> None:
+        if getattr(self, "_held", None):
+            self._finish_hold()                     # another key was still held: finish that one
+        c = self.s.tap(lane_id)
+        if c is None:
+            return
+        eng = self.s.engine
+        try:
+            code = QKeySequence(key.upper())[0].key()
+        except Exception:
+            code = None
+        pos = eng.position()
+        self._held = {"key": key.lower(), "code": code, "cue": c.id, "lane": lane_id, "t0": pos, "last": pos,
+                      "playing": eng.playing}
+        if not hasattr(self, "_hold_timer"):
+            self._hold_timer = QTimer(self)
+            self._hold_timer.setInterval(30)
+            self._hold_timer.timeout.connect(self._hold_tick)
+        self._hold_timer.start()
+
+    def _hold_tick(self) -> None:
+        """While the key is down the Temp grows on the timeline (an overlay: no re-render).
+        Playback stopping, a jump or loop wrap ends the hold."""
+        h = getattr(self, "_held", None)
+        if not h:
+            self._hold_timer.stop()
+            return
+        c = self.s.project.cue(h["cue"])
+        eng = self.s.engine
+        pos = eng.position()
+        if c is None or not h["playing"] or not eng.playing or pos < h["last"] - 0.05:
+            self._finish_hold()
+            return
+        h["last"] = pos
+        if pos - h["t0"] >= self.HOLD_MIN:
+            self.canvas.hold_preview = (h["lane"], c.time, pos)
+            self.canvas.update()
+
+    def _tap_release(self, key: str | None = None, code=None) -> None:
+        h = getattr(self, "_held", None)
+        if not h:
+            return
+        if code is not None and h.get("code") is not None:
+            if code != h["code"]:
+                return
+        elif key is not None and h["key"] != key.lower():
+            return
+        self._finish_hold()
+
+    def _finish_hold(self) -> None:
+        """End the hold: a short press stays a cue; a long one becomes a Temp whose end
+        snaps to the grid. Always leaves the cue in a finished, saved state."""
+        h, self._held = getattr(self, "_held", None), None
+        if hasattr(self, "_hold_timer"):
+            self._hold_timer.stop()
+        self.canvas.hold_preview = None
+        self.canvas.update()
+        if not h:
+            return
+        p = self.s.project
+        c = p.cue(h["cue"])
+        if c is None:
+            return
+        eng = self.s.engine
+        pos = eng.position()
+        end = pos if (h["playing"] and eng.playing and pos >= h["last"] - 0.05) else h["last"]
+        if not h["playing"] or end - h["t0"] < self.HOLD_MIN:
+            return                                    # a tap: the normal cue stays
+        if self.s.snap:
+            g = editing.grid_point(p, end)
+            if g is not None:
+                end = g
+        step = 1.0 / p.frame_rate.fps
+        if self.s.snap and len(p.beat_grid.beats) > 1:
+            step = max(step, float(np.median(np.diff(p.beat_grid.beats))) / max(1, p.snap_div))
+        c.duration = round(max(step, end - c.time), 3)   # at least one grid step
+        p.sort_cues()
+        self.s._sync_engine()
+        self.s.cues_changed.emit()
+        self.s._touch()
+        lane = p.lane(c.lane_id)
+        self.statusBar().showMessage(f"Temp in {lane.name if lane else '?'}: held {c.duration:.2f} s", 3000)
 
     def _clock(self) -> None:
         eng = self.s.engine
@@ -806,6 +929,14 @@ class MainWindow(QMainWindow):
         if not self.s.engine.playing:
             self.s.engine.seek(t)
         self.canvas.ensure_visible(t)
+
+    def _set_snap_div(self, d: int) -> None:
+        self.s.project.snap_div = int(d or 1)
+        self.s._touch()
+        self.statusBar().showMessage(f"Snap to {self.snap_div.currentText()}", 3000)
+
+    def _sync_snap_div(self) -> None:
+        self.snap_div.setCurrentIndex(max(0, self.snap_div.findData(getattr(self.s.project, "snap_div", 1))))
 
     def _set_snap(self, v: bool) -> None:
         self.s.snap = v
@@ -928,8 +1059,18 @@ class MainWindow(QMainWindow):
             self.s.reject(set(self.s.sel_sugs))
             self._advance_after(last)
 
+    def set_auto_advance(self, on: bool) -> None:
+        self.s.set_auto_advance(on)
+
+    def _sync_advance(self) -> None:
+        self.a_advance.blockSignals(True)
+        self.a_advance.setChecked(self.s.auto_advance)
+        self.a_advance.blockSignals(False)
+
     def _advance_after(self, t: float) -> None:
-        """After a decision, move straight to the next suggestion for fast review."""
+        """After a decision, move straight to the next suggestion for fast review (if on)."""
+        if not self.s.auto_advance:
+            return
         sg = editing.next_suggestion(self.s.project, t, 1)
         if sg:
             self.s.select(cues=set(self.s.sel_cues), sugs={sg.id})
@@ -1097,10 +1238,11 @@ class MainWindow(QMainWindow):
         try:
             self.canvas.store_view()
             self.s.save()
-        except OSError as exc:
-            QMessageBox.warning(self, "Save failed", str(exc))
+        except Exception as exc:              # never fail silently: the title would stay "Untitled"
+            QMessageBox.warning(self, "Save failed", f"{type(exc).__name__}: {exc}")
             return False
-        self._title()
+        finally:
+            self._title()
         return True
 
     def save_as(self) -> bool:

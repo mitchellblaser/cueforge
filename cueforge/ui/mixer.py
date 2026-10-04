@@ -295,6 +295,9 @@ class MixerPanel(QWidget):
     def _meters(self) -> None:
         eng = self.s.engine
         playing = eng.playing
+        m = eng.take_meters()
         for tid, st in self.strips.items():
-            st.meter.set_levels([eng.meters.get(tid, 0.0) if playing else 0.0])
+            st.meter.set_levels([m.get(tid, 0.0) if playing else 0.0])
+        self.click.meter.set_levels([m.get("__click__", 0.0) if playing else 0.0])
+        self.blips.meter.set_levels([m.get("__blips__", 0.0) if playing else 0.0])
         self.master.meter.set_levels(eng.master_meter if playing else (0.0, 0.0))

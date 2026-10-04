@@ -610,6 +610,8 @@ SHORTCUTS = [
               ("↑ / ↓ or click a lane header", "Change the active lane"),
               ("Shift+W / Shift+Q", "Make selected cues Temps / normal cues"),
               ("1 … 9 (lane tap keys)", "Drop a cue in that lane at the playhead (works while playing)"),
+              ("Hold 1 … 9 while playing", "Drop a Temp for as long as the key is held (snaps to the grid)"),
+              ("Drag a lane header", "Reorder lanes (keys 1–9 follow the order)"),
               ("Double-click lane", "Add cue (Alt = don't snap)"), ("Double-click cue", "Edit cue"),
               ("Drag cue", "Move (snaps to beats when Snap is on; hold Alt to disable); drag to another lane to move it"),
               ("Shift-drag in ruler", "Set loop region"), ("Delete / Backspace", "Delete selected"),
@@ -620,7 +622,8 @@ SHORTCUTS = [
                  ("Ctrl+Shift+V", "Paste into the section at the playhead, aligned to its start"),
                  ("Ctrl+Shift+C", "Copy this section's cues to all its repeats"),
                  ("Ctrl+P", "Pattern fill (loop region, section or selection)"),
-                 ("Section band", "Drag a marker's edge to move it, double-click to rename, right-click for more")]),
+                 ("Section band", "Drag an edge to resize, the middle to move; double-click to rename; "
+                                  "right-click for more")]),
     ("Grid (live music)", [("D", "Set bar 1 at the playhead (tap it on the 'one' while playing)"),
                            ("Ctrl+Alt+← / →", "Move bar 1 one beat earlier / later"),
                            ("Drag the end of a Temp", "Change its hold time"),

@@ -16,9 +16,22 @@ def add_cue(project: Project, lane_id: str, time: float, snap_grid: bool = False
     return cue
 
 
+def grid_point(project: Project, t: float, div: int | None = None) -> float | None:
+    """Nearest grid point to t: beats, or 1/2, 1/4 beats (project.snap_div)."""
+    g = project.beat_grid
+    if not g.beats:
+        return None
+    div = int(div or getattr(project, "snap_div", 1) or 1)
+    if div <= 1 or len(g.beats) < 2:
+        return g.nearest_beat(t)
+    from .arrange import beat_at, time_at
+    b = beat_at(g, t)
+    return None if b is None else time_at(g, round(b * div) / div)
+
+
 def snap_time(project: Project, t: float, snap_grid: bool) -> float:
     if snap_grid and project.beat_grid.beats:
-        b = project.beat_grid.nearest_beat(t)
+        b = grid_point(project, t)
         if b is not None:
             t = b
     return max(0.0, snap_to_frame(t, project.frame_rate))

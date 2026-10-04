@@ -45,8 +45,72 @@ def time_at(grid: BeatGrid, beat: float) -> float | None:
 def section_bounds(project: Project, marker: SectionMarker, song_end: float) -> tuple[float, float]:
     ms = sorted(project.sections, key=lambda m: m.time)
     i = next(k for k, m in enumerate(ms) if m.id == marker.id)
-    end = ms[i + 1].time if i + 1 < len(ms) else song_end
+    end = ms[i + 1].time if i + 1 < len(ms) else max(song_end, marker.time)
+    if marker.end is not None and marker.time < marker.end < end:
+        end = marker.end
     return marker.time, end
+
+
+def _neighbours(project: Project, marker: SectionMarker):
+    ms = sorted(project.sections, key=lambda m: m.time)
+    i = next(k for k, m in enumerate(ms) if m.id == marker.id)
+    return (ms[i - 1] if i > 0 else None), (ms[i + 1] if i + 1 < len(ms) else None)
+
+
+def _limits(project: Project, marker: SectionMarker, song_end: float, min_len: float):
+    """(lowest start, highest end) a section can take without crossing its neighbours.
+    A neighbour that shares a boundary gives way down to min_len."""
+    prev, nxt = _neighbours(project, marker)
+    s0, s1 = section_bounds(project, marker, song_end)
+    lo = 0.0
+    if prev is not None:
+        p0, p1 = section_bounds(project, prev, song_end)
+        lo = prev.time + min_len if abs(p1 - s0) < 1e-6 else p1     # adjacent: it shrinks; gap: stop at it
+    end_cap = max(song_end, s1)
+    if nxt is not None:
+        n0, n1 = section_bounds(project, nxt, song_end)
+        hi = n1 - min_len if abs(s1 - n0) < 1e-6 else n0
+    else:
+        hi = end_cap
+    return lo, max(lo + min_len, hi), prev, nxt, s0, s1
+
+
+def _set_bounds(project, marker, prev, nxt, s0, s1, start, end, song_end):
+    """Apply new bounds; shared boundaries move for both sections."""
+    if prev is not None and prev.end is not None and abs(prev.end - s0) < 1e-6:
+        prev.end = start                          # previous section ended exactly where we started
+    marker.time = start
+    if nxt is not None and abs(s1 - nxt.time) < 1e-6:
+        nxt.time = end
+        marker.end = None
+    elif nxt is not None and end >= nxt.time - 1e-6:
+        marker.end = None                         # snapped onto the next section: they share it again
+    elif nxt is None and (not song_end or end >= song_end - 1e-6):
+        marker.end = None                         # back to "until the song ends"
+    else:
+        marker.end = end
+    project.sections.sort(key=lambda m: m.time)
+
+
+def resize_section(project: Project, marker: SectionMarker, start: float | None = None, end: float | None = None,
+                   song_end: float = 0.0, min_len: float = 0.25) -> None:
+    """Move a section's start and/or end. A boundary shared with a neighbour moves for both
+    (the previous section grows / shrinks, the next one starts where this one ends);
+    otherwise the end is stored on the section. Clamped so sections never overlap."""
+    lo, hi, prev, nxt, s0, s1 = _limits(project, marker, song_end, min_len)
+    new_start = s0 if start is None else max(lo, min(start, (end if end is not None else s1) - min_len))
+    new_end = s1 if end is None else max(new_start + min_len, min(end, hi))
+    _set_bounds(project, marker, prev, nxt, s0, s1, new_start, new_end, song_end)
+
+
+def move_section(project: Project, marker: SectionMarker, dt: float, song_end: float = 0.0,
+                 min_len: float = 0.25) -> float:
+    """Shift a whole section by dt, keeping its length; neighbours that share a boundary
+    grow / shrink, and it never passes them. Returns the shift actually applied."""
+    lo, hi, prev, nxt, s0, s1 = _limits(project, marker, song_end, min_len)
+    dt = max(lo - s0, min(dt, hi - s1))
+    _set_bounds(project, marker, prev, nxt, s0, s1, s0 + dt, s1 + dt, song_end)
+    return dt
 
 
 def section_at(project: Project, t: float) -> SectionMarker | None:

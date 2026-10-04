@@ -118,7 +118,10 @@ class AudioEngine:
 
     def set_blips(self, times: list[float], enabled: bool, db: float) -> None:
         with self._lock:
-            self._blip_times = np.sort(np.asarray(times, float))
+            t = np.sort(np.asarray(times, float))
+            if len(t) > 1:                     # cues in several lanes at the same moment = one blip
+                t = t[np.r_[True, np.diff(t) > 0.03]]
+            self._blip_times = t
             self.blips_enabled = enabled
             self.blips_gain = db_to_gain(db)
 
@@ -135,11 +138,20 @@ class AudioEngine:
                 seg = seg * t.gain
                 out += seg
                 peak = float(np.abs(seg).max()) if len(seg) else 0.0
-            self.meters[t.id] = peak
+            self.meters[t.id] = max(peak, self.meters.get(t.id, 0.0))     # held until read
+        click_peak = blips_peak = 0.0
         if self.click_enabled and len(self._beats):
-            self._add_events(out, start, step, self._beats, self.click_gain, self._beat_accent)
+            buf = np.zeros_like(out)
+            self._add_events(buf, start, step, self._beats, self.click_gain, self._beat_accent)
+            click_peak = float(np.abs(buf).max())
+            out += buf
         if self.blips_enabled and len(self._blip_times):
-            self._add_events(out, start, step, self._blip_times, self.blips_gain, None)
+            buf = np.zeros_like(out)
+            self._add_events(buf, start, step, self._blip_times, self.blips_gain, None, stack=False)
+            blips_peak = float(np.abs(buf).max())
+            out += buf
+        self.meters["__click__"] = max(click_peak, self.meters.get("__click__", 0.0))
+        self.meters["__blips__"] = max(blips_peak, self.meters.get("__blips__", 0.0))
         out *= self.master_gain
         self.master_meter = (float(np.abs(out[:, 0]).max()), float(np.abs(out[:, 1]).max()))
         np.clip(out, -1.0, 1.0, out=out)
@@ -168,7 +180,9 @@ class AudioEngine:
         return seg
 
     def _add_events(self, out: np.ndarray, start: float, step: float, times: np.ndarray,
-                    gain: float, accents: np.ndarray | None) -> None:
+                    gain: float, accents: np.ndarray | None, stack: bool = True) -> None:
+        """Mix short sounds at `times` into `out`. With stack=False overlapping sounds don't
+        add up (the louder sample wins), so several cues together are no louder than one."""
         frames = len(out)
         tail = max(len(self._accent), len(self._blip)) * step
         end = start + frames * step
@@ -184,7 +198,21 @@ class AudioEngine:
             o0 = max(0, k0)
             m = min(len(snd) - s0, frames - o0)
             if m > 0:
-                out[o0:o0 + m] += snd[s0:s0 + m] * gain
+                if stack:
+                    out[o0:o0 + m] += snd[s0:s0 + m] * gain
+                else:
+                    seg = out[o0:o0 + m]
+                    new = snd[s0:s0 + m] * gain
+                    louder = np.abs(new) > np.abs(seg)
+                    seg[louder] = new[louder]
+
+    def take_meters(self) -> dict[str, float]:
+        """Peak levels since the last call (short sounds like blips aren't missed between
+        UI refreshes); resets them."""
+        out = dict(self.meters)
+        for k in out:
+            self.meters[k] = 0.0
+        return out
 
     # -- transport ------------------------------------------------------
     @property
@@ -222,7 +250,7 @@ class AudioEngine:
             pos = self.position()
             self._playing = False
             self._pos = pos
-            for k in self.meters:
+            for k in list(self.meters):
                 self.meters[k] = 0.0
             self.master_meter = (0.0, 0.0)
 
@@ -260,7 +288,7 @@ class AudioEngine:
         self._scrub_last = (t, now)
         with self._lock:
             grain = self.scrub_grain(t, speed)
-            self.meters = {k: 0.0 for k in self.meters}
+            self.meters = {k: 0.0 for k in list(self.meters)}
             self._scrub_buf = grain
         self._ensure_output()
 

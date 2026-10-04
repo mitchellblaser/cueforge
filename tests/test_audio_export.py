@@ -59,8 +59,24 @@ def test_mixer_gain_mute_solo():
     e.update_track("b", mute=True)
     assert e.render(0, 100)[50, 0] == pytest.approx(0.1 * db_to_gain(-6), abs=1e-5)
     e.update_track("b", mute=False, solo=True)
+    e.take_meters()                                   # meters hold their peak until read
     assert e.render(0, 100)[50, 0] == pytest.approx(0.2)
-    assert e.meters["a"] == 0.0 and e.meters["b"] == pytest.approx(0.2)
+    m = e.take_meters()
+    assert m["a"] == 0.0 and m["b"] == pytest.approx(0.2)
+    assert e.take_meters()["b"] == 0.0
+
+
+def test_blips_do_not_stack_and_meter():
+    e = _engine_with([("a", 0.0, 48000)])
+    e.set_blips([0.0005], True, -10)
+    one = float(abs(e.render(0, 2000)).max())
+    e.set_blips([0.0005, 0.0005, 0.001, 0.0005], True, -10)  # four lanes with a cue at once
+    four = float(abs(e.render(0, 2000)).max())
+    assert four == pytest.approx(one, rel=0.05) and one > 0
+    assert e.take_meters()["__blips__"] == pytest.approx(four, rel=0.05)
+    e.set_click([0.0005], [0.0005], True, -6)
+    e.render(0, 2000)
+    assert e.take_meters()["__click__"] > 0
 
 
 def test_track_offset_and_varispeed():

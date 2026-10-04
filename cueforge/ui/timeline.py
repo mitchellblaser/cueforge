@@ -6,7 +6,7 @@ import math
 from dataclasses import dataclass
 
 import numpy as np
-from PySide6.QtCore import QPointF, QRect, QRectF, Qt, QTimer, Signal
+from PySide6.QtCore import QPointF, QRect, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import (QBrush, QColor, QFont, QFontMetrics, QImage, QPainter, QPainterPath, QPen, QPixmap,
                            QPolygonF)
 from PySide6.QtWidgets import QGridLayout, QMenu, QScrollBar, QToolTip, QWidget
@@ -65,6 +65,9 @@ class TimelineCanvas(QWidget):
         self._rows: list[Row] = []
         self._drag: dict | None = None
         self._last_playhead_x = -1
+        self._render_w: int | None = None
+        self._cache_t0 = 0.0
+        self._cache_key = None
         self.font_small = QFont()
         self.font_small.setPointSizeF(8.5)
         self.font_bold = QFont()
@@ -97,9 +100,13 @@ class TimelineCanvas(QWidget):
     def t_of(self, x: float) -> float:
         return self.t0 + (x - HEADER_W) / self.pps
 
+    def _w(self) -> int:
+        """Width being drawn: the widget, or the wider strip while rendering the cache."""
+        return self._render_w or self.width()
+
     @property
     def visible_seconds(self) -> float:
-        return max(0.1, (self.width() - HEADER_W) / self.pps)
+        return max(0.1, (self._w() - HEADER_W) / self.pps)
 
     def layout_rows(self) -> list[Row]:
         rows = []
@@ -124,14 +131,14 @@ class TimelineCanvas(QWidget):
         return None
 
     def row_rect(self, r: Row) -> QRect:
-        return QRect(0, TOP_H + r.y - self.v_off, self.width(), r.h)
+        return QRect(0, TOP_H + r.y - self.v_off, self._w(), r.h)
 
     def set_view(self, t0: float | None = None, pps: float | None = None) -> None:
         if pps is not None:
             self.pps = float(min(4000.0, max(2.0, pps)))
         if t0 is not None:
             self.t0 = float(max(-1.0, min(t0, self.s.duration - self.visible_seconds * 0.2)))
-        self.invalidate()
+        self.update()                 # the cached strip is reused while it still covers the view
         self.view_changed.emit()
 
     def zoom(self, factor: float, around_t: float | None = None) -> None:
@@ -166,26 +173,84 @@ class TimelineCanvas(QWidget):
         eng = self.s.engine
         pos = eng.position()
         if eng.playing and self.follow and not self._drag:
-            right = self.t0 + self.visible_seconds * 0.92
-            if pos > right or pos < self.t0:
-                self.set_view(t0=pos - self.visible_seconds * 0.08)
+            vis = self.visible_seconds
+            if pos < self.t0 or pos > self.t0 + vis:          # jumped (loop, click): show it
+                self.set_view(t0=pos - vis * 0.1)
+            elif pos > self.t0 + vis * self.FOLLOW_AT:        # glide: the page moves under the playhead
+                self.t0 = pos - vis * self.FOLLOW_AT
+                self.update()
+                self.view_changed.emit()
         x = int(self.x_of(pos))
         if x != self._last_playhead_x:
             self._last_playhead_x = x
             self.update()
 
     # ------------------------------------------------------------- painting
+    FOLLOW_AT = 0.4            # while following, the playhead stays at 40 % of the width
+    STRIP = 1.75               # the cache is this many screens wide, so scrolling is a copy
+
+    def _cache_ok(self) -> bool:
+        if self._cache is None:
+            return False
+        key = (self.width(), self.height(), self.devicePixelRatioF(), self.pps, self.v_off)
+        if key != self._cache_key:
+            return False
+        vis = self.visible_seconds
+        span = max(0.0, self._cache.width() / self.devicePixelRatioF() - HEADER_W) / self.pps
+        return self._cache_t0 - 1e-9 <= self.t0 and self.t0 + vis <= self._cache_t0 + span + 1e-6
+
     def paintEvent(self, e) -> None:
-        if self._cache is None or self._cache.size() != self.size() * self.devicePixelRatioF():
-            self._render_cache()
+        if not self._cache_ok():
+            self._render_strip()
+        dpr = self.devicePixelRatioF()
         p = QPainter(self)
-        p.drawPixmap(0, 0, self._cache)
+        body_w = max(1, self.width() - HEADER_W)
+        sx = round((HEADER_W + (self.t0 - self._cache_t0) * self.pps) * dpr)
+        h = round(self.height() * dpr)
+        p.drawPixmap(QRect(HEADER_W, 0, body_w, self.height()), self._cache,
+                     QRect(sx, 0, round(body_w * dpr), h))                     # the timeline
+        p.drawPixmap(QRect(0, 0, HEADER_W, self.height()), self._cache,
+                     QRect(0, 0, round(HEADER_W * dpr), h))                    # lane headers
+        self._paint_sections(p)          # cheap, and its names stick to the visible left edge
+        self._paint_hold_preview(p)
         self._paint_overlay(p)
         p.end()
 
+    def _paint_hold_preview(self, p: QPainter) -> None:
+        """A lane key being held: the Temp it will make, growing (drawn over the cache)."""
+        hp = getattr(self, "hold_preview", None)
+        if not hp:
+            return
+        lane_id, t0, t1 = hp
+        row = next((r for r in self._rows if r.kind == "lane" and r.id == lane_id), None)
+        lane = self.s.project.lane(lane_id)
+        if row is None or lane is None:
+            return
+        rr = self.row_rect(row)
+        x0, x1 = max(HEADER_W, self.x_of(t0)), self.x_of(t1)
+        if x1 <= HEADER_W:
+            return
+        col = QColor(lane.color)
+        col.setAlpha(110)
+        p.fillRect(QRectF(x0, rr.top() + 20, max(2.0, x1 - x0), rr.height() - 24), col)
+
+    def _render_strip(self) -> None:
+        """Render a strip wider than the view, starting a little before it."""
+        vis = max(0.1, max(1, self.width() - HEADER_W) / self.pps)
+        t0 = self.t0
+        self._cache_t0 = max(-1.0, t0 - vis * 0.05)
+        self._render_w = int(HEADER_W + max(1, self.width() - HEADER_W) * self.STRIP) + 2
+        self.t0 = self._cache_t0
+        try:
+            self._render_cache()
+        finally:
+            self.t0 = t0
+            self._render_w = None
+        self._cache_key = (self.width(), self.height(), self.devicePixelRatioF(), self.pps, self.v_off)
+
     def _render_cache(self) -> None:
         dpr = self.devicePixelRatioF()
-        pm = QPixmap(self.size() * dpr)
+        pm = QPixmap(QSize(self._w(), self.height()) * dpr)
         pm.setDevicePixelRatio(dpr)
         pm.fill(QColor(theme.BG))
         p = QPainter(pm)
@@ -194,7 +259,7 @@ class TimelineCanvas(QWidget):
         self._vis_by_lane: dict[str, list] = {}
         for sg in self.s.project.visible_suggestions():
             self._vis_by_lane.setdefault(sg.lane_id, []).append(sg)
-        w = self.width()
+        w = self._w()
         body = QRect(HEADER_W, TOP_H, w - HEADER_W, self.height() - TOP_H)
 
         # rows background + content
@@ -228,7 +293,6 @@ class TimelineCanvas(QWidget):
             self._paint_header(p, r, rr)
         p.restore()
         self._paint_ruler(p)
-        self._paint_sections(p)
         p.fillRect(QRect(0, 0, HEADER_W, RULER_H), QColor(theme.BG2))
         p.setPen(QColor(theme.FG_DIM))
         g = self.s.project.beat_grid
@@ -361,6 +425,8 @@ class TimelineCanvas(QWidget):
 
         # confirmed cues
         cues = proj.cues_in_lane(r.id)
+        from ..core.editing import effective_cue_numbers
+        self._nums = effective_cue_numbers(proj, r.id)
         label_end = -1e9
         for c in cues:
             t = c.time
@@ -382,7 +448,10 @@ class TimelineCanvas(QWidget):
                 p.fillRect(QRectF(xe - 2, rr.top() + 20, 3, rr.height() - 24), hc)
             p.setPen(QPen(QColor(theme.SELECT) if sel else col, 2))
             p.drawLine(QPointF(x, rr.top() + 2), QPointF(x, rr.bottom() - 2))
-            label = c.label or (f"{c.number:g}" if c.number is not None else ("Temp" if c.duration else ""))
+            num = self._nums.get(c.id)
+            label = c.label or (f"{num:g}" if num is not None else ("Temp" if c.duration else ""))
+            if c.label and num is not None and self.pps > 60:
+                label = f"{num:g} {c.label}"
             if x < label_end and not sel:
                 label = ""
             tw = min(fm.horizontalAdvance(label) + 8, 140) if label else 6
@@ -485,7 +554,7 @@ class TimelineCanvas(QWidget):
         p.setFont(QFont())
 
     def _paint_ruler(self, p: QPainter) -> None:
-        w = self.width()
+        w = self._w()
         p.fillRect(QRect(0, 0, w, RULER_H), QColor(theme.BG2))
         p.setPen(QColor("#2a2e36"))
         p.drawLine(0, RULER_H - 1, w, RULER_H - 1)
@@ -543,12 +612,13 @@ class TimelineCanvas(QWidget):
             p.fillRect(QRectF(max(HEADER_W, x0), 0, max(0, x1 - max(HEADER_W, x0)), 4), col)
 
     def section_spans(self) -> list[tuple]:
-        ms = sorted(self.s.project.sections, key=lambda m: m.time)
+        from ..core.arrange import section_bounds
+        p = self.s.project
         end = self.s.duration
-        return [(m, m.time, ms[i + 1].time if i + 1 < len(ms) else end) for i, m in enumerate(ms)]
+        return [(m, *section_bounds(p, m, end)) for m in sorted(p.sections, key=lambda m: m.time)]
 
     def _paint_sections(self, p: QPainter) -> None:
-        w = self.width()
+        w = self._w()
         band = QRect(0, RULER_H, w, SECTION_H)
         p.fillRect(band, QColor("#181b20"))
         p.setFont(self.font_small)
@@ -581,14 +651,38 @@ class TimelineCanvas(QWidget):
         p.drawLine(0, TOP_H - 1, w, TOP_H - 1)
 
     def hit_section(self, pos) -> tuple[object, str]:
-        """(marker, "edge"|"body") under the mouse in the section band."""
-        for m, a, b in self.section_spans():
+        """(marker, "edge"|"end"|"body") under the mouse in the section band. "edge" is a
+        section's start; "end" its end where no other section starts."""
+        spans = self.section_spans()
+        for m, a, b in spans:
             if abs(self.x_of(a) - pos.x()) <= 5 and self.x_of(a) >= HEADER_W:
                 return m, "edge"
-        for m, a, b in self.section_spans():
+        for m, a, b in spans:
+            starts_next = any(abs(a2 - b) < 1e-6 for _, a2, _ in spans)
+            if not starts_next and abs(self.x_of(b) - pos.x()) <= 5:
+                return m, "end"
+        for m, a, b in spans:
             if self.x_of(a) <= pos.x() < self.x_of(b):
                 return m, "body"
         return None, ""
+
+    def _snap_section_time(self, t: float, e) -> float:
+        """Sections snap to bar lines (else the snap grid) when Snap is on; Alt = free."""
+        if not self.s.snap or (e.modifiers() & Qt.AltModifier):
+            return t
+        g = self.s.project.beat_grid
+        cands = []
+        if g.downbeats:
+            i = bisect.bisect_left(g.downbeats, t)
+            cands += [g.downbeats[j] for j in (i - 1, i) if 0 <= j < len(g.downbeats)]
+        from ..core.editing import grid_point
+        gp = grid_point(self.s.project, t)
+        best = min(cands, key=lambda x: abs(x - t)) if cands else None
+        if best is not None and abs(best - t) * self.pps < 16:
+            return best
+        if gp is not None and abs(gp - t) * self.pps < 8:
+            return gp
+        return t
 
     def _paint_overlay(self, p: QPainter) -> None:
         x = self._last_playhead_x if self._last_playhead_x >= 0 else int(self.x_of(self.s.engine.position()))
@@ -603,8 +697,30 @@ class TimelineCanvas(QWidget):
             p.setPen(QPen(QColor(theme.ACCENT), 1, Qt.DashLine))
             p.setBrush(QColor(79, 195, 247, 30))
             p.drawRect(r)
-        if d and d.get("mode") == "loop":
-            pass
+        if d and d.get("mode") == "lane" and d.get("moved") and d.get("target") is not None:
+            y = self._lane_drop_y(d["target"])
+            p.setPen(QPen(QColor(theme.ACCENT), 3))
+            p.drawLine(0, y, self.width(), y)
+
+    def _lane_rows(self):
+        return [r for r in self._rows if r.kind == "lane"]
+
+    def _lane_drop_index(self, y: float) -> int:
+        """Insert position (0 … number of lanes) for a lane dragged to height y."""
+        rows = self._lane_rows()
+        for k, r in enumerate(rows):
+            rr = self.row_rect(r)
+            if y < rr.top() + rr.height() / 2:
+                return k
+        return len(rows)
+
+    def _lane_drop_y(self, index: int) -> int:
+        rows = self._lane_rows()
+        if not rows:
+            return TOP_H
+        if index < len(rows):
+            return self.row_rect(rows[index]).top()
+        return self.row_rect(rows[-1]).bottom()
 
     # ------------------------------------------------------------- hit testing
     def hit_cue(self, pos) -> str | None:
@@ -682,13 +798,16 @@ class TimelineCanvas(QWidget):
             m, part = self.hit_section(pos)
             if m is not None:
                 self.s.select_section(m.id)
-                if part == "edge":
-                    self._drag = {"mode": "section", "id": m.id, "t": m.time}
+                from ..core.arrange import section_bounds
+                a, b = section_bounds(self.s.project, m, self.s.duration)
+                self._drag = {"mode": "section", "id": m.id, "part": part, "x0": pos.x(), "a": a, "b": b,
+                              "orig": {x.id: (x.time, x.end) for x in self.s.project.sections}, "moved": False}
             return
         r = self.row_at(pos.y())
         if pos.x() < HEADER_W:
             if r is not None and r.kind == "lane":
                 self.s.set_active_lane(r.id)     # click a lane header to make it the active lane
+                self._drag = {"mode": "lane", "id": r.id, "y0": pos.y(), "moved": False, "target": None}
             return
         if r is None:
             return
@@ -752,7 +871,8 @@ class TimelineCanvas(QWidget):
                 d["moved"] = True
             anchor_t = d["orig"][d["anchor"]] + dt
             if self.s.snap and not (e.modifiers() & Qt.AltModifier):
-                b = self.s.project.beat_grid.nearest_beat(anchor_t)
+                from ..core.editing import grid_point
+                b = grid_point(self.s.project, anchor_t)
                 if b is not None and abs(b - anchor_t) * self.pps < 12:
                     dt = b - d["orig"][d["anchor"]]
             d["preview"] = {cid: max(0.0, t + dt) for cid, t in d["orig"].items()}
@@ -768,13 +888,10 @@ class TimelineCanvas(QWidget):
                 d["moved"] = True
             end = d["orig"][anchor.id] + anchor.time + (pos.x() - d["press_x"]) / self.pps
             if self.s.snap and not (e.modifiers() & Qt.AltModifier):
-                g = p.beat_grid
-                if len(g.beats) > 1:              # snap the release to beats / half beats
-                    from ..core.arrange import beat_at, time_at
-                    b = beat_at(g, end)
-                    sb = time_at(g, round(b * 2) / 2)
-                    if sb is not None and abs(sb - end) * self.pps < 12:
-                        end = sb
+                from ..core.editing import grid_point
+                sb = grid_point(p, end)               # the grid at the snap resolution
+                if sb is not None and abs(sb - end) * self.pps < 12:
+                    end = sb
             frame = 1.0 / p.frame_rate.fps
             delta = max(frame, end - anchor.time) - d["orig"][anchor.id]
             for cid, dur in d["orig"].items():
@@ -783,21 +900,41 @@ class TimelineCanvas(QWidget):
                     c.duration = round(max(frame, dur + delta), 3)   # live; committed on release
             QToolTip.showText(e.globalPosition().toPoint(), f"Hold {anchor.duration:.2f} s", self)
             self.invalidate()
+        elif d["mode"] == "lane":                 # drag a lane header to reorder lanes
+            if abs(pos.y() - d["y0"]) > 6:
+                d["moved"] = True
+            if d["moved"]:
+                d["target"] = self._lane_drop_index(pos.y())
+                self.setCursor(Qt.ClosedHandCursor)
+                self.update()
         elif d["mode"] == "band":
             d["cur"] = pos
             d["moved"] = True
             self.update()
         elif d["mode"] == "section":
-            t = max(0.0, self.t_of(pos.x()))
-            if self.s.snap and not (e.modifiers() & Qt.AltModifier):
-                b = self.s.project.beat_grid.nearest_beat(t)
-                if b is not None and abs(b - t) * self.pps < 12:
-                    t = b
-            m = next((x for x in self.s.project.sections if x.id == d["id"]), None)
-            if m:
-                d["moved"] = True
-                m.time = t                       # live preview; committed (with undo) on release
-                self.invalidate()
+            if abs(pos.x() - d["x0"]) < 3 and not d["moved"]:
+                return
+            from ..core.arrange import resize_section
+            secs = self.s.project.sections
+            for x in secs:                           # live preview from the original layout
+                if x.id in d["orig"]:
+                    x.time, x.end = d["orig"][x.id]
+            m = next((x for x in secs if x.id == d["id"]), None)
+            if m is None:
+                return
+            dt = (pos.x() - d["x0"]) / self.pps
+            end = self.s.duration
+            if d["part"] == "edge":
+                resize_section(self.s.project, m, start=self._snap_section_time(d["a"] + dt, e), song_end=end)
+            elif d["part"] == "end":
+                resize_section(self.s.project, m, end=self._snap_section_time(d["b"] + dt, e), song_end=end)
+            else:                                    # body: move the whole section, keep its length
+                from ..core.arrange import move_section
+                a = self._snap_section_time(d["a"] + dt, e)
+                move_section(self.s.project, m, a - d["a"], song_end=end)
+            d["moved"] = True
+            self.setCursor(Qt.SizeHorCursor if d["part"] != "body" else Qt.ClosedHandCursor)
+            self.invalidate()                        # committed (with undo) on release
 
     def mouseReleaseEvent(self, e) -> None:
         d = self._drag
@@ -806,11 +943,25 @@ class TimelineCanvas(QWidget):
         if not d:
             return
         if d["mode"] == "section":
-            m = next((x for x in self.s.project.sections if x.id == d["id"]), None)
-            if m and d.get("moved"):
-                new_t = m.time
-                m.time = d["t"]                  # restore, then move through the undo stack
-                self.s.move_section(m.id, new_t)
+            self.unsetCursor()
+            if d.get("moved"):
+                secs = self.s.project.sections
+                new = {x.id: (x.time, x.end) for x in secs}
+                for x in secs:                   # restore, then apply through the undo stack
+                    if x.id in d["orig"]:
+                        x.time, x.end = d["orig"][x.id]
+                if new != d["orig"]:
+                    self.s.set_section_bounds(new, "Resize section" if d["part"] != "body" else "Move section")
+            return
+        if d["mode"] == "lane":
+            self.unsetCursor()
+            if d["moved"] and d.get("target") is not None:
+                ids = [l.id for l in self.s.project.lanes]
+                cur = ids.index(d["id"]) if d["id"] in ids else -1
+                tgt = d["target"] - (1 if d["target"] > cur else 0)
+                if cur >= 0 and tgt != cur:
+                    self.s.move_lane_to(d["id"], tgt)
+            self.update()
             return
         if d["mode"] == "hold":
             p = self.s.project
@@ -904,6 +1055,16 @@ class TimelineCanvas(QWidget):
 
     def _hover_tip(self, e) -> None:
         pos = e.position()
+        if RULER_H <= pos.y() < TOP_H and pos.x() >= HEADER_W:        # section band
+            m, part = self.hit_section(pos)
+            if m is not None:
+                self.setCursor(Qt.SizeHorCursor if part in ("edge", "end") else Qt.OpenHandCursor)
+                QToolTip.showText(e.globalPosition().toPoint(),
+                                  f"<b>{m.name}</b><br>" + ("Drag to resize (snaps to bars; Alt = free)"
+                                                           if part != "body" else
+                                                           "Drag to move · double-click to rename · right-click for more"),
+                                  self)
+                return
         eid = self.hit_temp_end(pos)
         if eid:
             c = self.s.project.cue(eid)
@@ -1081,7 +1242,7 @@ class TimelinePanel(QWidget):
     def _h_moved(self, v: int) -> None:
         if not self._updating:
             self.canvas.t0 = v / 1000
-            self.canvas.invalidate()
+            self.canvas.update()        # the cached strip is reused while it covers the view
 
     def _v_moved(self, v: int) -> None:
         if not self._updating:

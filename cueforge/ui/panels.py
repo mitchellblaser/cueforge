@@ -93,15 +93,22 @@ class CueTable(QWidget):
         self.rebuild()
 
     def rebuild(self) -> None:
+        from ..core.editing import effective_cue_numbers
         p = self.s.project
         lane_id = self.lane_filter.currentData()
         cues = [c for c in p.cues if not lane_id or c.lane_id == lane_id]
+        nums: dict[str, float] = {}
+        for l in p.lanes:
+            nums.update(effective_cue_numbers(p, l.id))
+        self._auto_nums = nums
         self._syncing = True
         self.table.setRowCount(len(cues))
         for r, c in enumerate(cues):
             lane = p.lane(c.lane_id)
+            auto = c.number is None
+            num = nums.get(c.id)
             vals = [seconds_to_tc(c.time, p.frame_rate, p.tc_offset), lane.name if lane else "?",
-                    "" if c.number is None else f"{c.number:g}", c.label,
+                    "" if num is None else f"{num:g}", c.label,
                     "" if c.fade is None else f"{c.fade:g}", "" if not c.duration else f"{c.duration:.2f}",
                     c.notes, "AI" if c.source == "ai-accepted" else ""]
             for col, v in enumerate(vals):
@@ -111,6 +118,18 @@ class CueTable(QWidget):
                     it.setFlags(it.flags() & ~Qt.ItemIsEditable)
                 if col == 1 and lane:
                     it.setForeground(QColor(lane.color))
+                    it.setToolTip(f"grandMA3 Sequence {lane.ma3_sequence + p.song.seq_offset}")
+                if col == 2 and lane:
+                    seq = lane.ma3_sequence + p.song.seq_offset
+                    if auto:
+                        it.setForeground(QColor(theme.FG_DIM))
+                        f = it.font()
+                        f.setItalic(True)
+                        it.setFont(f)
+                        it.setToolTip(f"Automatic: Sequence {seq} Cue {num:g} (in time order from the song's first "
+                                      "cue number). Type a number to fix it.")
+                    else:
+                        it.setToolTip(f"Fixed: Sequence {seq} Cue {num:g}. Clear it to number automatically.")
                 if col == 7:
                     it.setForeground(QColor("#ffd54f"))
                 if col == 6 and c.notes:
@@ -237,6 +256,10 @@ class CueTable(QWidget):
             if col == 0:
                 self.s.update_cue(cid, time=max(0.0, parse_tc(txt, p.frame_rate, p.tc_offset)))
             elif col == 2:
+                cue = p.cue(cid)
+                auto = getattr(self, "_auto_nums", {}).get(cid)
+                if cue is not None and cue.number is None and txt and auto is not None and float(txt) == auto:
+                    return                      # unchanged automatic number: keep it automatic
                 self.s.update_cue(cid, number=float(txt) if txt else None)
             elif col == 3:
                 self.s.update_cue(cid, label=txt)
@@ -372,6 +395,13 @@ class SuggestionPanel(QWidget):
         note.setWordWrap(True)
         note.setStyleSheet(f"color: {theme.FG_DIM}; font-size: 10px;")
         lay.addWidget(note)
+        self.advance = QCheckBox("Jump to the next suggestion after Accept (A) / Reject (X)")
+        self.advance.setChecked(session.auto_advance)
+        self.advance.toggled.connect(session.set_auto_advance)
+        session.auto_advance_changed.connect(lambda: (self.advance.blockSignals(True),
+                                                      self.advance.setChecked(session.auto_advance),
+                                                      self.advance.blockSignals(False)))
+        lay.addWidget(self.advance)
 
         grid_box = QGroupBox("Beat grid")
         gl = QVBoxLayout(grid_box)
@@ -569,6 +599,12 @@ class LanePanel(QWidget):
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SingleSelection)
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        vh = self.table.verticalHeader()
+        vh.setVisible(True)
+        vh.setSectionsMovable(True)                 # drag the ≡ handle to reorder lanes
+        vh.setDefaultAlignment(Qt.AlignCenter)
+        vh.sectionMoved.connect(self._header_moved)
+        vh.setToolTip("Drag to reorder lanes")
         for i, w in enumerate([0, 56, 56, 64, 50]):
             if w:
                 self.table.setColumnWidth(i, w)
@@ -577,13 +613,27 @@ class LanePanel(QWidget):
         lay.addWidget(self.table)
         b = QGridLayout()
         for i, (txt, fn) in enumerate([("Add lane", self._add), ("Remove", self._remove), ("Up", lambda: self._move(-1)),
-                                       ("Down", lambda: self._move(1)), ("Renumber cues…", self._renumber)]):
+                                       ("Down", lambda: self._move(1))]):
             btn = QPushButton(txt)
             btn.clicked.connect(fn)
             b.addWidget(btn, i // 3, i % 3)
+        num = QPushButton("Numbering ▾")
+        nm = QMenu(num)
+        nm.addAction("Number all cues automatically (clear fixed numbers)", lambda: self._auto_numbers(None))
+        nm.addAction("Number this lane's cues automatically", lambda: self._auto_numbers(self._lane_id() or False))
+        nm.addAction("Renumber this lane from…", self._renumber)
+        nm.addSeparator()
+        nm.addAction("Number MA3 sequences 1, 2, 3… in lane order", self._number_sequences)
+        num.setMenu(nm)
+        b.addWidget(num, 1, 1, 1, 2)
         lay.addLayout(b)
-        help_ = QLabel("Each lane exports to one grandMA3 sequence as a timecode track.\n"
-                       "Press a lane's tap key during playback to drop a cue in it.")
+        self.dup = QLabel("")
+        self.dup.setWordWrap(True)
+        self.dup.setStyleSheet("color: #ffb74d;")
+        lay.addWidget(self.dup)
+        help_ = QLabel("Drag a lane by its ≡ handle (or its header on the timeline) to reorder; keys 1–9 follow the "
+                       "order. Each lane exports to one grandMA3 sequence. Cue numbers are automatic (in time "
+                       "order) unless you type one.")
         help_.setWordWrap(True)
         help_.setStyleSheet(f"color: {theme.FG_DIM}; font-size: 10px;")
         lay.addWidget(help_)
@@ -597,11 +647,41 @@ class LanePanel(QWidget):
         it = self.table.item(row, 0) if row >= 0 else None
         return it.data(Qt.UserRole) if it else None
 
+    def _header_moved(self, logical: int, old_visual: int, new_visual: int) -> None:
+        if self._syncing:
+            return
+        vh = self.table.verticalHeader()
+        ids = [self._lane_id(vh.logicalIndex(v)) for v in range(self.table.rowCount())]
+        self._syncing = True
+        for v in range(self.table.rowCount()):        # put the view back; the model reorders
+            vh.moveSection(vh.visualIndex(v), v)
+        self._syncing = False
+        self.s.reorder_lanes([i for i in ids if i])
+
+    def _auto_numbers(self, lane_id) -> None:
+        if lane_id is False:
+            QMessageBox.information(self, "Numbering", "Select a lane first.")
+            return
+        lanes = [lane_id] if lane_id else None
+        n = self.s.auto_number_cues(lanes)
+        self.s.status.emit(f"{n} cue(s) now numbered automatically" if n else "All cues are already automatic")
+
+    def _number_sequences(self) -> None:
+        if QMessageBox.question(self, "Number sequences", "Give the lanes MA3 sequences 1, 2, 3… in lane order? "
+                                "Lanes that are already on the console point at new sequences afterwards.") \
+                == QMessageBox.Yes:
+            self.s.number_sequences()
+
     def rebuild(self) -> None:
         self._syncing = True
         cur = self._lane_id()
         lanes = self.s.project.lanes
         self.table.setRowCount(len(lanes))
+        self.table.setVerticalHeaderLabels(["≡"] * len(lanes))
+        seqs = [l.ma3_sequence for l in lanes if l.export]
+        dups = sorted({x for x in seqs if seqs.count(x) > 1})
+        self.dup.setText(f"⚠ Sequence {', '.join(map(str, dups))} is used by more than one lane — "
+                         "Numbering ▸ Number MA3 sequences fixes it." if dups else "")
         for r, l in enumerate(lanes):
             name = QTableWidgetItem(l.name)
             name.setData(Qt.UserRole, l.id)

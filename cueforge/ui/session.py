@@ -18,6 +18,7 @@ from ..core import editing
 from ..core.model import (BeatGrid, Lane, LANE_COLORS, Project, Suggestion, TRACK_COLORS, Track)
 from ..core.project_io import analysis_cache_dir, load_project, save_project
 from ..core.settings import UserSettings
+from ..core.timecode import snap_to_frame
 from ..core.undo import UndoStack
 from .workers import Job, start_job
 
@@ -53,7 +54,8 @@ class Session(QObject):
     busy = Signal(str)            # message while a job runs ("" when idle)
     progress = Signal(float, str)
     analysis_done = Signal(object)
-    grid_rephased = Signal()      # bar 1 / downbeats changed by hand (offer re-analysis)
+    grid_rephased = Signal()
+    auto_advance_changed = Signal()      # bar 1 / downbeats changed by hand (offer re-analysis)
 
     def __init__(self, settings: UserSettings | None = None) -> None:
         super().__init__()
@@ -537,6 +539,15 @@ class Session(QObject):
                 m.time = editing.snap_time(self.project, max(0.0, t), self.snap)
                 self.project.sections.sort(key=lambda x: x.time)
 
+    def set_section_bounds(self, bounds: dict[str, tuple[float, float | None]], label: str = "Move section") -> None:
+        with self.edit(label):
+            for m in self.project.sections:
+                if m.id in bounds:
+                    t, e = bounds[m.id]
+                    m.time = snap_to_frame(max(0.0, t), self.project.frame_rate)
+                    m.end = None if e is None else snap_to_frame(e, self.project.frame_rate)
+            self.project.sections.sort(key=lambda x: x.time)
+
     def delete_section(self, sid: str) -> None:
         with self.edit("Delete section"):
             self.project.sections = [x for x in self.project.sections if x.id != sid]
@@ -644,6 +655,7 @@ class Session(QObject):
         with self.edit("Tap cue"):
             c = editing.add_cue(self.project, lane_id, t, self.snap)
             self.sel_cues = {c.id}
+        return c
 
     def delete_selected(self) -> None:
         if self.sel_cues:
@@ -739,13 +751,58 @@ class Session(QObject):
         self.lanes_changed.emit()
 
     def move_lane(self, lane_id: str, direction: int) -> None:
-        ls = self.project.lanes
-        i = next((k for k, l in enumerate(ls) if l.id == lane_id), -1)
+        ids = [l.id for l in self.project.lanes]
+        i = ids.index(lane_id) if lane_id in ids else -1
         j = i + direction
-        if 0 <= i < len(ls) and 0 <= j < len(ls):
-            with self.edit("Reorder lanes"):
-                ls[i], ls[j] = ls[j], ls[i]
-            self.lanes_changed.emit()
+        if 0 <= i < len(ids) and 0 <= j < len(ids):
+            ids[i], ids[j] = ids[j], ids[i]
+            self.reorder_lanes(ids)
+
+    def move_lane_to(self, lane_id: str, index: int) -> None:
+        ids = [l.id for l in self.project.lanes if l.id != lane_id]
+        if lane_id not in {l.id for l in self.project.lanes}:
+            return
+        ids.insert(max(0, min(len(ids), index)), lane_id)
+        self.reorder_lanes(ids)
+
+    def reorder_lanes(self, ids: list[str]) -> None:
+        """Put the lanes in this order. Digit tap keys follow the position (lane 1 = key 1 …
+        lane 9 = key 9); lanes with a letter key keep it."""
+        by_id = {l.id: l for l in self.project.lanes}
+        order = [by_id[i] for i in ids if i in by_id] + [l for l in self.project.lanes if l.id not in ids]
+        if [l.id for l in order] == [l.id for l in self.project.lanes]:
+            return
+        with self.edit("Reorder lanes"):
+            self.project.lanes = order
+            for k, lane in enumerate(order):
+                if lane.tap_key.isdigit():        # digit keys follow the position; letters / none stay
+                    lane.tap_key = str(k + 1) if k < 9 else ""
+        self.lanes_changed.emit()
+
+    def auto_number_cues(self, lane_ids: list[str] | None = None) -> int:
+        """Clear fixed cue numbers so the cues are numbered automatically again (in time
+        order, from the song's first cue number). Returns how many cues changed."""
+        lanes = set(lane_ids) if lane_ids else {l.id for l in self.project.lanes}
+        cues = [c for c in self.project.cues if c.lane_id in lanes and c.number is not None]
+        if not cues:
+            return 0
+        with self.edit("Number cues automatically"):
+            # the live link keeps its record of the old numbers (so it can delete them on the
+            # console when allowed) but must not pin these cues back to them
+            unpin = self.project.console.setdefault("unpin", [])
+            for c in cues:
+                c.number = None
+                if c.id in self.project.console.get("cues", {}) and c.id not in unpin:
+                    unpin.append(c.id)
+        return len(cues)
+
+    def number_sequences(self) -> None:
+        """MA3 sequences 1, 2, 3 … in lane order (exported lanes first)."""
+        lanes = [l for l in self.project.lanes if l.export] + [l for l in self.project.lanes if not l.export]
+        with self.edit("Number sequences"):
+            for k, l in enumerate(lanes, 1):
+                l.ma3_sequence = k
+        self.lanes_changed.emit()
 
     def set_kind_lane(self, kind: str, lane_id: str) -> None:
         with self.edit("Suggestion lane"):
@@ -952,6 +1009,15 @@ class Session(QObject):
             self.project.beat_grid = BeatGrid()
 
     # ------------------------------------------------------------------ analysis
+    @property
+    def auto_advance(self) -> bool:
+        """Jump to the next suggestion after accepting / rejecting one."""
+        return bool(self.settings.get("auto_advance", True))
+
+    def set_auto_advance(self, on: bool) -> None:
+        self.settings.set("auto_advance", bool(on))
+        self.auto_advance_changed.emit()
+
     def analysis_running(self) -> bool:
         return self._analysis_relay is not None or bool(getattr(self, "_queue_active", False))
 
