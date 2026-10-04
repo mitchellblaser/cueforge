@@ -1026,3 +1026,31 @@ def test_midi_fighter_spectra(app, win):
     # settings saved with the old channel-1-only defaults are upgraded to "any channel"
     cfg = ControlSettings(midi_map=_old_default_map())
     assert all(m.channel == -1 for m in cfg.mappings())
+
+
+def test_temp_lengths_snap_and_short_taps_are_even(app, win):
+    import mido
+    s = win.s
+    from cueforge.core.model import BeatGrid
+    s.set_grid(BeatGrid.from_tempo(128, 0.0, 60.0, 4))       # beat = 0.469 s
+    s.snap = True
+    s.set_temp_hold(0.5)
+    hub = win.control
+    hub.cfg.hold_from_press = True
+    beat = 60 / 128
+    on_grid = lambda x: abs(x / beat - round(x / beat)) < 0.03 * 2   # within a frame or so
+    # quick tap on a Temp pad: the standard length, end on the grid
+    hub.handle_midi(mido.Message("note_on", channel=2, note=46, velocity=127), 3.02)
+    hub.handle_midi(mido.Message("note_off", channel=2, note=46, velocity=0), 3.10)
+    wait(app, lambda: s.project.cues and s.project.cues[-1].duration, 5)
+    c = s.project.cues[-1]
+    assert on_grid(c.time) and on_grid(c.time + c.duration) and c.duration >= beat - 0.02
+    # a long hold keeps its own length, end snapped
+    hub.handle_midi(mido.Message("note_on", channel=2, note=46, velocity=127), 10.03)
+    hub.handle_midi(mido.Message("note_off", channel=2, note=46, velocity=0), 12.2)
+    wait(app, lambda: len(s.project.cues) == 2 and s.project.cues[-1].duration, 5)
+    c = sorted(s.project.cues, key=lambda x: x.time)[-1]
+    assert on_grid(c.time + c.duration) and 1.8 < c.duration < 2.6
+    # ＋Temp (W): the Hold box length, end snapped to the grid
+    c3 = s.add_at_playhead(temp=True, lane_id=s.project.lanes[2].id, t=20.0)
+    assert on_grid(c3.time + c3.duration)

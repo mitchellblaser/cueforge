@@ -481,6 +481,28 @@ class Session(QObject):
     def set_temp_hold(self, seconds: float) -> None:
         self.settings.set("temp_hold", round(max(0.0, seconds), 3))
 
+    def grid_step(self) -> float:
+        """One step of the snap grid in seconds (a beat / ½ / ¼), or one frame without a grid."""
+        p = self.project
+        frame = 1.0 / p.frame_rate.fps
+        if len(p.beat_grid.beats) > 1:
+            import numpy as np
+            return max(frame, float(np.median(np.diff(p.beat_grid.beats))) / max(1, getattr(p, "snap_div", 1)))
+        return frame
+
+    def temp_length(self, start: float, end: float | None = None) -> float:
+        """The hold a Temp gets. A short press (or none: ＋Temp / W) gets the standard length
+        from the Hold box, so quick hits look even; a longer hold keeps its own length. With
+        Snap on, the end lands on the grid and is at least one grid step after the start."""
+        std = self.temp_hold if self.temp_hold > 0 else 0.5
+        length = std if end is None or end - start < std else end - start
+        if self.snap and self.project.beat_grid.beats:
+            e = editing.grid_point(self.project, start + length)
+            if e is not None:
+                length = e - start
+            length = max(self.grid_step(), length)
+        return round(max(1.0 / self.project.frame_rate.fps, length), 3)
+
     def add_at_playhead(self, temp: bool = False, lane_id: str | None = None, t: float | None = None):
         """Drop a cue (or a Temp with the current hold time) into the active lane at the
         playhead — the heard position while playing (or at time t, e.g. a MIDI hit)."""
@@ -491,10 +513,25 @@ class Session(QObject):
         with self.edit("Add temp" if temp else "Add cue"):
             c = editing.add_cue(self.project, lane_id, t, self.snap)
             if temp:
-                c.duration = self.temp_hold if self.temp_hold > 0 else None
+                c.duration = self.temp_length(c.time)
             self.sel_cues = {c.id}
             self.sel_sugs.clear()
         return c
+
+    def finish_temp(self, cue_id: str, end: float) -> None:
+        """A held pad / key was released at song time `end`: set the Temp's hold (see
+        temp_length) as part of the step that created it."""
+        c = self.project.cue(cue_id)
+        if c is None:
+            return
+        c.duration = self.temp_length(c.time, end)
+        self._sync_engine()
+        self.touched_lanes = {c.lane_id}
+        try:
+            self.cues_changed.emit()
+        finally:
+            self.touched_lanes = None
+        self._touch()
 
     def set_selected_temp(self, temp: bool) -> None:
         """Turn the selected cues into Temps (with the current hold) or back into cues."""

@@ -213,6 +213,11 @@ on the timeline.
      **Press and hold** it to drop a **Temp** for as long as you hold the key, e.g. hold 3 for
      a strobe. The Temp grows on the timeline while you hold. With Snap on, its start and end
      snap to the grid. Every key holds on its own, so you can keep 3 down and tap 2 meanwhile.
+   - **Temp lengths, everywhere** (held keys, MIDI Temp pads, ＋Temp / W):
+     - A short hold gets the standard length from the **Hold** box, so quick strobes come
+       out even.
+     - Longer holds keep their own length.
+     - With Snap on, the end lands on the grid, at least one grid step after the start.
    - Taps are timed from the moment the key went down (from the key event's own timestamp),
      so a busy screen never makes them land late. Snapping always goes to the nearest grid
      point.
@@ -252,7 +257,8 @@ on the timeline.
      with **Learn**. Other actions you can map: play/stop, next/previous lane, song or
      suggestion, accept/reject, undo, add section, loop.
    - **Temp pads** use the Hold time, or optionally *how long you hold the pad*, for live
-     strobes.
+     strobes. In that mode a quick tap still gets the standard Hold length, and the end snaps
+     to the grid.
    - **Feedback**: pads light in their lane's colour, sent back on the channel the controller
      uses. *Automatic* picks the colour scheme for the connected device: a Launchpad / APC mini
      mk2-style palette, or approximate Midi Fighter colours. You can also choose plain on/off.

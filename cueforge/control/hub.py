@@ -250,10 +250,7 @@ class ControlHub(QObject):
                 self._flash(action)
             elif temp and action in self._pending:
                 cid, t0 = self._pending.pop(action)
-                c = self.s.project.cue(cid)
-                if c is not None:
-                    c.duration = round(max(MIN_HOLD, t - t0), 3)   # part of the same undo step
-                    self.s.cues_changed.emit()
+                self.s.finish_temp(cid, t)             # standard length if short, snapped end
             return
         if not pressed:
             return

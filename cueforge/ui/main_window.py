@@ -940,22 +940,7 @@ class MainWindow(QMainWindow):
         end = pos if (h["playing"] and eng.playing and pos >= h["last"] - 0.05) else h["last"]
         if not h["playing"] or end - h["t0"] < self.HOLD_MIN:
             return                                    # a tap: the normal cue stays
-        if self.s.snap:
-            g = editing.grid_point(p, end)
-            if g is not None:
-                end = g
-        step = 1.0 / p.frame_rate.fps
-        if self.s.snap and len(p.beat_grid.beats) > 1:
-            step = max(step, float(np.median(np.diff(p.beat_grid.beats))) / max(1, p.snap_div))
-        c.duration = round(max(step, end - c.time), 3)   # at least one grid step
-        p.sort_cues()
-        self.s._sync_engine()
-        self.s.touched_lanes = {c.lane_id}
-        try:
-            self.s.cues_changed.emit()
-        finally:
-            self.s.touched_lanes = None
-        self.s._touch()
+        self.s.finish_temp(c.id, end)                 # standard length if short, snapped end
         lane = p.lane(c.lane_id)
         self.statusBar().showMessage(f"Temp in {lane.name if lane else '?'}: held {c.duration:.2f} s", 3000)
 
