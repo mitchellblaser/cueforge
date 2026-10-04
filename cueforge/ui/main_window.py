@@ -508,7 +508,7 @@ class MainWindow(QMainWindow):
         lane = self.s.project.lane(self.s.active_lane_id)
         if lane:
             self.lane_combo.setStyleSheet(f"QComboBox {{ border: 1px solid {lane.color}; color: {lane.color}; }}")
-            self.cue_hint.setText(f"Q / W drop into {lane.name} (MA3 Seq {editing.sequence_number(self.s.project, lane)})")
+            self.cue_hint.setText(f'Q / W drop into {lane.name} (MA3 sequence "{editing.sequence_name(self.s.project, lane)}")')
 
     def _drop(self, temp: bool) -> None:
         c = self.s.add_at_playhead(temp)

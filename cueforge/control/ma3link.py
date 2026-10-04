@@ -78,10 +78,12 @@ end
 MAX_CMD = 200              # characters per command (MA truncates long command lines)
 
 
-def import_script(xml: str, slot: int, fix_src: str) -> str:
+def import_script(xml: str, slot: int, fix_src: str, names: list[str] | None = None,
+                  offset: str = "0h00m00.000") -> str:
     """Lua the console runs once the push has arrived: expand the shortened XML, fill in the
-    sequence / cue addresses from this show, write it into the console's timecode library,
-    then delete and import the timecode slot (in that order, inside one script)."""
+    sequence / cue addresses (sequences found by `names`, in seq_table order), write it into
+    the console's timecode library, delete and import the timecode slot, then set its
+    Offset TC Slot to the song's start (`offset`) — all in that order, inside one script."""
     from ..export.ma3 import RC_FLAGS, RC_HEAD
     # what every event repeats becomes one byte; the console expands it again
     frags = [RC_HEAD, RC_FLAGS, '<CmdEvent Name="', '" Time="', '" CueDestination="', 'Object="@SEQ',
@@ -97,7 +99,9 @@ def import_script(xml: str, slot: int, fix_src: str) -> str:
     def long(s: str) -> str:
         return "[" + level + "[" + ("\n" + s if s.startswith("\n") else s) + "]" + level + "]"
     table = ", ".join(f"[{c}] = {long(f)}" for c, f in zip(codes, frags))
-    return ("local cf_xml = " + long(packed) + "\n"
+    seqs = ", ".join(long(n) for n in (names or []))
+    return ("local cf_names = {" + seqs + "}\n"
+            "local cf_xml = " + long(packed) + "\n"
             "local cf_rc = {" + table + "}\n"
             "cf_xml = cf_xml:gsub('[\\1-\\31]', function(c) return cf_rc[string.byte(c)] end)\n"
             + fix_src + "\n" + CONSOLE_DIR_LUA + "\n"
@@ -108,7 +112,8 @@ def import_script(xml: str, slot: int, fix_src: str) -> str:
             "local f = io.open(d .. '/' .. fname, 'w') f:write(cf_fix(cf_xml)) f:close()\n"
             f"Cmd('Delete Timecode {slot} /NoConfirm')\n"
             f"Cmd('Import Timecode {slot} /File \"' .. fname .. '\" /NoConfirm')\n"
-            f"Printf('CueForge: Timecode {slot} imported, %d sequence/cue addresses filled in', n)\n")
+            f"Printf('CueForge: Timecode {slot} imported, %d sequence/cue addresses filled in', n)\n"
+            f"cf_set_offset({slot}, '{offset}')\n")
 
 
 # The last command: join the pieces, check they all arrived, decode the hex and run it.
@@ -233,8 +238,11 @@ class MA3Link(QObject):
         session.project_replaced.connect(self._project_replaced)
 
     # ------------------------------------------------------------------ setup
-    def cmd(self, name: str, seq: int, cue: float | None = None, label: str = "", fade: float = 0.0) -> str:
-        args = dict(seq=seq, cue="" if cue is None else _num(cue), label=_q(label), fade=_num(round(fade, 3)))
+    def cmd(self, name: str, seq, cue: float | None = None, label: str = "", fade: float = 0.0) -> str:
+        """A command from its template. `seq` is the sequence's name (sent quoted, so the
+        console finds it wherever it sits) or, for old-style calls, its number."""
+        seq_ref = f'"{_q(seq)}"' if isinstance(seq, str) else seq
+        args = dict(seq=seq_ref, cue="" if cue is None else _num(cue), label=_q(label), fade=_num(round(fade, 3)))
         try:
             return (getattr(self.cfg, "cmd_" + name) or "").format(**args) or \
                 getattr(LinkSettings, "cmd_" + name).format(**args)
@@ -289,10 +297,10 @@ class MA3Link(QObject):
 
     # ------------------------------------------------------------------ helpers
     def _lane_cues(self, project):
-        """(lane, sequence, {cue id: number}, cues) for exported lanes of the current song."""
-        from ..export.ma3 import export_lanes, seq_number
+        """(lane, sequence name, {cue id: number}, cues) for exported lanes of the current song."""
+        from ..export.ma3 import export_lanes, seq_name
         for lane in export_lanes(project):
-            yield lane, seq_number(project, lane), effective_cue_numbers(project, lane.id), \
+            yield lane, seq_name(project, lane), effective_cue_numbers(project, lane.id), \
                 project.cues_in_lane(lane.id)
 
     def _preview_lanes(self):
@@ -392,37 +400,47 @@ class MA3Link(QObject):
 
     @property
     def record(self) -> dict:
-        """{cue id: [seq, number, label]} of cues already created on the console."""
+        """{cue id: [sequence name, number, label, fade]} of cues already on the console.
+        (Records from before sequences were found by name hold a sequence number.)"""
         return self.s.project.console.setdefault("cues", {})
 
     @property
-    def record_seqs(self) -> dict:
-        return self.s.project.console.setdefault("seqs", {})
+    def made(self) -> list:
+        """Names of sequences that exist on the console (created or adopted by the link)."""
+        return self.s.project.console.setdefault("made", [])
+
+    @property
+    def seq_keys(self) -> dict:
+        """{"song id:lane id": sequence name} last used, to rename instead of re-create."""
+        return self.s.project.console.setdefault("seqkeys", {})
 
     # kept for callers/tests that think in (seq, cue) terms
     @property
-    def pushed(self) -> dict[tuple[int, float], str]:
-        return {(int(v[0]), float(v[1])): v[2] for v in self.record.values()}
+    def pushed(self) -> dict[tuple, str]:
+        return {(v[0], float(v[1])): v[2] for v in self.record.values()}
 
     def _scope(self):
         p = self.s.project
         return p.songs if self.cfg.all_songs else [p.song]
 
-    def desired(self) -> dict[str, tuple[int, float, str]]:
-        """{cue id: (sequence, number, label)} for the songs in scope. Cues already on the
-        console keep the number they were created with even if undo cleared it."""
-        from ..export.ma3 import in_song
+    def desired(self) -> dict[str, tuple[str, float, str]]:
+        """{cue id: (sequence name, number, label)} for the songs in scope. Cues already on
+        the console keep the number they were created with even if undo cleared it. Also
+        fills want_fade, want_seq ({name: (key, creation number, first cue)})."""
+        from ..export.ma3 import in_song, seq_number
         p = self.s.project
         rec = self.record
         unpin = set(self.s.project.console.get("unpin", []))   # numbered automatically on purpose
-        want: dict[str, tuple[int, float, str]] = {}
+        want: dict[str, tuple[str, float, str]] = {}
         self.want_fade: dict[str, float | None] = {}   # cue id -> fade (None: no fade set)
+        self.want_seq: dict[str, tuple[str, int, float]] = {}
         for song in self._scope():
             with in_song(p, song):
                 for lane, seq, nums, cues in self._lane_cues(p):
+                    shared = not lane_per_song(lane)
                     for c in cues:
-                        if c.number is None and c.id in rec and self.cfg.pin_numbers \
-                                and int(rec[c.id][0]) == seq and c.id not in unpin:
+                        if c.number is None and c.id in rec and self.cfg.pin_numbers and rec[c.id][0] == seq \
+                                and c.id not in unpin and not (shared and c.duration):
                             c.number = float(rec[c.id][1])       # undo removed a pinned number
                             nums = effective_cue_numbers(p, lane.id)
                     tlabel = temp_cue_label(p, lane.id) if any(c.duration for c in cues) else ""
@@ -430,22 +448,50 @@ class MA3Link(QObject):
                     for c in cues:                         # all Temps share the lane's Temp cue
                         want[c.id] = (seq, float(nums[c.id]), tlabel if c.duration else (c.label or ""))
                         self.want_fade[c.id] = tfade if c.duration else (c.fade or None)
+                    key = f"{song.id}:{lane.id}" if lane_per_song(lane) else f"*:{lane.id}"
+                    first = min(nums[c.id] for c in cues) if cues else 1.0
+                    if seq not in self.want_seq or first < self.want_seq[seq][2]:
+                        self.want_seq[seq] = (key, seq_number(p, lane), first)
         return want
 
-    def desired_cues(self) -> dict[tuple[int, float], str]:
+    def desired_cues(self) -> dict[tuple[str, float], str]:
         return {(seq, num): label for seq, num, label in self.desired().values()}
 
-    def desired_sequences(self) -> dict[int, str]:
-        from ..export.ma3 import in_song
-        p = self.s.project
-        out: dict[int, str] = {}
-        for song in self._scope():
-            with in_song(p, song):
-                for lane, seq, _, _ in self._lane_cues(p):
-                    # a per-song sequence is named after its song; a shared one after its lane
-                    own = lane_per_song(lane) and len(p.songs) > 1
-                    out[seq] = f"{song.name} {lane.name}" if own else lane.name
-        return out
+    def _sequences(self, want: dict, cmds: list[str]) -> None:
+        """Make sure every wanted sequence exists under its name: rename one whose song or
+        lane was renamed, adopt one created by number before (records holding a number), and
+        create the rest on the console (CF_ENSURE: first free number from the lane's seq)."""
+        from ..export.ma3 import ENSURE_LUA
+        rec, made, keys = self.record, self.made, self.seq_keys
+        # renamed song / lane: rename its sequence and the records pointing at it
+        for name, (key, _, _) in self.want_seq.items():
+            old = keys.get(key)
+            if old and old != name and old in made and name not in made:
+                cmds.append(f'Label Sequence "{_q(old)}" "{_q(name)}"')
+                made[made.index(old)] = name
+                for v in rec.values():
+                    if v[0] == old:
+                        v[0] = name
+            keys[key] = name
+        # records from the number-based scheme: the first song claiming a number adopts it
+        adopted = self.s.project.console.setdefault("adopted", {})
+        for cid, v in rec.items():
+            if isinstance(v[0], str):
+                continue
+            num_key = str(int(v[0]))
+            name = want[cid][0] if cid in want else None
+            if num_key not in adopted and name and name not in made:
+                cmds.append(f'Label Sequence {int(v[0])} "{_q(name)}"')
+                adopted[num_key] = name
+                made.append(name)
+            v[0] = adopted.get(num_key, f"#{num_key}")      # not adopted: no longer ours by name
+        missing = [n for n in self.want_seq if n not in made]
+        if missing:
+            cmds += push_commands(ENSURE_LUA, int(self.cfg.max_cmd or MAX_CMD))   # defines CF_ENSURE
+            for name in missing:
+                _, pref, first = self.want_seq[name]
+                cmds.append(f'Lua "CF_ENSURE([[{name}]],{int(pref)},{_num(first)})"')
+                made.append(name)
 
     def sync_cues(self) -> list[str]:
         """Send the commands that bring the console's cue lists in line with CueForge.
@@ -457,14 +503,15 @@ class MA3Link(QObject):
         p = self.s.project
         rec = self.record
         want = self.desired()
-        taken = {(seq, num) for seq, num, _ in want.values()}
-        on_console = {(int(v[0]), float(v[1])) for v in rec.values()}
         cmds: list[str] = []
-        labelled = {(int(v[0]), float(v[1])): v[2] for v in rec.values()}   # what each console cue is called
-        faded = {(int(v[0]), float(v[1])): (v[3] if len(v) > 3 else None) for v in rec.values()}
+        self._sequences(want, cmds)
+        taken = {(seq, num) for seq, num, _ in want.values()}
+        on_console = {(v[0], float(v[1])) for v in rec.values()}
+        labelled = {(v[0], float(v[1])): v[2] for v in rec.values()}   # what each console cue is called
+        faded = {(v[0], float(v[1])): (v[3] if len(v) > 3 else None) for v in rec.values()}
         for cid, (seq, num, label) in sorted(want.items(), key=lambda kv: (kv[1][0], kv[1][1])):
             old = rec.get(cid)
-            same = old is not None and (int(old[0]), float(old[1])) == (seq, num)
+            same = old is not None and (old[0], float(old[1])) == (seq, num)
             if same:
                 if label and label != old[2] and labelled.get((seq, num)) != label:
                     cmds.append(self.cmd("label", seq, num, label))
@@ -476,8 +523,9 @@ class MA3Link(QObject):
                 if label and labelled.get((seq, num)) != label:
                     cmds.append(self.cmd("label", seq, num, label))
                     labelled[(seq, num)] = label
-                if old is not None and self.cfg.allow_delete and (int(old[0]), float(old[1])) not in taken:
-                    cmds.append(self.cmd("delete", int(old[0]), float(old[1])))   # renumbered
+                if old is not None and self.cfg.allow_delete and (old[0], float(old[1])) not in taken \
+                        and not str(old[0]).startswith("#"):
+                    cmds.append(self.cmd("delete", old[0], float(old[1])))   # renumbered
             fade = self.want_fade.get(cid)
             sent = faded.get((seq, num))
             if fade is not None and sent != fade:          # new or changed fade
@@ -485,24 +533,17 @@ class MA3Link(QObject):
             elif fade is None and sent:                     # fade removed: back to 0
                 cmds.append(self.cmd("fade", seq, num, fade=0.0))
             faded[(seq, num)] = fade
-            rec[cid] = [seq, num, label or (old[2] if old and (int(old[0]), float(old[1])) == (seq, num) else ""), fade]
+            rec[cid] = [seq, num, label or (old[2] if same else ""), fade]
             if cid in p.console.get("unpin", []):
                 p.console["unpin"].remove(cid)            # the console now has the new number
         existing = {c.id for song in p.songs for c in song.cues}
         for cid in [c for c in rec if c not in existing]:
-            seq, num = int(rec[cid][0]), float(rec[cid][1])
+            seq, num = rec[cid][0], float(rec[cid][1])
             if not self.cfg.allow_delete:
                 break
-            if (seq, num) not in taken:
+            if (seq, num) not in taken and not str(seq).startswith("#"):
                 cmds.append(self.cmd("delete", seq, num))
             del rec[cid]
-        # name the sequences after the lanes (after their first cue has created them)
-        has_cues = {int(v[0]) for v in rec.values()}
-        seqs = self.record_seqs
-        for seq, name in sorted(self.desired_sequences().items()):
-            if seq in has_cues and seqs.get(str(seq)) != name:
-                cmds.append(self.cmd("label_seq", seq, label=name))
-                seqs[str(seq)] = name
         for c in cmds:
             self.send(c, bulk=True)
         pinned = self.pin_numbers() if self.cfg.pin_numbers else set()
@@ -562,7 +603,7 @@ class MA3Link(QObject):
         there. Everything travels over OSC and is written to the console's own disk, so a
         networked console works the same as onPC on this computer — no paths to set.
         `only_changed` (the automatic push) skips songs whose timecode is unchanged."""
-        from ..export.ma3 import SEQ_FIX_LUA, build_ma3_xml, export_lanes, in_song
+        from ..export.ma3 import SEQ_FIX_LUA, build_ma3_xml, export_lanes, in_song, offset_text, seq_table
         p = self.s.project
         cmds = []
         songs = 0
@@ -570,7 +611,8 @@ class MA3Link(QObject):
             with in_song(p, song):
                 if not export_lanes(p):
                     continue
-                script = import_script(build_ma3_xml(p, placeholders=True), song.ma3_timecode, SEQ_FIX_LUA)
+                script = import_script(build_ma3_xml(p, placeholders=True), song.ma3_timecode, SEQ_FIX_LUA,
+                                       [n for n, _ in seq_table(p)], offset_text(p.tc_offset))
                 if only_changed and self._pushed_tc.get(song.id) == script:
                     continue
                 self._pushed_tc[song.id] = script

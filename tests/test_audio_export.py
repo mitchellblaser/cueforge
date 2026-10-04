@@ -174,11 +174,13 @@ def test_ma3_xml():
 def test_ma3_lua_and_macro():
     p = _project_with_cues()
     lua = build_ma3_lua(p, 3, all_songs=False)
-    assert "tc=3" in lua and "seq=7" in lua and 'label="Verse \\"1\\""' in lua
+    assert "tc=3" in lua and 'seq="Hits", pref=7' in lua and 'label="Verse \\"1\\""' in lua
+    assert 'seq="Song 1 Main Cues"' in lua and 'offset="0h00m00.000"' in lua
+    assert "CF_ENSURE(lane.seq, lane.pref" in lua and "cf_set_offset(song.tc, song.offset)" in lua
     assert lua.count("{t=") == 3
     cmds = build_ma3_macro_commands(p)
-    assert "Store Sequence 1 Cue 1 /Merge /NoConfirm" in cmds
-    assert 'Label Sequence 1 Cue 2 "Verse \'1\'"' in cmds
+    assert 'Store Sequence "Song 1 Main Cues" Cue 1 /Merge /NoConfirm' in cmds    # found by name
+    assert 'Label Sequence "Song 1 Main Cues" Cue 2 "Verse \'1\'"' in cmds
 
 
 def test_ma3_lua_files(tmp_path):
@@ -196,7 +198,7 @@ def test_csv(tmp_path):
     path = tmp_path / "cues.csv"
     n = export_csv(p, str(path))
     rows = list(csv.reader(open(path, encoding="utf-8")))
-    assert n == 3 and rows[1][5] == "01:00:01:00" and rows[2][2] == "7"
+    assert n == 3 and rows[1][5] == "01:00:01:00" and rows[2][2] == "Hits"
 
 
 def test_learn_thresholds():
@@ -243,41 +245,43 @@ def test_setlist_exports(tmp_path):
     p = _project_with_cues()
     s2 = p.add_song("Second Song")
     assert s2.tc_offset == pytest.approx(3600) and s2.ma3_timecode == 2 and s2.cue_start == 101
-    assert s2.seq_offset == 100
     p.select_song(s2.id)
     main, hits = p.lanes[0], next(l for l in p.lanes if l.name == "Hits")
     assert lane_per_song(main) and not lane_per_song(hits)
     editing.add_cue(p, main.id, 5.0, label="Song2 intro")
     editing.add_cue(p, main.id, 9.0)
     editing.add_cue(p, hits.id, 6.0)
-    # Main Cues: the song's own sequence (1 + 100), numbered from 1
+    # Main Cues: the song's own sequence, found by name "<song> <lane>", numbered from 1
     assert sorted(editing.effective_cue_numbers(p, main.id).values()) == [1, 2]
-    assert editing.sequence_number(p, main) == main.ma3_sequence + 100
-    # Hits: one sequence shared by every song, this song's cues from 101
+    assert editing.sequence_name(p, main) == "Second Song Main Cues"
+    # Hits: one sequence shared by every song (named after the lane), this song's cues from 101
     assert list(editing.effective_cue_numbers(p, hits.id).values()) == [101]
-    assert editing.sequence_number(p, hits) == hits.ma3_sequence
+    assert editing.sequence_name(p, hits) == "Hits"
     assert not cue_number_clashes(p)
     paths = export_ma3_xml_all(p, str(tmp_path / "xml"))
     assert len(paths) == 2 and "Second Song" in paths[1]
     root = ET.parse(paths[1]).getroot()
     assert root.find("Timecode").get("Name") == "Second Song"
     first = min(float(e.get("Time")) for e in root.iter("CmdEvent"))
-    assert first >= 3600                         # no Offset attribute: times are show timecode
+    assert first == 5.0                          # song time; the song's 01:00:00:00 is its Offset TC Slot
     lua = build_ma3_lua(p, all_songs=True)
     assert lua.count("{name=") >= 2 and "tc=2" in lua and "cue=101" in lua
     _luac_ok(lua, tmp_path)
     cmds = build_ma3_macro_commands(p, all_songs=True)
-    seq_main2 = main.ma3_sequence + 100
-    assert f"Store Sequence {seq_main2} Cue 1 /Merge /NoConfirm" in cmds          # song 2's own Main Cues
-    assert f"Store Sequence {main.ma3_sequence} Cue 1 /Merge /NoConfirm" in cmds  # song 1's
-    assert f"Store Sequence {hits.ma3_sequence} Cue 101 /Merge /NoConfirm" in cmds  # shared Hits
+    assert 'Store Sequence "Second Song Main Cues" Cue 1 /Merge /NoConfirm' in cmds   # song 2's own
+    assert 'Store Sequence "Song 1 Main Cues" Cue 1 /Merge /NoConfirm' in cmds        # song 1's
+    assert 'Store Sequence "Hits" Cue 101 /Merge /NoConfirm' in cmds                  # shared Hits
     # current song unchanged by the exports
     assert p.song.id == s2.id
-    # clash when the second song's own sequences overlap the first song's
-    s2.seq_offset = 0
+    # clash in the shared Hits sequence when song 2's range overlaps song 1's
+    s2.cue_start = 1
     assert cue_number_clashes(p)
-    s2.seq_offset = 100
+    s2.cue_start = 101
     assert not cue_number_clashes(p)
+    # two songs with the same name would share their per-song sequences
+    s2.name = "Song 1"
+    assert cue_number_clashes(p)
+    s2.name = "Second Song"
     path = tmp_path / "all.csv"
     export_csv(p, str(path), all_songs=True)
     rows = list(csv.reader(open(path, encoding="utf-8")))
@@ -356,7 +360,7 @@ def test_ma3_roundtrip_import():
     for unit in ("ticks", "seconds"):
         p.export.ma3_time_unit = unit
         show = parse_timecode_xml(build_ma3_xml(p))
-        assert show.offset == pytest.approx(7200)
+        assert show.offset is None                 # events at song time; the offset lives on the console
         q = Project()
         q.lanes[1].ma3_sequence = 7               # lane that matches the Hits track's sequence
         info = import_into_song(q, show)
@@ -364,7 +368,7 @@ def test_ma3_roundtrip_import():
         got = sorted((round(c.time, 3), c.label, c.duration, q.lane(c.lane_id).ma3_sequence) for c in q.cues)
         want = sorted((round(c.time, 3), c.label, c.duration, p.lane(c.lane_id).ma3_sequence) for c in p.cues)
         assert got == want
-        assert q.tc_offset == pytest.approx(7200)
+        assert q.tc_offset == 0                     # no offset in the file: the song's start is left alone
         assert any(c.number == 7 for c in q.cues)
     # merging again doesn't duplicate; replace swaps the lane's cues
     assert import_into_song(q, show, replace=False)["cues"] == 0
@@ -410,7 +414,12 @@ def test_ma3_xml_round_trip_in_ma_layout():
     p.song.tc_offset = 3600.0
     c = p.cues_in_lane(p.lanes[0].id)[0]
     c.duration = 0.5
-    show = parse_timecode_xml(build_ma3_xml(p))
+    xml = build_ma3_xml(p)
+    show = parse_timecode_xml(xml)
+    assert show.offset is None                     # song time; Offset TC Slot is set on the console
+    assert min(float(e.get("Time")) for e in ET.fromstring(xml).iter("CmdEvent")) == 1.0
+    # a timecode exported from the console carries its offset
+    show = parse_timecode_xml(xml.replace("<Timecode ", '<Timecode OffsetTCSlot="1h00m00.000" ', 1))
     assert show.offset == 3600.0
     got = show_to_cues(show)
     times = sorted(cue.time for _, _, cue in got)

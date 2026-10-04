@@ -158,11 +158,21 @@ def first_cue_number(project: Project, lane_id: str) -> float:
     return 1.0 if lane is not None and lane_per_song(lane) else float(project.song.cue_start)
 
 
-def sequence_number(project: Project, lane) -> int:
-    """The lane's grandMA3 sequence in the current song: per-song lanes add the song's
-    sequence offset, shared lanes use the same sequence in every song."""
+def sequence_name(project: Project, lane, song=None) -> str:
+    """The lane's grandMA3 sequence in a song, identified by name: "<song> <lane>" for a
+    per-song lane, the lane name for a lane shared by every song. Sequences are found on the
+    console by this name, so they can sit at any number and be moved around there."""
     from .model import lane_per_song
-    return lane.ma3_sequence + (project.song.seq_offset if lane_per_song(lane) else 0)
+    song = song or project.song
+    name = f"{song.name} {lane.name}" if lane_per_song(lane) else lane.name
+    return name.replace('"', "'").strip()
+
+
+def sequence_number(project: Project, lane) -> int:
+    """Where a new sequence for this lane is created on the console: the first free number
+    from the lane's MA3 seq (per-song sequences of later songs land just after, in a clump).
+    Commands find sequences by name (sequence_name), not by this number."""
+    return lane.ma3_sequence
 
 
 def _number_plain(start: float, cues: list, taken: set[float] | None = None) -> dict[str, float]:

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import csv
 
-from ..core.editing import effective_cue_numbers, sequence_number
+from ..core.editing import effective_cue_numbers, sequence_name
 from ..core.model import Project
 from ..core.timecode import seconds_to_tc
 
@@ -19,7 +19,7 @@ def export_csv(project: Project, path: str, lane_ids: list[str] | None = None, a
             for lane in lanes:
                 nums = effective_cue_numbers(project, lane.id)
                 for c in project.cues_in_lane(lane.id):
-                    song_rows.append((si, c.time, lane, c, nums[c.id], song, sequence_number(project, lane)))
+                    song_rows.append((si, c.time, lane, c, nums[c.id], song, sequence_name(project, lane)))
             rows += sorted(song_rows, key=lambda r: r[1])
     with open(path, "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)

@@ -59,6 +59,12 @@ def link(app, tmp_path):
     rx.close()
 
 
+def q(project, lane, song=None):
+    """A sequence as commands address it: its quoted name."""
+    from cueforge.core.editing import sequence_name
+    return f'"{sequence_name(project, lane, song)}"'
+
+
 def received(rx):
     from pythonosc.osc_message import OscMessage
     out = []
@@ -74,8 +80,8 @@ def received(rx):
 
 def test_preview_fires_cues_and_releases_temps(link):
     s = link.s
-    seq_main = s.project.lanes[0].ma3_sequence
-    seq_hits = s.project.lanes[1].ma3_sequence
+    seq_main = q(s.project, s.project.lanes[0])
+    seq_hits = q(s.project, s.project.lanes[1])
     eng = s.engine
     eng.playing, eng.pos = True, 0.5
     link.tick()                                    # start: resync (nothing before 0.5 s)
@@ -95,8 +101,8 @@ def test_preview_fires_cues_and_releases_temps(link):
 def test_jump_resyncs_and_stop_releases(link):
     s = link.s
     eng = s.engine
-    seq_main = s.project.lanes[0].ma3_sequence
-    seq_hits = s.project.lanes[1].ma3_sequence
+    seq_main = q(s.project, s.project.lanes[0])
+    seq_hits = q(s.project, s.project.lanes[1])
     eng.playing, eng.pos = True, 3.2                # start inside the Temp
     link.tick()
     assert link.log == [f"Goto Sequence {seq_main} Cue 1", f"Temp Sequence {seq_hits} Cue 1"]
@@ -117,13 +123,15 @@ def test_sync_creates_labels_pins_and_deletes(link):
     s = link.s
     p = s.project
     main = p.lanes[0]
-    seq = main.ma3_sequence
+    seq = q(p, main)
     cmds = link.push_all()
     assert f"Store Sequence {seq} Cue 1 /Merge /NoConfirm" in cmds
     assert f'Label Sequence {seq} Cue 1 "Intro"' in cmds
     assert f'Label Sequence {seq} Cue 2 "Verse"' in cmds
-    assert f'Label Sequence {seq} "{main.name}"' in cmds
-    assert cmds.index(f'Label Sequence {seq} "{main.name}"') > cmds.index(f"Store Sequence {seq} Cue 1 /Merge /NoConfirm")
+    ensure = f'Lua "CF_ENSURE([[{seq.strip(chr(34))}]],{main.ma3_sequence},1)"'
+    assert ensure in cmds                                   # created (and named) on the console by Lua
+    assert cmds.index(ensure) < cmds.index(f"Store Sequence {seq} Cue 1 /Merge /NoConfirm")
+    assert any("CF_P[1]=" in c for c in cmds[:cmds.index(ensure)])      # CF_ENSURE itself sent first
     # numbers are now fixed: a cue inserted in between gets 1.1 and nothing shifts
     # (except Temps in a shared lane: that lane's one Temp cue is fixed by rule)
     from cueforge.core.model import lane_per_song
@@ -173,7 +181,7 @@ def test_scope_changes_never_delete(link):
     p.select_song(song2.id)
     p.cues.append(Cue(lane_id=p.lanes[0].id, time=2.0, label="S2"))
     p.select_song(p.songs[0].id)
-    seq2 = p.lanes[0].ma3_sequence + song2.seq_offset                # song 2's own Main Cues
+    seq2 = q(p, p.lanes[0], song2)                                   # song 2's own Main Cues
     assert any(f"Sequence {seq2} Cue 1 " in c for c in link.sync_cues())
     link.cfg.all_songs = False
     p.lanes[1].export = False
@@ -184,7 +192,7 @@ def test_undo_keeps_pinned_numbers(link):
     """Review #4: undo restoring unnumbered cues must not shift console cue numbers."""
     p = link.s.project
     main = p.lanes[0]
-    seq = main.ma3_sequence
+    seq = q(p, main)
     p.cues.append(Cue(lane_id=main.id, time=0.5, label="X"))
     p.sort_cues()
     link.push_all()
@@ -200,7 +208,7 @@ def test_undo_keeps_pinned_numbers(link):
 def test_apply_and_preview_off_release_temps(link):
     """Review #7: changing settings while a Temp holds releases it."""
     s = link.s
-    seq_hits = s.project.lanes[1].ma3_sequence
+    seq_hits = q(s.project, s.project.lanes[1])
     s.engine.playing, s.engine.pos = True, 3.2
     link.tick()
     link.cfg.preview = False
@@ -255,14 +263,14 @@ def test_all_songs_sync(link):
     cmds = link.push_all()
     stores = {c for c in cmds if c.startswith("Store")}
     main = p.lanes[0]
-    seq1, seq2 = main.ma3_sequence, main.ma3_sequence + song2.seq_offset
+    seq1, seq2 = q(p, main, p.songs[0]), q(p, main, song2)
     assert f"Store Sequence {seq2} Cue 1 /Merge /NoConfirm" in stores    # song 2's own Main Cues, from 1
     assert f"Store Sequence {seq1} Cue 1 /Merge /NoConfirm" in stores    # song 1's
     # Hits is shared: song 2's Temp fires the one shared Temp cue of that sequence
-    assert f"Store Sequence {hits.ma3_sequence} Cue 1 /Merge /NoConfirm" in stores
-    assert not any(f"Sequence {hits.ma3_sequence} Cue {song2.cue_start:g} " in c for c in stores)
-    assert f'Label Sequence {seq2} "Second {main.name}"' in cmds
-    assert f'Label Sequence {hits.ma3_sequence} "{hits.name}"' in cmds
+    assert 'Store Sequence "Hits" Cue 1 /Merge /NoConfirm' in stores
+    assert not any(f'Sequence "Hits" Cue {song2.cue_start:g} ' in c for c in stores)
+    assert f'Lua "CF_ENSURE([[Second {main.name}]],{main.ma3_sequence},1)"' in cmds
+    assert f'Lua "CF_ENSURE([[{hits.name}]],{hits.ma3_sequence},1)"' in cmds
 
 
 def test_disabled_link_sends_nothing(link):
@@ -309,10 +317,10 @@ def test_temps_share_one_cue(link):
     temps = [c for c in p.cues_in_lane(strobe.id)]
     assert len({nums[c.id] for c in temps}) == 1                                 # one Temp cue
     cmds = link.sync_cues()
-    stores = [c for c in cmds if c.startswith("Store Sequence %d " % strobe.ma3_sequence)]
+    stores = [c for c in cmds if c.startswith(f'Store Sequence "{strobe.name}" ')]
     assert len(stores) == 1
-    assert sum(1 for c in cmds if c.startswith("Label Sequence %d Cue" % strobe.ma3_sequence)) == 1
-    macro = [c for c in build_ma3_macro_commands(p) if c.startswith("Store Sequence %d " % strobe.ma3_sequence)]
+    assert sum(1 for c in cmds if c.startswith(f'Label Sequence "{strobe.name}" Cue')) == 1
+    macro = [c for c in build_ma3_macro_commands(p) if c.startswith(f'Store Sequence "{strobe.name}" ')]
     assert len(macro) == 1
     # the timecode track fires Temp On / Off on that one cue every time
     xml = build_ma3_xml(p)
@@ -350,7 +358,8 @@ def test_timecode_xml_has_no_guids(link):
 
 def _console_run(tmp_path, cmds):
     """Play `Lua "…"` commands into a Lua interpreter that mocks the console: its disk is
-    tmp_path/console, sequence 5 has cues 1 and 2.5 (stored × 1000, as MA does)."""
+    tmp_path/console; sequence 1 'Song 1 Main Cues', sequence 5 'Hits' with cues 1 and 2.5
+    (stored × 1000, as MA does); timecodes 3 and 4 record their Offset TC Slot."""
     import shutil
     import subprocess
     lua = shutil.which("lua") or shutil.which("lua5.4") or shutil.which("lua5.3")
@@ -358,12 +367,17 @@ def _console_run(tmp_path, cmds):
         pytest.skip("no Lua interpreter")
     disk = tmp_path / "console"
     (disk / "datapools" / "timecodes").mkdir(parents=True)
-    mock = ("local function mk(no, addr, kids) return {no=no, AddrNative=function() return addr end, "
+    mock = ("local function mk(no, addr, kids, name) return {no=no, name=name, AddrNative=function() return addr end, "
             "Children=function() return kids end} end "
             "local cues = {mk(0, 'S5.0'), mk(1000, 'S5.1'), mk(2500, 'S5.2')} "
-            "local list = {mk(1, 'S1', {}), mk(5, 'S5', cues)} "
-            "function DataPool() return {Sequences={Children=function() return list end}} end "
-            "Enums = {PathType={Library='lib'}} "
+            "local list = {mk(1, 'S1', {}, 'Song 1 Main Cues'), mk(5, 'S5', cues, 'Hits')} "
+            "local function tcode(no) local t = {no=no} "
+            "function t:Set(k, v) self[k] = v print('SET ' .. k .. ' ' .. v) end "
+            "function t:Get(k) return self[k] end return t end "
+            "local tcs = {tcode(3), tcode(4)} "
+            "function DataPool() return {Sequences={Children=function() return list end}, "
+            "Timecodes={Children=function() return tcs end}} end "
+            "Enums = {PathType={Library='lib'}, Roles={Display=1}} "
             f"function GetPath(k) if k == 'lib' then return [[{disk}]] end error('no') end "
             "function ErrPrintf(f, ...) print('ERR ' .. string.format(f, ...)) end "
             "function Printf(f, ...) print(string.format(f, ...)) end "
@@ -379,15 +393,19 @@ def _console_run(tmp_path, cmds):
 def test_network_push_writes_on_console_and_imports(tmp_path):
     from cueforge.control.ma3link import import_script, push_commands
     from cueforge.export.ma3 import SEQ_FIX_LUA
-    xml = '<a Object="@SEQ5@" V="@CUE5:2.5@" q="it\'s &quot;x&quot;"/><b V="@CUE5:9@"/>' + "<pad/>" * 400
-    cmds = push_commands(import_script(xml, 3, SEQ_FIX_LUA))
+    xml = ('<t Target="@TGT2@"/><a Object="@SEQ2@" V="@CUE2:2.5@" q="it\'s &quot;x&quot;"/><b V="@CUE2:9@"/>'
+           '<c V="@SEQ1@"/>' + "<pad/>" * 400)
+    cmds = push_commands(import_script(xml, 3, SEQ_FIX_LUA, ["Song 1 Main Cues", "Hits"], "1h00m00.000"))
     assert len(cmds) > 5                                       # several pieces
     out, tc = _console_run(tmp_path, cmds)
     got = (tc / "CueForge_3.xml").read_text()
-    assert got.startswith('<a Object="S5" V="S5.2" q="it\'s &quot;x&quot;"/><b V=""/>')   # console's own addresses
-    assert "cue 9 not found" in out
+    # sequences found by name, addresses from the console
+    assert got.startswith('<t Target="ShowData.DataPools.Default.Sequences.5"/><a Object="S5" V="S5.2" '
+                          'q="it\'s &quot;x&quot;"/><b V=""/><c V="S1"/>')
+    assert "Hits cue 9 not found" in out
     assert out.index("CMD Import Timecode 3") > out.index("ERR")         # import after the fix
-    assert "Timecode 3 imported, 3 sequence/cue addresses filled in" in out
+    assert "Timecode 3 imported" in out
+    assert out.index("SET OffsetTCSlot 1h00m00.000") > out.index("CMD Import Timecode 3")   # offset on the show
     # a lost packet is caught instead of importing a broken file
     for lost in (2, len(cmds) - 3):                                      # one in the middle, the last piece
         out, tc = _console_run(tmp_path / f"lost{lost}", cmds[:lost] + cmds[lost + 1:])
@@ -397,21 +415,35 @@ def test_network_push_writes_on_console_and_imports(tmp_path):
 def test_network_push_of_a_real_song_arrives_intact(link, tmp_path):
     """The packed XML expands on the console to exactly what CueForge built."""
     from cueforge.control.ma3link import import_script, push_commands
-    from cueforge.export.ma3 import SEQ_FIX_LUA, build_ma3_xml
+    from cueforge.export.ma3 import SEQ_FIX_LUA, build_ma3_xml, seq_table
     p = link.s.project
     for k in range(40):
         p.cues.append(Cue(lane_id=p.lanes[k % 2].id, time=10 + k * 0.75, label=f'Hit "{k}"',
                           duration=0.25 if k % 3 == 0 else None))
     p.sort_cues()
     xml = build_ma3_xml(p, placeholders=True)
-    cmds = push_commands(import_script(xml, 4, SEQ_FIX_LUA))
+    cmds = push_commands(import_script(xml, 4, SEQ_FIX_LUA, [n for n, _ in seq_table(p)]))
     out, tc = _console_run(tmp_path, cmds)
     got = (tc / "CueForge_4.xml").read_text()
     import re
     flat = "\n".join(line.lstrip("\t") for line in xml.split("\n"))          # indentation is dropped
-    no_addr = lambda s: re.sub(r'(Object|ValCueDestination)="[^"]*"', "", s)   # addresses get filled in
-    assert no_addr(got) == no_addr(flat) and "@SEQ" not in got
+    no_addr = lambda s: re.sub(r'(Target|Object|ValCueDestination)="[^"]*"', "", s)   # addresses get filled in
+    assert no_addr(got) == no_addr(flat) and "@SEQ" not in got and "@TGT" not in got
+    assert 'Target="ShowData.DataPools.Default.Sequences.1"' in got     # 'Song 1 Main Cues' is seq 1 here
     ET.fromstring(got)                                          # still valid XML
+
+
+def test_ensure_creates_missing_sequences_by_name(tmp_path):
+    """CF_ENSURE finds a sequence by name, or creates it in the first free number from the
+    lane's seq (no 100-gaps) with its first cue, and names it."""
+    from cueforge.control.ma3link import push_commands
+    from cueforge.export.ma3 import ENSURE_LUA
+    cmds = push_commands(ENSURE_LUA) + ['Lua "CF_ENSURE([[Hits]],5,1)"',              # exists: nothing
+                                        'Lua "CF_ENSURE([[Second Main Cues]],1,1)"']  # 1 taken: 2
+    out, _ = _console_run(tmp_path, cmds)
+    assert "CMD Store Sequence 2 Cue 1 /Merge /NoConfirm" in out
+    assert 'CMD Label Sequence 2 "Second Main Cues"' in out
+    assert out.count("CMD Store") == 1
 
 
 def test_fades_sync_to_console(link):
@@ -420,7 +452,7 @@ def test_fades_sync_to_console(link):
     main = p.lanes[0]
     intro = p.cues_in_lane(main.id)[0]
     intro.fade = 2.5
-    seq = main.ma3_sequence + p.song.seq_offset
+    seq = q(p, main)
     cmds = link.sync_cues()
     assert f"Sequence {seq} Cue 1 CueFade 2.5" in cmds
     assert not any("CueFade" in c and "Cue 2 " in c for c in cmds)       # no fade: left alone
@@ -562,3 +594,39 @@ def test_new_shared_lane_used_only_in_song_two(link):
     q = Project.from_dict(d)
     q.select_song(q.songs[1].id)
     assert set(effective_cue_numbers(q, lane.id).values()) == {1.0}
+
+
+def test_renaming_a_song_renames_its_sequences(link):
+    p = link.s.project
+    main = p.lanes[0]
+    link.sync_cues()
+    p.song.name = "Opener"
+    cmds = link.sync_cues()
+    assert f'Label Sequence "Song 1 {main.name}" "Opener {main.name}"' in cmds   # renamed, not re-created
+    assert not any(c.startswith("Store") for c in cmds)
+    assert not any("CF_ENSURE([[Opener" in c for c in cmds)
+    assert link.sync_cues() == []
+
+
+def test_old_number_records_adopt_sequences_once(link):
+    """A show synced when sequences were numbers: song 1's Main Cues (Seq 1) is renamed to
+    'Song 1 Main Cues' and kept; song 2's cues that sat in the same Seq 1 (101…) are not
+    adopted, so song 2 gets its own sequence."""
+    s = link.s
+    p = s.project
+    main = p.lanes[0]
+    s2 = p.add_song("Second")
+    p.select_song(s2.id)
+    p.cues.append(Cue(lane_id=main.id, time=2.0, label="S2"))
+    p.select_song(p.songs[0].id)
+    link.cfg.all_songs = True
+    rec = link.record
+    for song, base in ((p.songs[0], 1), (s2, 101)):
+        for k, c in enumerate(sorted((c for c in song.cues if c.lane_id == main.id), key=lambda c: c.time)):
+            rec[c.id] = [main.ma3_sequence, float(base + k), c.label or ""]
+    cmds = link.sync_cues()
+    assert f'Label Sequence {main.ma3_sequence} "Song 1 {main.name}"' in cmds          # adopted once
+    assert sum(c.startswith(f"Label Sequence {main.ma3_sequence} ") for c in cmds) == 1
+    assert f'Lua "CF_ENSURE([[Second {main.name}]],{main.ma3_sequence},1)"' in cmds    # own sequence
+    assert f'Store Sequence "Second {main.name}" Cue 1 /Merge /NoConfirm' in cmds
+    assert not any(f'Store Sequence "Song 1 {main.name}"' in c for c in cmds)           # already there

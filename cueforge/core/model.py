@@ -243,7 +243,7 @@ class Song:
         self.view: dict[str, Any] = {}
         self.tc_offset = 0.0         # timecode at song time 0, in seconds (e.g. 3600 = 01:00:00:00)
         self.ma3_timecode = 1        # grandMA3 Timecode pool slot for this song
-        self.seq_offset = 0          # added to per-song lanes' MA3 sequence numbers for this song
+        self.seq_offset = 0          # unused (sequences are found by name); kept so old files load
         self.cue_start = 1.0         # first auto cue number for this song in shared (global) lanes
         self.notes = ""
         self.sections: list[SectionMarker] = []
@@ -377,9 +377,6 @@ class Project:
         s.tc_offset = (prev.tc_offset + 3600.0) if prev else 0.0
         s.ma3_timecode = (max(x.ma3_timecode for x in self.songs) + 1) if self.songs else 1
         s.cue_start = float(100 * (n - 1) + 1)
-        # per-song lanes: song 2's Main Cues goes to sequence 1 + 100 and so on (stored, so
-        # reordering the setlist never moves a song to other sequences)
-        s.seq_offset = (max(x.seq_offset for x in self.songs) + 100) if self.songs else 0
         self.songs.append(s)
         return s
 

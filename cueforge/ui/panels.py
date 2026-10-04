@@ -125,8 +125,8 @@ class CueModel(QAbstractTableModel):
             return (self._bold_italic if it else self._bold) if fired else (self._italic if it else None)
         # tooltip
         p = self.s.project
-        from ..core.editing import sequence_number
-        seq = sequence_number(p, lane) if lane else 0
+        from ..core.editing import sequence_name
+        seq = f'"{sequence_name(p, lane)}"' if lane else "?"
         if col == 1 and lane:
             return f"grandMA3 Sequence {seq}"
         if col == 2 and num is not None:
@@ -728,7 +728,7 @@ class SuggestionPanel(QWidget):
 
 # ============================================================== lanes
 class LanePanel(QWidget):
-    COLS = ["Name", "Colour", "Tap key", "MA3 seq", "Per song", "Export"]
+    COLS = ["Name", "Colour", "Tap key", "Seq from", "Per song", "Export"]
 
     def __init__(self, session: Session, parent=None) -> None:
         super().__init__(parent)
@@ -775,8 +775,9 @@ class LanePanel(QWidget):
         self.dup.setStyleSheet("color: #ffb74d;")
         lay.addWidget(self.dup)
         help_ = QLabel("Drag a lane by its ≡ handle (or its header on the timeline) to reorder; keys 1–9 follow the "
-                       "order. Each lane exports to a grandMA3 sequence: its own one per song (Per song), or one "
-                       "shared by every song. Cue numbers are automatic (in time order) unless you type one.")
+                       "order. Each lane exports to a grandMA3 sequence, found on the console by name: \"<song> <lane>\" "
+                       "(Per song) or the lane name (shared). Seq from: where a missing sequence is created "
+                       "(the first free number from there). Cue numbers are automatic unless you type one.")
         help_.setWordWrap(True)
         help_.setStyleSheet(f"color: {theme.FG_DIM}; font-size: 10px;")
         lay.addWidget(help_)
@@ -821,10 +822,10 @@ class LanePanel(QWidget):
         lanes = self.s.project.lanes
         self.table.setRowCount(len(lanes))
         self.table.setVerticalHeaderLabels(["≡"] * len(lanes))
-        seqs = [l.ma3_sequence for l in lanes if l.export]
-        dups = sorted({x for x in seqs if seqs.count(x) > 1})
-        self.dup.setText(f"⚠ Sequence {', '.join(map(str, dups))} is used by more than one lane — "
-                         "Numbering ▸ Number MA3 sequences fixes it." if dups else "")
+        names = [l.name.strip().lower() for l in lanes if l.export]   # sequences are found by name
+        dups = sorted({l.name for l in lanes if l.export and names.count(l.name.strip().lower()) > 1})
+        self.dup.setText(f"⚠ More than one lane is called {', '.join(dups)}: they would share one grandMA3 "
+                         "sequence. Rename one." if dups else "")
         for r, l in enumerate(lanes):
             name = QTableWidgetItem(l.name)
             name.setData(Qt.UserRole, l.id)
@@ -846,8 +847,9 @@ class LanePanel(QWidget):
             self.table.setCellWidget(r, 3, seq)
             own = QCheckBox()
             own.setChecked(lane_per_song(l))
-            own.setToolTip("On: every song gets its own sequence for this lane (Seq + the song's offset), "
-                           "cues from 1.\nOff: one sequence shared by all songs (e.g. hits, strobe).")
+            own.setToolTip("On: every song gets its own sequence for this lane, named \"<song> <lane>\", "
+                           "cues from 1.\nOff: one sequence shared by all songs, named after the lane "
+                           "(e.g. hits, strobe).")
             own.toggled.connect(lambda v, lid=l.id: self.s.update_lane(lid, per_song=v))
             self.table.setCellWidget(r, 4, own)
             ex = QCheckBox()

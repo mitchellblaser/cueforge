@@ -87,13 +87,25 @@ def _cue_from_handle(text: str | None) -> float | None:
     return int(last) / 1000 if last.isdigit() else None
 
 
+def _hms(v: str | None) -> float | None:
+    """MA's way of writing a time: 1h00m00.000, 2m30.5, 12.0 (or plain seconds)."""
+    if not v:
+        return None
+    m = re.fullmatch(r"\s*(?:(\d+)h)?\s*(?:(\d+)m)?\s*([\d.]+)?s?\s*", v)
+    if not m or not any(m.groups()):
+        return _seconds(v, False)
+    h, mi, sec = m.groups()
+    return int(h or 0) * 3600 + int(mi or 0) * 60 + float(sec or 0)
+
+
 def parse_timecode_xml(text: str) -> TcShow:
     root = ET.fromstring(text)
     tc = root if root.tag == "Timecode" else root.find(".//Timecode")
     if tc is None:
         raise ValueError("No <Timecode> in this file")
     ticks = _uses_ticks(tc)
-    show = TcShow(tc.get("Name", "Timecode"), _seconds(tc.get("Offset"), ticks))
+    off = _hms(tc.get("OffsetTCSlot")) if tc.get("OffsetTCSlot") else _seconds(tc.get("Offset"), ticks)
+    show = TcShow(tc.get("Name", "Timecode"), off)
     for tr in tc.iter("Track"):
         track = TcTrack(tr.get("Name", ""), _seq_from(tr.get("Target")))
         for el in tr.iter():
@@ -159,8 +171,9 @@ def show_to_cues(show: TcShow) -> list[tuple[int | None, str, Cue]]:
 
 
 def import_into_song(project: Project, show: TcShow, replace: bool = True, set_offset: bool = True) -> dict:
-    """Put an imported show into the current song. Lanes are matched by MA3 sequence
-    (minus the song's sequence offset); missing lanes are created."""
+    """Put an imported show into the current song. Lanes are matched by their sequence name
+    (the track name), then lane name, then MA3 sequence number; missing lanes are created."""
+    from ..core.editing import sequence_name, sequence_number
     song = project.song
     items = show_to_cues(show)
     lanes_used = []
@@ -168,10 +181,11 @@ def import_into_song(project: Project, show: TcShow, replace: bool = True, set_o
     for seq, tname, _ in items:
         if (seq, tname) in [(a, b) for a, b, _ in lanes_used]:
             continue
-        from ..core.editing import sequence_number
-        lane = next((l for l in project.lanes if seq is not None and sequence_number(project, l) == seq), None) \
-            or next((l for l in project.lanes if l.name.lower() == (tname or "").lower()), None)
-        base_seq = None if seq is None else seq - song.seq_offset
+        t = (tname or "").strip().lower()
+        lane = next((l for l in project.lanes if sequence_name(project, l).lower() == t), None) \
+            or next((l for l in project.lanes if l.name.lower() == t), None) \
+            or next((l for l in project.lanes if seq is not None and sequence_number(project, l) == seq), None)
+        base_seq = seq
         if lane is None:
             n = len(project.lanes)
             lane = Lane(tname or f"Seq {seq}", LANE_COLORS[n % len(LANE_COLORS)], "", base_seq or n + 1)

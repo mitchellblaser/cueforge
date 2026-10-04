@@ -80,8 +80,7 @@ class LinkDialog(QDialog):
         self.tpl = {}
         for key, name in (("goto", "Goto"), ("go", "Go+"), ("temp", "Temp"), ("temp_off", "Temp release"),
                           ("store", "Create cue"), ("label", "Label cue"), ("fade", "Cue fade ({fade})"),
-                          ("delete", "Delete cue"),
-                          ("label_seq", "Name sequence")):
+                          ("delete", "Delete cue")):
             e = QLineEdit(getattr(c, "cmd_" + key))
             self.tpl[key] = e
             f3.addRow(name, e)

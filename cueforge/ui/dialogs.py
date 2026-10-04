@@ -287,19 +287,14 @@ class SongDialog(QDialog):
         self.cue_start.setToolTip("First automatic cue number for this song in lanes shared by every song "
                                   "(hits, strobe). Per-song lanes always start at 1. Fixed numbers are kept.")
         form.addRow("First cue in shared lanes", self.cue_start)
-        self.seq_offset = QSpinBox()
-        self.seq_offset.setRange(0, 9999)
-        self.seq_offset.setValue(song.seq_offset)
-        self.seq_offset.setToolTip("Added to the sequence number of every per-song lane for this song, so each "
-                                   "song gets its own Main Cues etc. Shared lanes keep their sequence.")
-        form.addRow("Own sequences offset", self.seq_offset)
         self.notes = QPlainTextEdit(song.notes)
         self.notes.setFixedHeight(60)
         form.addRow("Notes", self.notes)
+        from ..core.editing import sequence_name
         from ..core.model import lane_per_song
-        seqs = ", ".join(f"{l.name} → Seq {l.ma3_sequence + (song.seq_offset if lane_per_song(l) else 0)}"
-                         + ("" if lane_per_song(l) else " (shared)") for l in p.lanes if l.export)
-        info = QLabel(f"<span style='color:{theme.FG_DIM}'>{seqs}</span>")
+        seqs = ", ".join(f'{l.name} → "{sequence_name(p, l, song)}"' + ("" if lane_per_song(l) else " (shared)")
+                         for l in p.lanes if l.export)
+        info = QLabel(f"<span style='color:{theme.FG_DIM}'>grandMA3 sequences (found by name): {seqs}</span>")
         info.setWordWrap(True)
         form.addRow(info)
         form.addRow(_buttons(self))
@@ -313,7 +308,7 @@ class SongDialog(QDialog):
             return
         self.s.update_song(self.sid, name=self.name.text().strip() or "Song", tc_offset=off,
                            ma3_timecode=self.slot.value(), cue_start=self.cue_start.value(),
-                           seq_offset=self.seq_offset.value(), notes=self.notes.toPlainText().strip())
+                           notes=self.notes.toPlainText().strip())
         super().accept()
 
 
