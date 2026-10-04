@@ -948,7 +948,7 @@ class MainWindow(QMainWindow):
         end = pos if (h["playing"] and eng.playing and pos >= h["last"] - 0.05) else h["last"]
         if not h["playing"] or end - h["t0"] < self.HOLD_MIN:
             return                                    # a tap: the normal cue stays
-        self.s.finish_temp(c.id, end)                 # standard length if short, snapped end
+        self.s.finish_temp(c.id, end, h["t0"])        # Hold box length if short, else snapped end
         lane = p.lane(c.lane_id)
         self.statusBar().showMessage(f"Temp in {lane.name if lane else '?'}: held {c.duration:.2f} s", 3000)
 

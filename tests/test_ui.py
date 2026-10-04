@@ -1034,26 +1034,32 @@ def test_temp_lengths_snap_and_short_taps_are_even(app, win):
     from cueforge.core.model import BeatGrid
     s.set_grid(BeatGrid.from_tempo(128, 0.0, 60.0, 4))       # beat = 0.469 s
     s.snap = True
-    s.set_temp_hold(0.5)
+    s.set_temp_hold(0.2)                                     # shorter than a beat: not stretched to the grid
     hub = win.control
     hub.cfg.hold_from_press = True
     beat = 60 / 128
     on_grid = lambda x: abs(x / beat - round(x / beat)) < 0.03 * 2   # within a frame or so
-    # quick tap on a Temp pad: the standard length, end on the grid
+    # quick tap on a Temp pad: exactly the Hold box time, start on the grid
     hub.handle_midi(mido.Message("note_on", channel=2, note=46, velocity=127), 3.02)
     hub.handle_midi(mido.Message("note_off", channel=2, note=46, velocity=0), 3.10)
     wait(app, lambda: s.project.cues and s.project.cues[-1].duration, 5)
     c = s.project.cues[-1]
-    assert on_grid(c.time) and on_grid(c.time + c.duration) and c.duration >= beat - 0.02
+    assert on_grid(c.time) and c.duration == pytest.approx(0.2)
+    s.set_temp_hold(1.0)                                     # follows the Hold box, not a fixed length
+    hub.handle_midi(mido.Message("note_on", channel=2, note=46, velocity=127), 6.02)
+    hub.handle_midi(mido.Message("note_off", channel=2, note=46, velocity=0), 6.10)
+    wait(app, lambda: len(s.project.cues) == 2 and s.project.cues[-1].duration, 5)
+    assert sorted(s.project.cues, key=lambda x: x.time)[-1].duration == pytest.approx(1.0)
+    s.set_temp_hold(0.2)
     # a long hold keeps its own length, end snapped
     hub.handle_midi(mido.Message("note_on", channel=2, note=46, velocity=127), 10.03)
     hub.handle_midi(mido.Message("note_off", channel=2, note=46, velocity=0), 12.2)
-    wait(app, lambda: len(s.project.cues) == 2 and s.project.cues[-1].duration, 5)
+    wait(app, lambda: len(s.project.cues) == 3 and s.project.cues[-1].duration, 5)
     c = sorted(s.project.cues, key=lambda x: x.time)[-1]
     assert on_grid(c.time + c.duration) and 1.8 < c.duration < 2.6
-    # ＋Temp (W): the Hold box length, end snapped to the grid
+    # ＋Temp (W): the Hold box length
     c3 = s.add_at_playhead(temp=True, lane_id=s.project.lanes[2].id, t=20.0)
-    assert on_grid(c3.time + c3.duration)
+    assert c3.duration == pytest.approx(0.2)
 
 
 def test_pad_lights_output_and_overrides(app, win, monkeypatch):

@@ -279,11 +279,11 @@ class ControlHub(QObject):
             if pressed:
                 c = self.s.add_at_playhead(temp, lane, t)
                 if c is not None and temp and self.cfg.hold_from_press:
-                    self._pending[action] = (c.id, c.time)
+                    self._pending[action] = (c.id, t)       # the real press time
                 self._flash(action)
             elif temp and action in self._pending:
                 cid, t0 = self._pending.pop(action)
-                self.s.finish_temp(cid, t)             # standard length if short, snapped end
+                self.s.finish_temp(cid, t, t0)           # Hold box length if short, else snapped end
             return
         if not pressed:
             return

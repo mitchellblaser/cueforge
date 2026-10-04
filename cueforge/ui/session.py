@@ -490,17 +490,22 @@ class Session(QObject):
             return max(frame, float(np.median(np.diff(p.beat_grid.beats))) / max(1, getattr(p, "snap_div", 1)))
         return frame
 
-    def temp_length(self, start: float, end: float | None = None) -> float:
-        """The hold a Temp gets. A short press (or none: ＋Temp / W) gets the standard length
-        from the Hold box, so quick hits look even; a longer hold keeps its own length. With
-        Snap on, the end lands on the grid and is at least one grid step after the start."""
+    def temp_length(self, start: float, end: float | None = None, pressed: float | None = None) -> float:
+        """The hold a Temp gets. A quick hit (a short press, or none: ＋Temp / W) gets exactly
+        the Hold box time, so quick hits look even; a longer hold keeps its own length, and with
+        Snap on its end lands on the grid (at least one grid step after the start). How long
+        the press was is measured from `pressed` (the real press time; the start may have
+        snapped back to an earlier beat)."""
         std = self.temp_hold if self.temp_hold > 0 else 0.5
-        length = std if end is None or end - start < std else end - start
-        if self.snap and self.project.beat_grid.beats:
-            e = editing.grid_point(self.project, start + length)
-            if e is not None:
-                length = e - start
-            length = max(self.grid_step(), length)
+        if end is None or end - (start if pressed is None else pressed) < std:
+            length = std
+        else:
+            length = end - start
+            if self.snap and self.project.beat_grid.beats:
+                e = editing.grid_point(self.project, start + length)
+                if e is not None:
+                    length = e - start
+                length = max(self.grid_step(), length)
         return round(max(1.0 / self.project.frame_rate.fps, length), 3)
 
     def add_at_playhead(self, temp: bool = False, lane_id: str | None = None, t: float | None = None):
@@ -518,13 +523,13 @@ class Session(QObject):
             self.sel_sugs.clear()
         return c
 
-    def finish_temp(self, cue_id: str, end: float) -> None:
+    def finish_temp(self, cue_id: str, end: float, pressed: float | None = None) -> None:
         """A held pad / key was released at song time `end`: set the Temp's hold (see
         temp_length) as part of the step that created it."""
         c = self.project.cue(cue_id)
         if c is None:
             return
-        c.duration = self.temp_length(c.time, end)
+        c.duration = self.temp_length(c.time, end, pressed)
         self._sync_engine()
         self.touched_lanes = {c.lane_id}
         try:
