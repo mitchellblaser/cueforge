@@ -501,6 +501,23 @@ class TimelineCanvas(QWidget):
                 hc = QColor(theme.SELECT if sel else lane.color)
                 hc.setAlpha(200)
                 p.fillRect(QRectF(xe - 2, rr.top() + 20, 3, rr.height() - 24), hc)
+            if c.fade:                                  # fade: a ramp rising over the fade time
+                xf = x + max(3.0, c.fade * self.pps)
+                y0, y1 = rr.bottom() - 3, rr.top() + 20
+                ramp = QPolygonF([QPointF(x, y0), QPointF(xf, y1), QPointF(xf, y0)])
+                fc = QColor(theme.SELECT if sel else lane.color)
+                fc.setAlpha(45)
+                p.setPen(Qt.NoPen)
+                p.setBrush(fc)
+                p.drawPolygon(ramp)
+                fc.setAlpha(200)
+                p.setPen(QPen(fc, 1.2))
+                p.drawLine(QPointF(x, y0), QPointF(xf, y1))
+                p.setBrush(Qt.NoBrush)
+                if xf - x > 26:
+                    p.setPen(QColor(theme.FG_DIM))
+                    p.drawText(QRectF(x + 4, y1, xf - x - 4, y0 - y1), Qt.AlignRight | Qt.AlignBottom,
+                               f"{c.fade:g}s")
             p.setPen(QPen(QColor(theme.SELECT) if sel else col, 2))
             p.drawLine(QPointF(x, rr.top() + 2), QPointF(x, rr.bottom() - 2))
             num = self._nums.get(c.id)
@@ -1140,6 +1157,8 @@ class TimelineCanvas(QWidget):
                 tip += "<br><i>accepted AI suggestion</i>"
             if c.duration:
                 tip += f"<br><b>Temp</b>: held {c.duration:.2f}s (Temp On → Temp Off)"
+            if c.fade:
+                tip += f"<br><b>Fade</b>: {c.fade:g}s"
             if c.notes:
                 tip += f"<br>{c.notes}"
             QToolTip.showText(e.globalPosition().toPoint(), tip, self)

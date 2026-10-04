@@ -206,7 +206,8 @@ on the timeline.
    - **Hold / fade for many cues (H):** select any number of cues (drag a box, or
      Ctrl/Shift-click), press **H** (or right-click), and give them all a hold, turning Go
      cues into Temps, or remove the hold to make them Go cues again. You can also set or clear
-     their fade. It's one undo step. **Shift+W / Shift+Q** quickly turn the selection into
+     their fade. It's one undo step. Cues with a fade show a rising ramp, as long as the fade, after
+     them on the timeline. **Shift+W / Shift+Q** quickly turn the selection into
      Temps / normal cues.
    - Press a lane's **tap key** (1, 2, 3, …) during playback to drop a cue at the playhead.
      **Press and hold** it to drop a **Temp** for as long as you hold the key, e.g. hold 3 for
