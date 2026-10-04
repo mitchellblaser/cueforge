@@ -16,13 +16,12 @@ from xml.sax.saxutils import quoteattr
 from ..core.editing import effective_cue_numbers, temp_cue_label
 from ..core.model import Project, Song
 
-MA3_TICKS_PER_SECOND = 16777216  # MA3 stores times as 1/2^24 s
+MA3_TICKS_PER_SECOND = 16777216  # MA3's internal 1/2^24 s (read by the importer; XML uses seconds)
 
 
-def _fmt_time(seconds: float, unit: str) -> str:
-    if unit == "seconds":
-        return f"{seconds:.6f}".rstrip("0").rstrip(".") or "0"
-    return str(int(round(seconds * MA3_TICKS_PER_SECOND)))
+def _fmt_time(seconds: float) -> str:
+    """Seconds with millisecond precision, as grandMA3 writes them in timecode XML."""
+    return f"{seconds:.3f}"
 
 
 def _frame_readout(project: Project) -> str:
@@ -54,39 +53,40 @@ def seq_number(project: Project, lane) -> int:
 
 
 def build_ma3_xml(project: Project, timecode_number: int | None = None, duration: float | None = None) -> str:
-    """Timecode show XML for the current song."""
+    """Timecode show XML for the current song, in the layout grandMA3 exports: times in
+    seconds, events as RealtimeCmd key presses (ExecToken) on the track's sequence. MA3
+    rejects an Offset attribute, so the song's start timecode is added to every time
+    (events sit at the real show timecode, e.g. 07:00:01)."""
     ex = project.export
-    unit = ex.ma3_time_unit
     song = project.song
     name = song.name
+    off = project.tc_offset
     if duration is None:
         duration = max((c.time + (c.duration or 0) for c in project.cues), default=0.0) + 5.0
     lines = ['<?xml version="1.0" encoding="UTF-8"?>',
              f'<GMA3 DataVersion="{ex.ma3_data_version}">',
-             f'\t<Timecode Name={quoteattr(name)} Cursor="0" LoopCount="0" '
-             f'TCSlot="-1" SwitchOff="Keep Playbacks" Duration="{_fmt_time(duration, unit)}" '
-             f'Offset="{_fmt_time(project.tc_offset, unit)}" TimeDisplayFormat="&lt;Auto&gt;" '
+             f'\t<Timecode Name={quoteattr(name)} Duration="{_fmt_time(off + duration)}" LoopCount="0" '
+             f'TCSlot="-1" AutoStop="No" SwitchOff="Keep Playbacks" TimeDisplayFormat="Default" '
              f'FrameReadout="{_frame_readout(project)}">',
-             f'\t\t<TrackGroup Name={quoteattr(name)}>',
-             f'\t\t\t<MarkerTrack Name="Marker"/>']
+             '\t\t<TrackGroup Play="" Rec="">',
+             '\t\t\t<MarkerTrack Name="Marker"/>']
     for lane in export_lanes(project):
         seq = seq_number(project, lane)
         nums = effective_cue_numbers(project, lane.id)
+        tlabel = temp_cue_label(project, lane.id)
         lines.append(f'\t\t\t<Track Name={quoteattr(lane.name)} '
-                     f'Target="ShowData.DataPools.Default.Sequences.{seq}">')
-        lines.append(f'\t\t\t\t<TimeRange Duration="{_fmt_time(duration, unit)}">')
-        lines.append(f'\t\t\t\t\t<CmdSubTrack>')
+                     f'Target="ShowData.DataPools.Default.Sequences.{seq}" Play="" Rec="">')
+        lines.append('\t\t\t\t<TimeRange Duration="To End" Play="" Rec="">')
+        lines.append('\t\t\t\t\t<CmdSubTrack>')
         tokens = cue_tokens(project, lane.id)
         for c in project.cues_in_lane(lane.id):
             num = nums[c.id]
-            label = c.label or f"Cue {num:g}"
-            cue_ref = f"ShowData.DataPools.Default.Sequences.{seq}.Cues.{num:g}"
             if c.duration:
-                # Temp: Temp On at the start, Temp Off when the hold ends
-                lines += _event(label, c.time, unit, "Temp", "On", cue_ref)
-                lines += _event(label + " (release)", c.time + c.duration, unit, "Temp", "Off", cue_ref)
+                # Temp: Temp On at the start, Temp Off when the hold ends (all on the lane's Temp cue)
+                lines += _event(tlabel or f"Cue {num:g}", off + c.time, "Temp", "On", seq, num)
+                lines += _event(tlabel or f"Cue {num:g}", off + c.time + c.duration, "Temp", "Off", seq, num)
             else:
-                lines += _event(label, c.time, unit, tokens[c.id], "On", cue_ref)
+                lines += _event(c.label or f"Cue {num:g}", off + c.time, tokens[c.id], "On", seq, num)
         lines.append('\t\t\t\t\t</CmdSubTrack>')
         lines.append('\t\t\t\t</TimeRange>')
         lines.append('\t\t\t</Track>')
@@ -133,10 +133,22 @@ def go_plus_warnings(project: Project, all_songs: bool = True) -> list[str]:
     return out
 
 
-def _event(name: str, t: float, unit: str, token: str, status: str, cue_ref: str) -> list[str]:
-    return [f'\t\t\t\t\t\t<CmdEvent Name={quoteattr(name)} Time="{_fmt_time(t, unit)}">',
-            f'\t\t\t\t\t\t\t<RealtimeCmd Type="Key" Source="Original" UserProfile="0" Status="{status}" '
-            f'Token="{token}" Cue="{cue_ref}"/>',
+def _seq_handle(seq: int) -> str:
+    """The sequence's address as MA3 writes it in timecode XML: ShowData.DataPools.Default
+    .Sequences as 12.12.0.5, then the sequence's 0-based place in the pool (sequence N is
+    N-1 when sequences 1…N all exist)."""
+    return f"12.12.0.5.{max(0, seq - 1)}"
+
+
+def _event(name: str, t: float, token: str, status: str, seq: int, cue: float) -> list[str]:
+    obj = _seq_handle(seq)
+    return [f'\t\t\t\t\t\t<CmdEvent Name={quoteattr(token)} Time="{_fmt_time(t)}" '
+            f'CueDestination={quoteattr(name)}>',
+            f'\t\t\t\t\t\t\t<RealtimeCmd Type="Key" Source="Original" UserProfile="0" User="1" '
+            f'Status="{status}" IsRealtime="0" IsXFade="0" IgnoreFollow="0" IgnoreCommand="0" Assert="0" '
+            f'IgnoreNetwork="0" FromTriggerNode="0" IgnoreExecTime="0" IssuedByTimecode="0" '
+            f'FromLocalHardwareFader="1" IgnoreExecXFade="0" IsExecXFade="0" Object="{obj}" '
+            f'ExecToken="{token}" ValCueDestination="{obj}.{int(round(cue * 1000))}"/>',
             '\t\t\t\t\t\t</CmdEvent>']
 
 

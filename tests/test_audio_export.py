@@ -163,12 +163,12 @@ def test_ma3_xml():
     assert len(tracks) == 2
     assert tracks[1].get("Target").endswith("Sequences.7")
     evs = tracks[0].findall(".//CmdEvent")
-    assert [e.get("Name") for e in evs] == ["Intro", 'Verse "1"']
-    assert int(evs[1].get("Time")) == 16 * MA3_TICKS_PER_SECOND
-    assert evs[1].find("RealtimeCmd").get("Cue").endswith("Cues.2")
-    p.export.ma3_time_unit = "seconds"
-    root = ET.fromstring(build_ma3_xml(p))
-    assert root.findall(".//CmdEvent")[1].get("Time") == "16"
+    assert [e.get("CueDestination") for e in evs] == ["Intro", 'Verse "1"']
+    assert float(evs[1].get("Time")) == 16.0                   # seconds, as MA3 writes them
+    rc = evs[1].find("RealtimeCmd")
+    seq = int(tracks[0].get("Target").rsplit(".", 1)[1])
+    assert rc.get("Object") == f"12.12.0.5.{seq - 1}" and rc.get("ValCueDestination").endswith(".2000")
+    assert "Offset" not in xml and "Guid" not in xml and root.find("Timecode").get("TimeDisplayFormat") == "Default"
 
 
 def test_ma3_lua_and_macro():
@@ -215,12 +215,11 @@ def test_ma3_temp_exports_temp_on_off(tmp_path):
     c = p.cues_in_lane(p.lanes[0].id)[0]      # at 1.0 s
     c.duration = 0.5                            # a Temp with 0.5 s hold
     root = ET.fromstring(build_ma3_xml(p))
-    cmds = [(int(e.get("Time")), e.find("RealtimeCmd").get("Token"), e.find("RealtimeCmd").get("Status"))
+    cmds = [(float(e.get("Time")), e.find("RealtimeCmd").get("ExecToken"), e.find("RealtimeCmd").get("Status"))
             for e in root.findall(".//Track")[0].findall(".//CmdEvent")]
-    t = MA3_TICKS_PER_SECOND
-    assert cmds[0] == (1 * t, "Temp", "On")
-    assert cmds[1] == (int(1.5 * t), "Temp", "Off")
-    assert cmds[2] == (16 * t, "Goto", "On")       # the normal cue stays a Goto
+    assert cmds[0] == (1.0, "Temp", "On")
+    assert cmds[1] == (1.5, "Temp", "Off")
+    assert cmds[2] == (16.0, "Goto", "On")         # the normal cue stays a Goto
     lua = build_ma3_lua(p)
     assert "off=1.500000" in lua and 'e.token = "Temp"' in lua
     _luac_ok(lua, tmp_path)
@@ -255,7 +254,8 @@ def test_setlist_exports(tmp_path):
     assert len(paths) == 2 and "Second Song" in paths[1]
     root = ET.parse(paths[1]).getroot()
     assert root.find("Timecode").get("Name") == "Second Song"
-    assert int(root.find("Timecode").get("Offset")) == 3600 * MA3_TICKS_PER_SECOND
+    first = min(float(e.get("Time")) for e in root.iter("CmdEvent"))
+    assert first >= 3600                         # no Offset attribute: times are show timecode
     lua = build_ma3_lua(p, all_songs=True)
     assert lua.count("{name=") >= 2 and "tc=2" in lua and "cue=101" in lua
     _luac_ok(lua, tmp_path)
@@ -286,7 +286,7 @@ def test_go_plus_tokens_and_warnings():
     toks = [cue_tokens(p, lane)[c.id] for c in p.cues_in_lane(lane)]
     assert toks == ["Goto", "Go+", "Go+"]          # first cue resyncs, then Go+
     root = ET.fromstring(build_ma3_xml(p))
-    assert [e.find("RealtimeCmd").get("Token") for e in root.findall(".//Track")[0].findall(".//CmdEvent")] \
+    assert [e.find("RealtimeCmd").get("ExecToken") for e in root.findall(".//Track")[0].findall(".//CmdEvent")] \
         == ["Goto", "Go+", "Go+"]
     p.export.ma3_first_goto = False
     assert set(cue_tokens(p, lane).values()) == {"Go+"}
@@ -392,3 +392,17 @@ def test_playhead_clock_is_smoothed():
     e._set_clock(1.0, 0.05)                               # loop back: reset
     assert abs(e.position() - 1.0 + 0.05) < 0.06
     e._playing = False
+
+
+def test_ma3_xml_round_trip_in_ma_layout():
+    from cueforge.export.ma3_import import parse_timecode_xml, show_to_cues
+    p = _project_with_cues()
+    p.song.tc_offset = 3600.0
+    c = p.cues_in_lane(p.lanes[0].id)[0]
+    c.duration = 0.5
+    show = parse_timecode_xml(build_ma3_xml(p))
+    assert show.offset == 3600.0
+    got = show_to_cues(show)
+    times = sorted(cue.time for _, _, cue in got)
+    assert times[0] == 1.0 and any(cue.duration == 0.5 for _, _, cue in got)
+    assert all(cue.number is not None for _, _, cue in got)

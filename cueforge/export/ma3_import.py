@@ -79,6 +79,14 @@ def _cue_from(text: str | None) -> float | None:
         return None
 
 
+def _cue_from_handle(text: str | None) -> float | None:
+    """ValCueDestination "12.12.0.5.0.2500" -> cue 2.5 (MA keeps cue numbers × 1000)."""
+    if not text:
+        return None
+    last = text.strip().rsplit(".", 1)[-1]
+    return int(last) / 1000 if last.isdigit() else None
+
+
 def parse_timecode_xml(text: str) -> TcShow:
     root = ET.fromstring(text)
     tc = root if root.tag == "Timecode" else root.find(".//Timecode")
@@ -96,13 +104,24 @@ def parse_timecode_xml(text: str) -> TcShow:
                 continue
             cmd = el.find("RealtimeCmd")
             attrs = cmd.attrib if cmd is not None else el.attrib
-            ev = TcEvent(t, attrs.get("Token", "Goto") or "Goto", attrs.get("Status", "On") or "On",
-                         _cue_from(attrs.get("Cue")), el.get("Name", ""))
+            token = attrs.get("ExecToken") or attrs.get("Token") or "Goto"
+            cue = _cue_from(attrs.get("Cue")) if attrs.get("Cue") else _cue_from_handle(attrs.get("ValCueDestination"))
+            name = el.get("CueDestination") or el.get("Name", "")
+            if name == token:                         # MA names events after their token
+                name = ""
+            ev = TcEvent(t, token, attrs.get("Status", "On") or "On", cue, name)
             if track.seq is None:
                 track.seq = _seq_from(attrs.get("Cue"))
             track.events.append(ev)
         track.events.sort(key=lambda e: e.time)
         show.tracks.append(track)
+    if show.offset is None:                   # no Offset: times are show timecode (07:00:01)
+        first = min((e.time for tr in show.tracks for e in tr.events), default=0.0)
+        if first >= 3600:
+            show.offset = float(int(first // 3600) * 3600)
+            for tr in show.tracks:
+                for e in tr.events:
+                    e.time = round(e.time - show.offset, 6)
     return show
 
 

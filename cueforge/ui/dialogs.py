@@ -540,11 +540,6 @@ class MA3ExportDialog(QDialog):
         self.tc_num.setValue(p.song.ma3_timecode)
         self.tc_num.setToolTip("For the current song; each song's slot is set in its song settings")
         form.addRow("Timecode slot (current song)", self.tc_num)
-        self.unit = QComboBox()
-        self.unit.addItem("MA3 internal ticks (1/16777216 s)", "ticks")
-        self.unit.addItem("Seconds", "seconds")
-        self.unit.setCurrentIndex(max(0, self.unit.findData(ex.ma3_time_unit)))
-        form.addRow("XML time unit", self.unit)
         self.ver = QLineEdit(ex.ma3_data_version)
         self.ver.setToolTip("Set to your console/onPC software version, e.g. 2.1.1.5")
         form.addRow("XML DataVersion", self.ver)
@@ -590,7 +585,6 @@ class MA3ExportDialog(QDialog):
 
     def accept(self) -> None:
         ex = self.s.project.export
-        ex.ma3_time_unit = self.unit.currentData()
         ex.ma3_cue_token = self.token.currentData()
         ex.ma3_first_goto = self.first_goto.isChecked()
         self.s.update_song(self.s.project.song.id, ma3_timecode=self.tc_num.value())

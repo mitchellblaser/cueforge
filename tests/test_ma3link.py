@@ -308,8 +308,8 @@ def test_temps_share_one_cue(link):
     # the timecode track fires Temp On / Off on that one cue every time
     xml = build_ma3_xml(p)
     root = ET.fromstring(xml)
-    temps_ev = [e for e in root.iter("RealtimeCmd") if e.get("Token") == "Temp"]
-    assert len(temps_ev) == 2 * len(temps) and len({e.get("Cue") for e in temps_ev}) == 1
+    temps_ev = [e for e in root.iter("RealtimeCmd") if e.get("ExecToken") == "Temp"]
+    assert len(temps_ev) == 2 * len(temps) and len({e.get("ValCueDestination") for e in temps_ev}) == 1
     # editing a Temp's number moves the shared cue
     s._sync_engine = lambda: None                                               # no audio here
     s.update_cue(temps[-1].id, number=20.0)

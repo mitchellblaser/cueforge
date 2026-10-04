@@ -379,7 +379,7 @@ def test_cue_and_temp_buttons(app, win, monkeypatch):
     # export: Temp -> Temp On + Temp Off, cue -> Goto
     from cueforge.export.ma3 import build_ma3_xml
     root = ET.fromstring(build_ma3_xml(s.project))
-    tokens = [(e.find("RealtimeCmd").get("Token"), e.find("RealtimeCmd").get("Status"))
+    tokens = [(e.find("RealtimeCmd").get("ExecToken"), e.find("RealtimeCmd").get("Status"))
               for e in root.findall(".//CmdEvent")]
     assert ("Goto", "On") in tokens and ("Temp", "On") in tokens and ("Temp", "Off") in tokens
     assert sum(1 for t in tokens if t == ("Temp", "Off")) == 2
