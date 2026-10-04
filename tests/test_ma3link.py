@@ -43,6 +43,7 @@ def link(app, tmp_path):
     lk.cfg.enabled = True
     lk.cfg.port = rx.getsockname()[1]
     lk.cfg.timecode_dir = str(tmp_path / "timecodes")
+    lk.cfg.reply_port = 0                 # any free port for the console's replies
     lk.apply()
     lk._tick_timer.stop()           # ticks are driven by hand
     lk._sync_timer.stop()
@@ -57,6 +58,8 @@ def link(app, tmp_path):
     s.engine = real
     real.close()
     rx.close()
+    if lk._receiver is not None:
+        lk._receiver.close()
 
 
 def plan(project):
@@ -888,3 +891,12 @@ def test_shared_sequence_cues_of_other_songs_are_not_new(link):
     p.select_song(p.songs[0].id)
     found = console_cues(p, {"Hits": [(1.0, ""), (101.0, ""), (102.0, "Extra")]}, {}, [])
     assert [sg.number for sg in found["new"]] == [102.0]
+
+
+def test_test_reply_ping(link):
+    msgs = []
+    link.status.connect(msgs.append)
+    cmd = link.test_reply()
+    assert cmd.startswith('Lua "') and cmd.count('"') == 2 and "SendOSC 2 " in cmd and "0:1:1:ping" in cmd
+    link._on_pulled(0, "ping")
+    assert "reply arrived" in msgs[-1]

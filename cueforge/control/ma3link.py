@@ -339,6 +339,16 @@ class MA3Link(QObject):
         cmds.append(f'Lua "CF_PULL({int(self.cfg.reply_line)},{"true" if force else "false"},{args})"')
         return cmds
 
+    def test_reply(self) -> str:
+        """Ask the console to send one 'ping' back (checks the OSC line that replies)."""
+        if not self.active or not self._start_receiver():
+            return ""
+        cmd = ('Lua "local q=string.char(34) Cmd(' + "'SendOSC " + str(int(self.cfg.reply_line))
+               + " '..q..'/cueforge/tc,s,0:1:1:ping'..q)" + '"')
+        self.send(cmd)
+        self.status.emit(f"Asked the console to answer on OSC line {self.cfg.reply_line}…")
+        return cmd
+
     def pull_now(self) -> list[str]:
         """Ask the console for the open song's timecode and take its version (the button)."""
         if not self.active or not self._start_receiver():
@@ -374,6 +384,10 @@ class MA3Link(QObject):
         from .ma3pull import SPECIAL, merge_into_song, own_items, parse_pull, signature
         from ..export.ma3_import import show_to_cues
         self._pull_unanswered = 0
+        if slot == 0 and text == "ping":
+            self.status.emit(f"MA3 link: the console's reply arrived (OSC line {self.cfg.reply_line} → "
+                             f"port {self.cfg.reply_port}) ✓")
+            return
         manual, self._pull_manual = self._pull_manual, False
         p = self.s.project
         song = p.song

@@ -124,7 +124,8 @@ class LinkDialog(QDialog):
 
         btns = QHBoxLayout()
         for txt, fn in (("Send test", self._test), ("Push all cues now", self._push_cues),
-                        ("Push timecode now", self._push_tc), ("Pull from console", self._pull)):
+                        ("Push timecode now", self._push_tc), ("Pull from console", self._pull),
+                        ("Test reply", self._test_reply)):
             b = QPushButton(txt)
             b.clicked.connect(fn)
             btns.addWidget(b)
@@ -181,6 +182,10 @@ class LinkDialog(QDialog):
     def _push_tc(self) -> None:
         self._store()
         self.link.push_timecode()
+
+    def _test_reply(self) -> None:
+        self._store()
+        self.link.test_reply()
 
     def _pull(self) -> None:
         self._store()
