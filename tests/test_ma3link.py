@@ -210,17 +210,6 @@ def test_apply_and_preview_off_release_temps(link):
     assert link.log[n:] == [f"Off Sequence {seq_hits}"]
 
 
-def test_timecode_write_error_is_reported(link, tmp_path):
-    """Review #8: an unwritable library folder gives a status message, not an exception."""
-    msgs = []
-    link.status.connect(msgs.append)
-    blocker = tmp_path / "file"
-    blocker.write_text("x")
-    link.cfg.timecode_dir = str(blocker)               # a file, not a folder
-    assert link.push_timecode() == []
-    assert msgs and ("failed" in msgs[-1] or "folder" in msgs[-1].lower())
-
-
 def test_custom_templates(link):
     link.cfg.cmd_go = "Go Sequence {seq}"
     link.cfg.cmd_temp_off = "Off Sequence {seq}"
@@ -230,18 +219,18 @@ def test_custom_templates(link):
     assert link.cmd("goto", 3, 4.5) == "Goto Sequence 3 Cue 4.5"
 
 
-def test_timecode_push_writes_library_file(link, tmp_path):
+def test_timecode_push_goes_over_the_network(link, tmp_path):
     p = link.s.project
     slot = p.song.ma3_timecode
+    link.cfg.timecode_dir = str(tmp_path / "nowhere")        # old setting: ignored, no files here
     cmds = link.push_timecode()
-    assert len(cmds) == 1 and cmds[0].startswith('Lua "') and f"CueForge_{slot}_import.lua" in cmds[0]
-    f = tmp_path / "timecodes" / f"CueForge_{slot}.xml"
-    root = ET.parse(f).getroot()
-    assert root.find(".//Timecode") is not None or root.tag == "Timecode"
-    script = (tmp_path / "timecodes" / f"CueForge_{slot}_import.lua").read_text()
-    assert f"Import Timecode {slot}" in script and "cf_fix" in script     # imports only after fixing
+    assert len(cmds) >= 2 and all(c.startswith('Lua "') and c.endswith('"') for c in cmds)
+    assert all(c.count('"') == 2 and "@" not in c and "%" not in c for c in cmds)   # command-line safe
+    assert "load(table.concat" in cmds[-1]
+    assert not (tmp_path / "nowhere").exists() and not (tmp_path / "timecodes").exists()
+    assert all(len(c) < 3000 for c in cmds)                   # fits a UDP packet easily
     msgs = received(link.rx)
-    assert [m[1] for m in msgs][-1:] == cmds
+    assert [m[1] for m in msgs][-len(cmds):] == cmds
 
 
 def test_all_songs_sync(link):
@@ -341,34 +330,50 @@ def test_timecode_xml_has_no_guids(link):
     ET.fromstring(xml)
 
 
-def test_console_fixer_fills_addresses_then_imports(tmp_path):
+def _console_run(tmp_path, cmds):
+    """Play `Lua "…"` commands into a Lua interpreter that mocks the console: its disk is
+    tmp_path/console, sequence 5 has cues 1 and 2.5 (stored × 1000, as MA does)."""
     import shutil
     import subprocess
-    from cueforge.control.ma3link import fixer_script, run_file_lua
-    from cueforge.export.ma3 import SEQ_FIX_LUA
     lua = shutil.which("lua") or shutil.which("lua5.4") or shutil.which("lua5.3")
     if not lua:
         pytest.skip("no Lua interpreter")
-    xml = tmp_path / "CueForge_3.xml"
-    xml.write_text('<a Object="@SEQ5@" V="@CUE5:2.5@"/><b V="@CUE5:9@"/>')
-    script = tmp_path / "CueForge_3_import.lua"
-    script.write_text(fixer_script(str(xml), 3, SEQ_FIX_LUA))
-    cmd = run_file_lua(str(script))
+    disk = tmp_path / "console"
+    (disk / "datapools" / "timecodes").mkdir(parents=True)
     mock = ("local function mk(no, addr, kids) return {no=no, AddrNative=function() return addr end, "
             "Children=function() return kids end} end "
-            "local cues = {mk(0, 'S5.0'), mk(1000, 'S5.1'), mk(2500, 'S5.2')} "     # cue numbers × 1000
+            "local cues = {mk(0, 'S5.0'), mk(1000, 'S5.1'), mk(2500, 'S5.2')} "
             "local list = {mk(1, 'S1', {}), mk(5, 'S5', cues)} "
             "function DataPool() return {Sequences={Children=function() return list end}} end "
+            "Enums = {PathType={Library='lib'}} "
+            f"function GetPath(k) if k == 'lib' then return [[{disk}]] end error('no') end "
             "function ErrPrintf(f, ...) print('ERR ' .. string.format(f, ...)) end "
             "function Printf(f, ...) print(string.format(f, ...)) end "
-            "function Cmd(c) print('CMD ' .. c) end ")
+            "function Cmd(c) print('CMD ' .. c) end\n")
+    # each command runs on its own, like separate command-line entries
+    body = "".join(";(function() " + c[len('Lua "'):-1] + " end)()\n" for c in cmds)
     runner = tmp_path / "run.lua"
-    runner.write_text(mock + cmd[len('Lua "'):-1])
+    runner.write_text(mock + body)
     out = subprocess.run([lua, str(runner)], check=True, capture_output=True, text=True).stdout
-    assert xml.read_text() == '<a Object="S5" V="S5.2"/><b V=""/>'       # the console's own addresses
+    return out, disk / "datapools" / "timecodes"
+
+
+def test_network_push_writes_on_console_and_imports(tmp_path):
+    from cueforge.control.ma3link import import_script, push_commands
+    from cueforge.export.ma3 import SEQ_FIX_LUA
+    xml = '<a Object="@SEQ5@" V="@CUE5:2.5@" q="it\'s &quot;x&quot;"/><b V="@CUE5:9@"/>' + "<pad/>" * 400
+    cmds = push_commands(import_script(xml, 3, SEQ_FIX_LUA), "CueForge_push_3.hex")
+    assert len(cmds) > 3                                       # several chunks
+    out, tc = _console_run(tmp_path, cmds)
+    got = (tc / "CueForge_3.xml").read_text()
+    assert got.startswith('<a Object="S5" V="S5.2" q="it\'s &quot;x&quot;"/><b V=""/>')   # console's own addresses
     assert "cue 9 not found" in out
     assert out.index("CMD Import Timecode 3") > out.index("ERR")         # import after the fix
-    assert "3 sequence/cue addresses filled in" in out
+    assert "Timecode 3 imported, 3 sequence/cue addresses filled in" in out
+    assert not (tc / "CueForge_push_3.hex").exists()                     # cleaned up
+    # a lost packet is caught instead of importing a broken file
+    out, tc = _console_run(tmp_path / "lost", cmds[:1] + cmds[2:])
+    assert "push incomplete" in out and "CMD Import" not in out
 
 
 def test_fades_sync_to_console(link):

@@ -1,10 +1,10 @@
 """grandMA3 live link settings and command log."""
 from __future__ import annotations
 
-from PySide6.QtWidgets import (QCheckBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QGroupBox,
-                               QHBoxLayout, QLabel, QLineEdit, QPlainTextEdit, QPushButton, QSpinBox, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QCheckBox, QDialog, QDialogButtonBox, QFormLayout, QGroupBox, QHBoxLayout,
+                               QLabel, QLineEdit, QPlainTextEdit, QPushButton, QSpinBox, QVBoxLayout, QWidget)
 
-from ..control.ma3link import LinkSettings, default_timecode_dir
+from ..control.ma3link import LinkSettings
 from . import theme
 
 HELP = """<b>On the console / onPC</b>: Menu ▸ In &amp; Out ▸ OSC ▸ add a line: Destination IP = this
@@ -22,6 +22,14 @@ clear while the link creates cues, or your programmer values go into the new cue
 
 
 TEST_CMD = 'Lua "Printf(\'CueForge link OK\')"'   # harmless: only prints on the console
+
+
+def short_cmd(cmd: str) -> str:
+    """Log text for a command: the timecode push's long Lua chunks shown as one short line."""
+    if cmd.startswith('Lua "') and len(cmd) > 160:
+        what = "run pushed file" if "load(table.concat" in cmd else "send chunk"
+        return f"Lua … {what} ({len(cmd)} chars)"
+    return cmd
 
 
 class LinkDialog(QDialog):
@@ -56,19 +64,12 @@ class LinkDialog(QDialog):
         self.delete.setChecked(c.allow_delete)
         self.all = QCheckBox("Sync every song in the setlist (otherwise only the open song)")
         self.all.setChecked(c.all_songs)
-        self.tc = QCheckBox("Push timecode shows automatically (onPC on this computer)")
+        self.tc = QCheckBox("Push timecode shows automatically (sent over the network, no files to copy)")
         self.tc.setChecked(c.push_timecode)
         self.pin = QCheckBox("Fix cue numbers once they exist on the console (new cues get 5.1, 5.2 …)")
         self.pin.setChecked(c.pin_numbers)
         for w in (self.preview, self.sync, self.pin, self.delete, self.all, self.tc):
             f2.addRow(w)
-        row = QHBoxLayout()
-        self.dir = QLineEdit(c.timecode_dir or default_timecode_dir())
-        browse = QPushButton("…")
-        browse.clicked.connect(self._browse)
-        row.addWidget(self.dir)
-        row.addWidget(browse)
-        f2.addRow("onPC timecode library", row)
         lay.addWidget(g2)
 
         g3 = QGroupBox("Command syntax ({seq}, {cue}, {label}, {fade})")
@@ -104,7 +105,7 @@ class LinkDialog(QDialog):
         h.setStyleSheet(f"color: {theme.FG_DIM};")
         lay.addWidget(h)
         lay.addWidget(QLabel("Last commands sent:"))
-        self.log = QPlainTextEdit("\n".join(link.log[-100:]))
+        self.log = QPlainTextEdit("\n".join(short_cmd(c) for c in link.log[-100:]))
         self.log.setReadOnly(True)
         self.log.setFixedHeight(140)
         lay.addWidget(self.log)
@@ -114,13 +115,8 @@ class LinkDialog(QDialog):
         bb.rejected.connect(self.reject)
         lay.addWidget(bb)
 
-    def _browse(self) -> None:
-        d = QFileDialog.getExistingDirectory(self, "onPC timecode library folder", self.dir.text())
-        if d:
-            self.dir.setText(d)
-
     def _logged(self, cmd: str) -> None:
-        self.log.appendPlainText(cmd)
+        self.log.appendPlainText(short_cmd(cmd))
 
     def _store(self) -> None:
         c = self.link.cfg
@@ -133,7 +129,6 @@ class LinkDialog(QDialog):
         c.allow_delete = self.delete.isChecked()
         c.all_songs = self.all.isChecked()
         c.push_timecode = self.tc.isChecked()
-        c.timecode_dir = self.dir.text().strip()
         c.pin_numbers = self.pin.isChecked()
         for k, e in self.tpl.items():
             setattr(c, "cmd_" + k, e.text().strip() or getattr(LinkSettings, "cmd_" + k))

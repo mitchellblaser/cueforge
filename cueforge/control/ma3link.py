@@ -8,8 +8,9 @@ plugin has to run on the console for this.
   them (resyncing every lane to its current cue whenever playback starts or jumps).
 * Cue-list sync — cues created / renamed in CueForge are created / labelled in the
   target sequences (debounced). Deleting cues on the console is opt-in.
-* Timecode push — when onPC runs on this computer, each song's timecode XML is written
-  into onPC's timecode library and imported into the song's Timecode slot.
+* Timecode push — each song's timecode XML is sent over OSC inside Lua commands, written
+  to the console's own timecode library by Lua on the console and imported into the
+  song's Timecode slot (onPC or a networked console; no paths to set).
 """
 from __future__ import annotations
 
@@ -23,14 +24,6 @@ from PySide6.QtCore import QObject, QTimer, Signal
 from ..core.editing import effective_cue_numbers, temp_cue_label
 
 
-def default_timecode_dir() -> str:
-    """Best guess for onPC's timecode library on this computer (check it in the dialog)."""
-    if sys.platform == "win32":
-        base = os.environ.get("PROGRAMDATA", r"C:\ProgramData")
-        return os.path.join(base, "MA Lighting Technologies", "grandma", "gma3_library", "datapools", "timecodes")
-    return os.path.join(os.path.expanduser("~"), "MALightingTechnology", "gma3_library", "datapools", "timecodes")
-
-
 @dataclass
 class LinkSettings:
     enabled: bool = False
@@ -42,8 +35,8 @@ class LinkSettings:
     sync_cues: bool = True        # create / label cues as you program
     allow_delete: bool = False    # delete console cues that were deleted in CueForge
     all_songs: bool = False       # sync every song's cues (else only the open song)
-    push_timecode: bool = False   # write + import timecode XML (onPC on this computer)
-    timecode_dir: str = ""
+    push_timecode: bool = False   # send + import timecode automatically after changes
+    timecode_dir: str = ""        # unused (kept so old settings load); the push needs no path
     pin_numbers: bool = True      # fix a cue's number once it exists on the console
     # command templates ({seq}, {cue}, {label}) — edit if your MA3 version wants other syntax
     cmd_goto: str = "Goto Sequence {seq} Cue {cue}"
@@ -57,32 +50,66 @@ class LinkSettings:
     cmd_fade: str = "Sequence {seq} Cue {cue} CueFade {fade}"
 
 
-def fixer_script(xml_path: str, slot: int, fix_src: str) -> str:
-    """Lua run on the console: fill the @SEQn@ / @CUEn:c@ markers in the timecode file with
-    the console's own addresses, then delete + import the timecode itself (so the import
-    can never run before the file is fixed). Prints what it did to the System Monitor."""
-    p = xml_path.replace("\\", "/")
-    fname = os.path.basename(xml_path)
-    return (fix_src + "\n" +
-            f"local p = [[{p}]]\n"
-            "local f = io.open(p, 'r')\n"
-            "if not f then ErrPrintf('CueForge: cannot read %s', p) return end\n"
-            "local x = f:read('*a') f:close()\n"
-            "local _, n = x:gsub('@[SC][EU][QE]%d', '')\n"
-            "x = cf_fix(x)\n"
-            "f = io.open(p, 'w') f:write(x) f:close()\n"
+# Network push: the console has no access to this computer's disk, so files travel inside
+# `Lua "…"` commands and Lua on the console writes them to the console's own disk.
+# cf_dir() finds the console's timecode library. Plain characters only (no double quotes,
+# @ or %) so the console's command line passes it through untouched.
+CONSOLE_DIR_LUA = (
+    "local function cf_dir() "
+    "local tries = {function() return GetPath(Enums.PathType.Library) .. '/datapools/timecodes' end, "
+    "function() return GetPath('library', true) .. '/datapools/timecodes' end, "
+    "function() return GetPath(Enums.PathType.UserTimecodes) end} "
+    "for _, fn in ipairs(tries) do local ok, d = pcall(fn) "
+    "if ok and type(d) == 'string' and string.len(d) > 0 then "
+    "local t = io.open(d .. '/CueForge_probe.tmp', 'w') "
+    "if t then t:close() os.remove(d .. '/CueForge_probe.tmp') return d end end end end "
+)
+
+CHUNK_HEX = 1600           # hex characters per OSC command (800 bytes of payload)
+
+
+def import_script(xml: str, slot: int, fix_src: str) -> str:
+    """Lua the console runs once the push has arrived: fill in the sequence / cue addresses
+    from this show, write the XML into the console's timecode library, then delete and
+    import the timecode slot (in that order, inside one script)."""
+    level = "===="
+    while f"]{level}]" in xml:
+        level += "="
+    return ("local cf_xml = [" + level + "[" + xml + "]" + level + "]\n" + fix_src + "\n" + CONSOLE_DIR_LUA + "\n"
+            "local d = cf_dir()\n"
+            "if not d then ErrPrintf('CueForge: no writable timecode folder on this console') return end\n"
+            "local _, n = cf_xml:gsub('@[SC][EU][QE]%d', '')\n"
+            f"local fname = 'CueForge_{slot}.xml'\n"
+            "local f = io.open(d .. '/' .. fname, 'w') f:write(cf_fix(cf_xml)) f:close()\n"
             f"Cmd('Delete Timecode {slot} /NoConfirm')\n"
-            f"Cmd('Import Timecode {slot} /File \"{fname}\" /NoConfirm')\n"
+            f"Cmd('Import Timecode {slot} /File \"' .. fname .. '\" /NoConfirm')\n"
             f"Printf('CueForge: Timecode {slot} imported, %d sequence/cue addresses filled in', n)\n")
 
 
-def run_file_lua(path: str) -> str:
-    """A short `Lua "…"` command that runs a Lua file (no long code on the command line)."""
-    p = path.replace("\\", "/")
-    return (f'Lua "local f = io.open([[{p}]]) if not f then ErrPrintf([[CueForge: cannot open {p}]]) return end '
-            "local s = f:read('*a') f:close() local fn, e = load(s) "
-            "if not fn then ErrPrintf('CueForge: %s', tostring(e)) return end "
-            "local ok, e2 = pcall(fn) if not ok then ErrPrintf('CueForge: %s', tostring(e2)) end\"")
+def push_commands(script: str, name: str) -> list[str]:
+    """`Lua "…"` commands that carry `script` to the console as hex chunks (appended to
+    `name` in its timecode folder), then check nothing was lost and run it. Hex keeps every
+    character the console's command line might interpret out of the way."""
+    data = script.encode("utf-8").hex().upper()
+    cmds = []
+    for i in range(0, len(data), CHUNK_HEX):
+        mode = "w" if i == 0 else "a"
+        cmds.append('Lua "' + CONSOLE_DIR_LUA +
+                    "local d = cf_dir() if not d then ErrPrintf('CueForge: no writable timecode folder') return end "
+                    f"local f = io.open(d .. '/{name}', '{mode}') f:write('{data[i:i + CHUNK_HEX]}') f:close()" + '"')
+    cmds.append('Lua "' + CONSOLE_DIR_LUA +
+                f"local d = cf_dir() local f = d and io.open(d .. '/{name}', 'r') "
+                "if not f then ErrPrintf('CueForge: push not found on the console - push again') return end "
+                f"local h = f:read('*a') f:close() os.remove(d .. '/{name}') "
+                f"if not (string.len(h) == {len(data)}) then "
+                f"ErrPrintf('CueForge: push incomplete (' .. string.len(h) .. ' of {len(data)}) - push again') "
+                "return end "
+                "local t = {} for i = 1, string.len(h), 2 do "
+                "t[(i + 1) / 2] = string.char(tonumber(string.sub(h, i, i + 1), 16)) end "
+                "local fn, e = load(table.concat(t)) "
+                "if not fn then ErrPrintf('CueForge: ' .. tostring(e)) return end "
+                "local ok, e2 = pcall(fn) if not ok then ErrPrintf('CueForge: ' .. tostring(e2)) end" + '"')
+    return cmds
 
 
 def _q(text: str) -> str:
@@ -439,38 +466,22 @@ class MA3Link(QObject):
         self.push_timecode()
 
     def push_timecode(self) -> list[str]:
-        """Write the timecode XML of the open song (or every song) into onPC's library and
-        import it into the song's slot."""
+        """Send the timecode of the open song (or every song) to the console and import it
+        there. Everything travels over OSC and is written to the console's own disk, so a
+        networked console works the same as onPC on this computer — no paths to set."""
         from ..export.ma3 import SEQ_FIX_LUA, build_ma3_xml, export_lanes, in_song
-        folder = self.cfg.timecode_dir or default_timecode_dir()
-        try:
-            os.makedirs(folder, exist_ok=True)
-        except OSError as exc:
-            self.status.emit(f"Timecode folder: {exc}")
-            return []
         p = self.s.project
         cmds = []
+        songs = 0
         for song in (p.songs if self.cfg.all_songs else [p.song]):
             with in_song(p, song):
                 if not export_lanes(p):
                     continue
-                fname = f"CueForge_{song.ma3_timecode}.xml"
-                path = os.path.abspath(os.path.join(folder, fname))
-                try:
-                    with open(path, "w", encoding="utf-8") as f:
-                        f.write(build_ma3_xml(p, placeholders=True))
-                except OSError as exc:
-                    self.status.emit(f"Timecode push failed: {exc}")
-                    return []
-                script = os.path.join(folder, f"CueForge_{song.ma3_timecode}_import.lua")
-                try:
-                    with open(script, "w", encoding="utf-8") as f:
-                        f.write(fixer_script(path, song.ma3_timecode, SEQ_FIX_LUA))
-                except OSError as exc:
-                    self.status.emit(f"Timecode push failed: {exc}")
-                    return []
-                cmds.append(run_file_lua(os.path.abspath(script)))   # fills addresses, then imports
+                script = import_script(build_ma3_xml(p, placeholders=True), song.ma3_timecode, SEQ_FIX_LUA)
+                cmds += push_commands(script, f"CueForge_push_{song.ma3_timecode}.hex")
+                songs += 1
         for c in cmds:
             self.send(c)
-        self.status.emit(f"Timecode pushed ({len(cmds)} song(s))")
+            time.sleep(0.002)                  # pace the packets for the console's OSC input
+        self.status.emit(f"Timecode pushed ({songs} song(s), {len(cmds)} commands)")
         return cmds
