@@ -46,31 +46,41 @@ def all_actions(n_lanes: int = 8) -> list[str]:
 @dataclass
 class MidiMapping:
     kind: str          # "note" | "cc"
-    channel: int       # 0-15
+    channel: int       # 0-15, or -1 = any channel (pad controllers send on all sorts of channels)
     number: int        # note or controller number
     action: str
 
     def key(self) -> tuple:
         return (self.kind, self.channel, self.number)
 
+    def matches(self, kind: str, channel: int, number: int) -> bool:
+        return self.kind == kind and self.number == number and self.channel in (-1, channel)
+
     def describe(self) -> str:
         what = "Note" if self.kind == "note" else "CC"
-        return f"{what} {self.number} · ch {self.channel + 1}"
+        return f"{what} {self.number} · " + ("any ch" if self.channel < 0 else f"ch {self.channel + 1}")
 
 
 def default_midi_map() -> list[MidiMapping]:
     """Two rows of 8 pads (typical pad controller, notes 36-51): top row Temps, bottom
     row Cues, lanes 1-8."""
+    m = [MidiMapping("note", -1, 36 + i, f"cue:lane:{i + 1}") for i in range(8)]
+    m += [MidiMapping("note", -1, 44 + i, f"temp:lane:{i + 1}") for i in range(8)]
+    return m
+
+
+def _old_default_map() -> list[dict]:
     m = [MidiMapping("note", 0, 36 + i, f"cue:lane:{i + 1}") for i in range(8)]
     m += [MidiMapping("note", 0, 44 + i, f"temp:lane:{i + 1}") for i in range(8)]
-    return m
+    return [asdict(x) for x in m]
 
 
 @dataclass
 class ControlSettings:
     midi_in: str = ""
     midi_out: str = ""
-    feedback: str = "palette"     # "palette" (velocity = colour, Launchpad/APC style) | "onoff" | "off"
+    feedback: str = "auto"        # "auto" (by device) | "palette" (Launchpad/APC style) | "midifighter" | "onoff" | "off"
+    feedback_channel: int = -1    # -1 = the channel the device sends on
     hold_from_press: bool = False  # Temp hold = how long the pad/button is held
     midi_map: list[dict] = field(default_factory=lambda: [asdict(m) for m in default_midi_map()])
     osc_enabled: bool = False
@@ -79,6 +89,8 @@ class ControlSettings:
     osc_feedback_port: int = 9000
 
     def mappings(self) -> list[MidiMapping]:
+        if self.midi_map == _old_default_map():   # settings saved before "any channel" existed
+            self.midi_map = [asdict(m) for m in default_midi_map()]
         return [MidiMapping(**m) for m in self.midi_map]
 
 
@@ -100,6 +112,22 @@ def _palette() -> list[tuple[int, int, int]]:
 
 PALETTE = _palette()
 WHITE = 3
+
+
+def midifighter_velocity(hex_color: str, dim: bool = False) -> int:
+    """Approximate Midi Fighter (Spectra / 3D) colour for a lane colour: its LED colour is set
+    by note-on velocity, roughly around the colour wheel. Approximate - use On / off if the
+    colours come out wrong on your unit."""
+    h = hex_color.lstrip("#")
+    try:
+        r, g, b = (int(h[i:i + 2], 16) / 255 for i in (0, 2, 4))
+    except ValueError:
+        return 127
+    hue, sat, val = colorsys.rgb_to_hsv(r, g, b)
+    if sat < 0.2:
+        return 127                                  # white-ish
+    v = 1 + int(round(hue * 125)) % 126
+    return max(1, v // 2) if dim else v
 
 
 def color_velocity(hex_color: str, dim: bool = False) -> int:

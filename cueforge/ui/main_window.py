@@ -160,12 +160,16 @@ class MainWindow(QMainWindow):
         from PySide6.QtCore import QEvent
         from PySide6.QtWidgets import QAbstractSpinBox, QLineEdit, QPlainTextEdit, QTextEdit
         et = ev.type()
+        if et == QEvent.ShortcutOverride and not (ev.modifiers() & (Qt.ControlModifier | Qt.AltModifier
+                                                                     | Qt.MetaModifier)):
+            if not isinstance(obj, (QLineEdit, QPlainTextEdit, QTextEdit, QAbstractSpinBox)):
+                self._note_key_down(ev)                         # the moment the key went down
         if getattr(self, "_held", None):
             if et == QEvent.KeyRelease and not ev.isAutoRepeat():
                 self._tap_release(ev.text(), ev.key())          # matched on the key, not its text
             elif et in (QEvent.ApplicationStateChange, QEvent.WindowDeactivate) and \
                     QApplication.applicationState() != Qt.ApplicationActive:
-                self._finish_hold()                             # the release would go elsewhere
+                self._finish_all_holds()                        # the releases would go elsewhere
         if et in (QEvent.ShortcutOverride, QEvent.KeyPress) and isinstance(obj, QWidget) \
                 and isinstance(obj, (QLineEdit, QPlainTextEdit, QTextEdit, QAbstractSpinBox)):
             mods = ev.modifiers() & (Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier)
@@ -420,7 +424,8 @@ class MainWindow(QMainWindow):
         self.hold_spin.setSingleStep(0.1)
         self.hold_spin.setSuffix(" s")
         self.hold_spin.setValue(self.s.temp_hold)
-        self.hold_spin.setToolTip("Hold time for new Temps. With a cue selected, also changes that cue's hold.")
+        self.hold_spin.setToolTip("Hold time for new Temps. With Temps selected, changes all their holds. "
+                                  "H: hold / fade for all selected cues.")
         self.hold_spin.valueChanged.connect(self._hold_changed)
         tb.addWidget(self.hold_spin)
         beat_btn = QPushButton("= 1 beat")
@@ -505,9 +510,16 @@ class MainWindow(QMainWindow):
     def _hold_changed(self, v: float) -> None:
         self.s.set_temp_hold(v)
         sel = [self.s.project.cue(c) for c in self.s.sel_cues]
-        sel = [c for c in sel if c and c.duration]
-        if len(sel) == 1 and abs(sel[0].duration - v) > 1e-6:
-            self.s.update_cue(sel[0].id, duration=v)
+        sel = [c for c in sel if c and c.duration and abs(c.duration - v) > 1e-6]
+        if sel:                                      # every selected Temp takes the new hold
+            self.s.set_hold_fade([c.id for c in sel], hold=v)
+
+    def hold_fade_selected(self) -> None:
+        if not self.s.sel_cues:
+            self.statusBar().showMessage("Select cues first (drag a box, or Ctrl/Shift-click)", 4000)
+            return
+        from .dialogs import HoldFadeDialog
+        HoldFadeDialog(self.s, set(self.s.sel_cues), self).exec()
 
     def _hold_one_beat(self) -> None:
         g = self.s.project.beat_grid
@@ -561,6 +573,7 @@ class MainWindow(QMainWindow):
         e.addAction(self._act("Snap selected to grid", self.s.snap_selected, "G"))
         e.addAction(self._act("Make selected Temp", lambda: self.s.set_selected_temp(True), "Shift+W"))
         e.addAction(self._act("Make selected normal cue", lambda: self.s.set_selected_temp(False), "Shift+Q"))
+        e.addAction(self._act("Hold / fade for selected cues…", self.hold_fade_selected, "H"))
         e.addAction(self._act("Edit selected cue…", self._edit_selected, "Ctrl+Return"))
         e.addSeparator()
         self._act("Nudge left", lambda: self._arrow(-1, False), "Left")
@@ -800,23 +813,65 @@ class MainWindow(QMainWindow):
             sc.activated.connect(lambda lid=lane.id, key=k: self._tap_press(lid, key))
             self._tap_shortcuts.append(sc)
 
-    # press & hold a lane key: tap = cue, hold = Temp for as long as the key is down
+    # press & hold a lane key: tap = cue, hold = Temp for as long as the key is down.
+    # Every key holds on its own: keep 3 down for a strobe and tap 2 meanwhile.
     HOLD_MIN = 0.22          # seconds held before a tap becomes a Temp
 
-    def _tap_press(self, lane_id: str, key: str) -> None:
-        if getattr(self, "_held", None):
-            self._finish_hold()                     # another key was still held: finish that one
-        c = self.s.tap(lane_id)
-        if c is None:
-            return
+    def _key_down_time(self, code) -> float:
+        """Song time when the key went down (not when the app got round to it)."""
+        rec = getattr(self, "_key_down", {}).get(code)
         eng = self.s.engine
+        if rec is not None and time.monotonic() - rec[1] < 1.0:
+            return rec[0]
+        return eng.position()
+
+    def _note_key_down(self, ev) -> None:
+        """Called from the event filter, the first moment a key press is seen. Qt's event
+        timestamp tells how long it waited in the queue (e.g. behind a redraw); that wait is
+        taken off the playhead position, so taps land where they were played."""
+        if ev.isAutoRepeat():
+            return
+        prev = getattr(self, "_key_down", {}).get(ev.key())
+        if prev is not None and time.monotonic() - prev[1] < 0.05:
+            return                                    # the same press seen again by a parent
+        now_ms = time.monotonic() * 1000.0
+        ts = float(ev.timestamp() or 0)
+        if ts > 0:
+            off = now_ms - ts
+            hist = getattr(self, "_ts_offsets", [])
+            hist = (hist + [off])[-64:]
+            self._ts_offsets = hist
+            lag = max(0.0, min(0.4, (off - min(hist)) / 1000.0))
+        else:
+            lag = 0.0
+        eng = self.s.engine
+        pos = eng.position() - (lag * eng.speed if eng.playing else 0.0)
+        if not hasattr(self, "_key_down"):
+            self._key_down = {}
+        self._key_down[ev.key()] = (max(0.0, pos), time.monotonic())
+
+    def _holds(self) -> dict:
+        if not hasattr(self, "_held"):
+            self._held = {}
+        if self._held is None:
+            self._held = {}
+        return self._held
+
+    def _tap_press(self, lane_id: str, key: str) -> None:
         try:
             code = QKeySequence(key.upper())[0].key()
         except Exception:
-            code = None
-        pos = eng.position()
-        self._held = {"key": key.lower(), "code": code, "cue": c.id, "lane": lane_id, "t0": pos, "last": pos,
-                      "playing": eng.playing}
+            code = key.lower()
+        holds = self._holds()
+        if code in holds:
+            self._finish_hold(code)                 # the same key again (missed release)
+        t = self._key_down_time(code)
+        c = self.s.tap(lane_id, t)
+        if c is None:
+            return
+        eng = self.s.engine
+        holds[code] = {"key": key.lower(), "code": code, "cue": c.id, "lane": lane_id, "t0": t,
+                       "last": eng.position(), "playing": eng.playing}
         if not hasattr(self, "_hold_timer"):
             self._hold_timer = QTimer(self)
             self._hold_timer.setInterval(30)
@@ -824,41 +879,55 @@ class MainWindow(QMainWindow):
         self._hold_timer.start()
 
     def _hold_tick(self) -> None:
-        """While the key is down the Temp grows on the timeline (an overlay: no re-render).
-        Playback stopping, a jump or loop wrap ends the hold."""
-        h = getattr(self, "_held", None)
-        if not h:
+        """While keys are down their Temps grow on the timeline (an overlay: no re-render).
+        Playback stopping, a jump or loop wrap ends the holds."""
+        holds = self._holds()
+        if not holds:
             self._hold_timer.stop()
             return
-        c = self.s.project.cue(h["cue"])
         eng = self.s.engine
         pos = eng.position()
-        if c is None or not h["playing"] or not eng.playing or pos < h["last"] - 0.05:
-            self._finish_hold()
-            return
-        h["last"] = pos
-        if pos - h["t0"] >= self.HOLD_MIN:
-            self.canvas.hold_preview = (h["lane"], c.time, pos)
-            self.canvas.update()
+        previews = []
+        for code, h in list(holds.items()):
+            c = self.s.project.cue(h["cue"])
+            if c is None or not h["playing"] or not eng.playing or pos < h["last"] - 0.05:
+                self._finish_hold(code)
+                continue
+            h["last"] = pos
+            if pos - h["t0"] >= self.HOLD_MIN:
+                previews.append((h["lane"], c.time, pos))
+        self.canvas.hold_preview = previews or None
+        self.canvas.update()
 
     def _tap_release(self, key: str | None = None, code=None) -> None:
-        h = getattr(self, "_held", None)
-        if not h:
-            return
-        if code is not None and h.get("code") is not None:
-            if code != h["code"]:
+        holds = self._holds()
+        for c, h in list(holds.items()):
+            if (code is not None and c == code) or (code is None and key is not None and h["key"] == key.lower()):
+                self._finish_hold(c)
                 return
-        elif key is not None and h["key"] != key.lower():
-            return
-        self._finish_hold()
+        if code is not None and key:               # e.g. Shift changed the text but not the key
+            for c, h in list(holds.items()):
+                if h["key"] == key.lower():
+                    self._finish_hold(c)
+                    return
 
-    def _finish_hold(self) -> None:
-        """End the hold: a short press stays a cue; a long one becomes a Temp whose end
+    def _finish_all_holds(self) -> None:
+        for code in list(self._holds()):
+            self._finish_hold(code)
+
+    def _finish_hold(self, code=None) -> None:
+        """End one hold: a short press stays a cue; a long one becomes a Temp whose end
         snaps to the grid. Always leaves the cue in a finished, saved state."""
-        h, self._held = getattr(self, "_held", None), None
-        if hasattr(self, "_hold_timer"):
+        holds = self._holds()
+        if code is None:
+            if not holds:
+                return
+            code = next(iter(holds))
+        h = holds.pop(code, None)
+        if not holds and hasattr(self, "_hold_timer"):
             self._hold_timer.stop()
-        self.canvas.hold_preview = None
+        prev = [x for x in (self.canvas.hold_preview or []) if h is None or x[0] != h["lane"]]
+        self.canvas.hold_preview = prev or None
         self.canvas.update()
         if not h:
             return
@@ -881,7 +950,11 @@ class MainWindow(QMainWindow):
         c.duration = round(max(step, end - c.time), 3)   # at least one grid step
         p.sort_cues()
         self.s._sync_engine()
-        self.s.cues_changed.emit()
+        self.s.touched_lanes = {c.lane_id}
+        try:
+            self.s.cues_changed.emit()
+        finally:
+            self.s.touched_lanes = None
         self.s._touch()
         lane = p.lane(c.lane_id)
         self.statusBar().showMessage(f"Temp in {lane.name if lane else '?'}: held {c.duration:.2f} s", 3000)

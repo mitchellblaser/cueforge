@@ -606,6 +606,7 @@ def test_cue_list_follows_playhead(app, win):
     t1 = s.add_cue(b.id, 2.0)
     s.update_cue(t1.id, duration=1.0)
     table = win.cue_table
+    table.rebuild_now()
     state, latest = table.active_cues(2.2)
     assert state.get(c1.id) == "on" and state.get(t1.id) == "fired" and latest == t1.id
     state, latest = table.active_cues(3.5)
@@ -615,7 +616,8 @@ def test_cue_list_follows_playhead(app, win):
     s.engine.seek(4.1)
     table._light(force=True)
     row = table._rows[c2.id]
-    assert table.table.item(row, 0).background().color().alpha() > 0
+    bg = table.model.data(table.model.index(row, 0), Qt.BackgroundRole)
+    assert bg is not None and bg.color().alpha() > 0
     n_undo = len(s.undo._undo) if hasattr(s.undo, "_undo") else None
     table._light(force=True)                          # styling is not an edit
     if n_undo is not None:
@@ -772,15 +774,16 @@ def test_enter_in_cue_table_commits_not_restart(app, win):
     s = win.s
     c = s.add_cue(s.project.lanes[0].id, 2.0)
     s.engine.seek(7.0)
-    table = win.cue_table.table
+    ct = win.cue_table
     win._show_panel(win.dock_cues)
+    ct.rebuild_now()
     pump(app, 0.1)
-    row = win.cue_table._rows[c.id]
-    table.setCurrentCell(row, 3)
-    table.editItem(table.item(row, 3))
+    idx = ct.model.index(ct._rows[c.id], 3)
+    ct.table.setCurrentIndex(idx)
+    ct.table.edit(idx)
     pump(app, 0.1)
     from PySide6.QtWidgets import QLineEdit
-    ed = table.findChild(QLineEdit)
+    ed = ct.table.findChild(QLineEdit)
     assert ed is not None
     ed.setFocus()
     QTest.keyClicks(ed, "Drop")
@@ -789,7 +792,8 @@ def test_enter_in_cue_table_commits_not_restart(app, win):
     assert s.project.cue(c.id).label == "Drop"
     assert abs(s.engine.position() - 7.0) < 0.05          # Return did not jump to the start
     # the automatic cue number is shown (dim) without being stored
-    assert table.item(win.cue_table._rows[c.id], 2).text() == "1" and s.project.cue(c.id).number is None
+    ct.rebuild_now()
+    assert ct.model.data(ct.model.index(ct._rows[c.id], 2)) == "1" and s.project.cue(c.id).number is None
 
 
 def test_hold_lane_key_makes_snapped_temp(app, win):
@@ -805,7 +809,7 @@ def test_hold_lane_key_makes_snapped_temp(app, win):
         win._tap_press(lane.id, lane.tap_key)
         pump(app, 0.8)
         hp = win.canvas.hold_preview
-        assert hp and hp[0] == lane.id and hp[2] - hp[1] > 0.2      # growing while held (overlay)
+        assert hp and hp[0][0] == lane.id and hp[0][2] - hp[0][1] > 0.2   # growing while held (overlay)
         win._tap_release(lane.tap_key)
     finally:
         s.engine.pause()
@@ -833,20 +837,24 @@ def test_hold_lane_key_makes_snapped_temp(app, win):
     pump(app, 0.1)
     held = [c for c in s.project.cues_in_lane(lane.id) if c.time > 7.5][0]
     assert held.duration and abs((held.time + held.duration) / 0.5 - round((held.time + held.duration) / 0.5)) < 0.04
-    assert win._held is None and win.canvas.hold_preview is None
-    # a second key while the first is held finishes the first
+    assert not win._held and not win.canvas.hold_preview
+    # hold 3 and tap 2 meanwhile: 2 is a normal cue, the Temp on 3 carries on until 3 is released
     other = s.project.lanes[3]
     s.engine.seek(12.02)
     s.engine.play()
     try:
         win._tap_press(lane.id, lane.tap_key)
-        pump(app, 0.6)
+        pump(app, 0.4)
         win._tap_press(other.id, other.tap_key)
         win._tap_release(other.tap_key)
+        assert win._held                                      # 3 is still held
+        pump(app, 0.4)
+        win._tap_release(lane.tap_key)
     finally:
         s.engine.pause()
     first = [c for c in s.project.cues_in_lane(lane.id) if c.time > 11.5][0]
-    assert first.duration and first.duration >= 0.5 - 1e-6
+    second = [c for c in s.project.cues_in_lane(other.id) if c.time > 11.5][0]
+    assert first.duration and first.duration >= 0.5 - 1e-6 and second.duration is None
 
 
 def test_reorder_lanes_keys_follow(app, win):
@@ -952,3 +960,69 @@ def test_save_with_numpy_values_updates_title(app, win, monkeypatch):
     monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *a, **k: (str(path), ""))
     assert win.save_as()
     assert win.windowTitle().startswith("Show") and path.exists()
+
+
+def test_bulk_hold_fade(app, win):
+    s = win.s
+    a = s.add_cue(s.project.lanes[0].id, 1.0)
+    b = s.add_cue(s.project.lanes[1].id, 2.0)
+    s.select(cues={a.id, b.id})
+    from cueforge.ui.dialogs import HoldFadeDialog
+    d = HoldFadeDialog(s, {a.id, b.id}, win)
+    d.hold_mode.setCurrentIndex(d.hold_mode.findData("temp"))
+    d.hold.setValue(0.75)
+    d.fade.setValue(1.5)
+    d.accept()
+    assert s.project.cue(a.id).duration == 0.75 and s.project.cue(b.id).duration == 0.75
+    assert s.project.cue(a.id).fade == 1.5
+    # the Hold box changes every selected Temp
+    win.hold_spin.setValue(0.4)
+    assert s.project.cue(a.id).duration == 0.4 and s.project.cue(b.id).duration == 0.4
+    # and back to Go cues in one step
+    s.set_hold_fade([a.id, b.id], hold=None)
+    assert s.project.cue(a.id).duration is None and s.project.cue(b.id).duration is None
+    win._undo()
+    assert s.project.cue(a.id).duration == 0.4
+
+
+def test_tap_uses_key_down_time(app, win):
+    """A key press that waited in the queue (UI busy) still lands where it was played."""
+    s = win.s
+    from PySide6.QtGui import QKeyEvent
+    from PySide6.QtCore import QEvent
+    s.snap = False
+    s.engine.seek(10.0)
+    s.engine.play()
+    try:
+        pump(app, 0.2)
+        ev = QKeyEvent(QEvent.KeyPress, Qt.Key_3, Qt.NoModifier, "3")
+        win._note_key_down(ev)
+        down = win._key_down[Qt.Key_3][0]
+        time.sleep(0.3)                                   # the app was busy
+        lane = s.project.lanes[2]
+        win._tap_press(lane.id, "3")
+        win._tap_release("3", Qt.Key_3)
+    finally:
+        s.engine.pause()
+    cue = s.project.cues_in_lane(lane.id)[-1]
+    assert abs(cue.time - down) < 0.05 and s.engine.position() - cue.time > 0.25
+
+
+def test_midi_fighter_spectra(app, win):
+    """Spectra: buttons on MIDI channel 3, notes 36-51; LEDs are lit on channel 3."""
+    import mido
+    from cueforge.control.actions import ControlSettings, _old_default_map
+    hub = win.control
+    s = win.s
+    hub._in_name = "Midi Fighter Spectra"
+    s.engine.seek(3.0)
+    hub.handle_midi(mido.Message("note_on", channel=2, note=36, velocity=127), 3.0)
+    hub.handle_midi(mido.Message("note_off", channel=2, note=36, velocity=0), 3.1)
+    wait(app, lambda: len(s.project.cues) == 1, 5)
+    assert s.project.cues[0].lane_id == s.project.lanes[0].id
+    msgs = hub.feedback_messages()
+    assert msgs and all(m.channel == 2 for m in msgs)
+    assert hub.feedback_mode() == "midifighter"
+    # settings saved with the old channel-1-only defaults are upgraded to "any channel"
+    cfg = ControlSettings(midi_map=_old_default_map())
+    assert all(m.channel == -1 for m in cfg.mappings())

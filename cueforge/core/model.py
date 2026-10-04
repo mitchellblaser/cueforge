@@ -273,10 +273,12 @@ class Song:
         return s
 
     def content(self) -> dict[str, Any]:
-        return {"cues": [asdict(c) for c in self.cues],
-                "suggestions": [asdict(x) for x in self.suggestions],
-                "beat_grid": asdict(self.beat_grid),
-                "sections": [asdict(m) for m in self.sections]}
+        # fast field copies (lists copied one level); dataclasses.asdict's deep recursion
+        # made every edit slow on big songs
+        return {"cues": [_snap(c) for c in self.cues],
+                "suggestions": [_snap(x) for x in self.suggestions],
+                "beat_grid": _snap(self.beat_grid),
+                "sections": [_snap(m) for m in self.sections]}
 
     def restore_content(self, d: dict[str, Any]) -> None:
         self.cues = [_from_dict(Cue, c) for c in d.get("cues", [])]
@@ -284,6 +286,16 @@ class Song:
         self.beat_grid = _from_dict(BeatGrid, d.get("beat_grid", {}))
         self.sections = sorted((_from_dict(SectionMarker, m) for m in d.get("sections", [])),
                                key=lambda m: m.time)
+
+
+def _snap(obj) -> dict[str, Any]:
+    d = dict(obj.__dict__)
+    for k, v in d.items():
+        if isinstance(v, list):
+            d[k] = [list(x) if isinstance(x, list) else dict(x) if isinstance(x, dict) else x for x in v]
+        elif isinstance(v, dict):
+            d[k] = dict(v)
+    return d
 
 
 def _song_attr(name: str):

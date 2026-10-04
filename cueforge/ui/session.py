@@ -24,7 +24,7 @@ from .workers import Job, start_job
 
 
 # single-key shortcuts that lanes may not use as tap keys
-RESERVED_KEYS = set("axsgiolcbfzptqwmd")
+RESERVED_KEYS = set("axsgiolcbfzptqwmdh")
 
 
 def guess_role(filename: str, is_first: bool) -> str:
@@ -71,6 +71,7 @@ class Session(QObject):
         self.snap = bool(self.settings.get("snap", True))
         self._loading: set[str] = set()
         self._analysis_relay = None
+        self.touched_lanes: set[str] | None = None
         self.project = Project()
         self.undo = UndoStack(self.project)
         self.undo.on_change = self._on_undo_change
@@ -305,7 +306,10 @@ class Session(QObject):
         self._mixer_dirty = True
         self.dirty_changed.emit(True)
 
-    def _on_undo_change(self) -> None:
+    def _on_undo_change(self, restored: bool = True) -> None:
+        if not restored:                         # a new edit: edit() refreshes what it changed
+            self.dirty_changed.emit(self.is_dirty())
+            return
         if self.project.song.id != self._engine_song:   # undo jumped to another song
             self._load_current_song()
             self.song_changed.emit()
@@ -424,13 +428,19 @@ class Session(QObject):
 
     # ------------------------------------------------------------------ edits
     @contextmanager
-    def edit(self, label: str):
+    def edit(self, label: str, lanes: set[str] | None = None):
+        """Record an undo step around a change. `lanes`: the only lanes whose drawing the
+        change affects (lets the timeline redraw just those rows while playing)."""
         self.undo.push(label)
         yield
         self.project.sort_cues()
         self._sync_engine()
-        self.cues_changed.emit()
-        self.selection_changed.emit()
+        self.touched_lanes = lanes
+        try:
+            self.cues_changed.emit()
+            self.selection_changed.emit()
+        finally:
+            self.touched_lanes = None
         self.dirty_changed.emit(self.is_dirty())
 
     def lane_for_key(self, key: str) -> Lane | None:
@@ -494,6 +504,21 @@ class Session(QObject):
             for c in self.project.cues:
                 if c.id in self.sel_cues:
                     c.duration = (c.duration or self.temp_hold) if temp else None
+
+    def set_hold_fade(self, cue_ids, hold: float | None | bool = False, fade: float | None | bool = False) -> int:
+        """Set the hold and/or fade of many cues at once (one undo step). hold: seconds makes
+        them Temps, None makes them normal (Go) cues, False leaves it; fade likewise."""
+        ids = set(cue_ids)
+        cues = [c for c in self.project.cues if c.id in ids]
+        if not cues or (hold is False and fade is False):
+            return 0
+        with self.edit("Set hold / fade", lanes={c.lane_id for c in cues}):
+            for c in cues:
+                if hold is not False:
+                    c.duration = round(hold, 3) if hold else None
+                if fade is not False:
+                    c.fade = round(fade, 3) if fade is not None else None
+        return len(cues)
 
     # ------------------------------------------------------------------ sections
     sel_section: str = ""
@@ -648,11 +673,12 @@ class Session(QObject):
         self.status.emit(f"Pattern fill: {len(made)} cue(s)")
         return len(made)
 
-    def tap(self, lane_id: str) -> None:
+    def tap(self, lane_id: str, t: float | None = None):
         """Tap a cue at the current (heard) playback position. Live taps are not
         grid-snapped unless snapping is on, and always land on a frame."""
-        t = self.engine.position()
-        with self.edit("Tap cue"):
+        t = self.engine.position() if t is None else t
+        before = {c.lane_id for c in self.project.cues if c.id in self.sel_cues}
+        with self.edit("Tap cue", lanes=before | {lane_id} if not self.sel_sugs else None):
             c = editing.add_cue(self.project, lane_id, t, self.snap)
             self.sel_cues = {c.id}
         return c

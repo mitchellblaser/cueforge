@@ -377,3 +377,18 @@ def test_ma3_import_tolerates_console_layout():
     assert lane.ma3_sequence == 12
     cues = q.cues_in_lane(lane.id)
     assert [(c.time, c.label, c.duration) for c in cues] == [(2.0, "Look 1", None), (3.0, "", 0.5)]
+
+
+def test_playhead_clock_is_smoothed():
+    """A late audio block must not make the playhead jump; a real jump (loop) resets it."""
+    import time as _t
+    e = _engine_with([("a", 0.0, 48000 * 30)])
+    e._playing = True
+    e._set_clock(5.0, 0.05)
+    p0 = e.position()
+    _t.sleep(0.05)
+    e._set_clock(5.0 + 0.05 + 0.02, 0.05)                 # 20 ms off: eased, not jumped
+    assert abs(e.position() - (p0 + 0.05)) < 0.015
+    e._set_clock(1.0, 0.05)                               # loop back: reset
+    assert abs(e.position() - 1.0 + 0.05) < 0.06
+    e._playing = False

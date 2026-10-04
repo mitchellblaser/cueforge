@@ -209,3 +209,52 @@ def test_review_regressions(tmp_path):
         (tmp_path / f).parent.mkdir(parents=True, exist_ok=True)
         (tmp_path / f).write_bytes(b"")
     assert [n for n, _ in song_groups_from_folder(str(tmp_path))] == ["Song"]
+
+
+def _bar_lengths(g):
+    b = np.asarray(g.beats)
+    idx = np.searchsorted(b, np.asarray(g.downbeats))
+    return np.diff(idx)
+
+
+def test_stop_time_keeps_the_grid():
+    """Stabs with rests (the band keeps counting) must not restart bars or bend the grid."""
+    audio, info = make_song(seed=4)
+    y = _mono(audio).copy()
+    db = np.asarray(info["downbeats"])
+    for k in range(10, 14):                            # four bars: hit on the one, then rest
+        a, b = int((db[k] + 0.25) * 22050), int(db[k + 1] * 22050)
+        y[a:b] *= 0.002
+    g = detect_beats_librosa(y, 22050, beats_per_bar=4)
+    assert (_bar_lengths(g) == 4).all(), _bar_lengths(g)
+    est = np.asarray(g.downbeats)
+    hits = [np.min(np.abs(est - d)) < 0.07 for d in db[db > 18]]
+    assert np.mean(hits) > 0.9
+
+
+def test_regular_bars_follow_real_odd_bars_only():
+    from cueforge.analysis.beats import regular_bars
+    beats = np.arange(0, 40, 0.5)
+    downs = list(np.arange(0, 8, 2.0)) + [8.0] + list(np.arange(9.0, 40, 2.0))     # one real 2/4 bar
+    assert list(beats[regular_bars(beats, np.array(downs), 4)][:7]) == [0, 2, 4, 6, 8, 9, 11]
+    stray = [x for x in np.arange(0, 40, 2.0) if x != 10.0] + [13.5]                # one missing, one stray
+    assert list(beats[regular_bars(beats, np.array(stray), 4)]) == list(np.arange(0, 40, 2.0))
+
+
+def test_model_grid_is_tidied():
+    """Raw deep-model output (jitter, missed / doubled beats, stray downbeats) becomes a
+    clean grid with regular bars."""
+    from cueforge.analysis.beats import _tidy_model_grid
+    audio, info = make_song(seed=5)
+    y = _mono(audio)
+    rng = np.random.default_rng(1)
+    beats = np.asarray(info["beats"])
+    b = beats + rng.normal(0, 0.012, len(beats))
+    b = b[rng.random(len(b)) > 0.04]
+    b = np.sort(np.r_[b, [(b[i] + b[i + 1]) / 2 for i in range(5, len(b) - 1, 23)]])
+    d = np.asarray(info["downbeats"])
+    d = np.sort(np.r_[d[rng.random(len(d)) > 0.1], beats[7::37]])
+    g = _tidy_model_grid(BeatGrid(list(b), list(d), 4, "Beat This!"), y, 22050)
+    assert (_bar_lengths(g) == 4).all()
+    est = np.asarray(g.downbeats)
+    assert np.mean([np.min(np.abs(est - x)) < 0.07 for x in info["downbeats"]]) > 0.9

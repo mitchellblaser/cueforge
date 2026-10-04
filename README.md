@@ -200,14 +200,21 @@ on the timeline.
      box (default 0.5 s, or *= 1 beat*).
    - Both work while playing (at the heard position, latency-compensated) or stopped, and
      snap to the grid when Snap is on.
-   - Selecting a Temp shows its hold in the Hold box; change it there to edit it. You can
-     also **drag the end of a Temp's hold bar** on the timeline. It snaps to half beats;
-     hold Alt for free movement. With several Temps selected, they all change together.
-     **Shift+W / Shift+Q** turn selected cues into Temps / normal cues.
+   - Selecting a Temp shows its hold in the Hold box; change it there to edit it. With several
+     Temps selected, the Hold box changes them all. You can also **drag the end of a Temp's
+     hold bar** on the timeline; it snaps to the grid, and Alt gives free movement.
+   - **Hold / fade for many cues (H):** select any number of cues (drag a box, or
+     Ctrl/Shift-click), press **H** (or right-click), and give them all a hold, turning Go
+     cues into Temps, or remove the hold to make them Go cues again. You can also set or clear
+     their fade. It's one undo step. **Shift+W / Shift+Q** quickly turn the selection into
+     Temps / normal cues.
    - Press a lane's **tap key** (1, 2, 3, …) during playback to drop a cue at the playhead.
      **Press and hold** it to drop a **Temp** for as long as you hold the key, e.g. hold 3 for
      a strobe. The Temp grows on the timeline while you hold. With Snap on, its start and end
-     snap to the grid.
+     snap to the grid. Every key holds on its own, so you can keep 3 down and tap 2 meanwhile.
+   - Taps are timed from the moment the key went down (from the key event's own timestamp),
+     so a busy screen never makes them land late. Snapping always goes to the nearest grid
+     point.
    - **Snap resolution** (next to *Snap* in the toolbar) is 1 beat, ½ or ¼ beat. It applies to
      new cues, drags, Temp ends and held Temps.
    - Double-click a lane to add a cue. Drag cues to move them (they snap to beats when
@@ -238,14 +245,17 @@ on the timeline.
 
 8. **MIDI & OSC control** (*File › MIDI & OSC control…*)
    - **MIDI**: pick the input and output ports. By default the bottom row of 8 pads (notes
-     36–43) drops cues into lanes 1–8, and the next row (44–51) drops Temps. Remap anything
+     36–43) drops cues into lanes 1–8, and the next row (44–51) drops Temps, on any MIDI
+     channel. That works out of the box with a **Midi Fighter Spectra** (bank 1, channel 3) and
+     with Launchpad / APC-style pad controllers. Ports are found again if the OS renumbers them. Remap anything
      with **Learn**. Other actions you can map: play/stop, next/previous lane, song or
      suggestion, accept/reject, undo, add section, loop.
    - **Temp pads** use the Hold time, or optionally *how long you hold the pad*, for live
      strobes.
-   - **Feedback**: pads light in their lane's colour (Launchpad / APC mini mk2-style velocity
-     palette, or plain on/off). The active lane's Temp pad is full brightness and pads flash
-     white on a hit.
+   - **Feedback**: pads light in their lane's colour, sent back on the channel the controller
+     uses. *Automatic* picks the colour scheme for the connected device: a Launchpad / APC mini
+     mk2-style palette, or approximate Midi Fighter colours. You can also choose plain on/off.
+     The active lane's Temp pad is full brightness and pads flash on a hit.
    - **OSC** (TouchOSC, Open Stage Control, a Stream Deck plugin…): listens on port 8100 by
      default. Addresses: `/cueforge/lane/N/cue|temp`, `/cueforge/cue|temp [lane]`,
      `/cueforge/play|stop|loop|undo|section`, `/cueforge/lane/next|prev`,
@@ -414,6 +424,7 @@ and cue numbers and labels are kept. Choose **Replace** (console is master) or *
 | Ctrl+Shift+R | Analyse all songs |
 | Ctrl+Alt+S | Scrub audio on/off |
 | Hold 1–9 | Hold a lane key during playback to drop a Temp for as long as it's held |
+| H | Hold / fade for all selected cues (Go ↔ Temp) |
 
 ---
 

@@ -12,7 +12,9 @@ class UndoStack:
         self.limit = limit
         self._undo: list[tuple[str, dict[str, Any]]] = []
         self._redo: list[tuple[str, dict[str, Any]]] = []
-        self.on_change: Callable[[], None] | None = None
+        # on_change(restored): restored=False after a new edit was recorded (the editor already
+        # refreshed what it changed), True after undo / redo / clear replaced the project state
+        self.on_change: Callable[[bool], None] | None = None
         self.clean_index = 0
 
     def push(self, label: str) -> None:
@@ -22,7 +24,7 @@ class UndoStack:
             self._undo.pop(0)
             self.clean_index -= 1
         self._redo.clear()
-        self._changed()
+        self._changed(False)
 
     def can_undo(self) -> bool:
         return bool(self._undo)
@@ -74,6 +76,6 @@ class UndoStack:
     def is_dirty(self) -> bool:
         return self.clean_index != len(self._undo)
 
-    def _changed(self) -> None:
+    def _changed(self, restored: bool = True) -> None:
         if self.on_change:
-            self.on_change()
+            self.on_change(restored)

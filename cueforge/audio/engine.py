@@ -15,7 +15,7 @@ import numpy as np
 from .loader import ENGINE_SR
 from .sounds import blip_sound, click_sounds
 
-BLOCK = 512
+BLOCK = 1024           # ~21 ms at 48 kHz: robust against short stalls in the UI thread
 
 
 def db_to_gain(db: float) -> float:
@@ -292,7 +292,22 @@ class AudioEngine:
             self._scrub_buf = grain
         self._ensure_output()
 
-    def _next_block(self, frames: int) -> np.ndarray:
+    def _set_clock(self, pos: float, lat: float) -> None:
+        """Anchor the playhead clock: song time `pos` is heard `lat` seconds from now.
+        Small differences from the running clock are eased in (no jitter when a block comes
+        late); a real jump (loop, seek) resets it."""
+        wall = time.perf_counter() + lat
+        if not self._playing or self._cb_wall <= 0:
+            self._cb_pos, self._cb_wall = pos, wall
+            return
+        pred = self._cb_pos + (wall - self._cb_wall) * self.speed
+        err = pos - pred
+        if abs(err) > 0.05:
+            self._cb_pos, self._cb_wall = pos, wall
+        else:
+            self._cb_pos, self._cb_wall = pred + 0.08 * err, wall
+
+    def _next_block(self, frames: int, lat: float | None = None) -> np.ndarray:
         with self._lock:
             if not self._playing:
                 out = np.zeros((frames, 2), np.float32)
@@ -314,8 +329,7 @@ class AudioEngine:
                 out[done:done + n] = self.render(self._pos, n, self.speed)
                 self._pos += n * self.speed / self.sr
                 done += n
-            self._cb_pos = self._pos - frames * self.speed / self.sr
-            self._cb_wall = time.perf_counter() + self.latency
+            self._set_clock(self._pos - frames * self.speed / self.sr, self.latency if lat is None else lat)
             if not self.loop_enabled and self.duration and self._pos > self.duration + 0.5:
                 self._playing = False
                 self._pos = self.duration
@@ -328,7 +342,7 @@ class AudioEngine:
         try:
             import sounddevice as sd
             self._stream = sd.OutputStream(samplerate=self.sr, channels=2, dtype="float32",
-                                           blocksize=BLOCK, device=self.device, latency="low",
+                                           blocksize=BLOCK, device=self.device, latency="high",
                                            callback=self._callback)
             self._stream.start()
             self.latency = float(self._stream.latency or 0.0)
@@ -344,7 +358,14 @@ class AudioEngine:
             self._fallback_thread.start()
 
     def _callback(self, outdata, frames, time_info, status) -> None:  # pragma: no cover - realtime
-        outdata[:] = self._next_block(frames)
+        lat = None
+        try:   # when this block reaches the speakers, by the driver's own clock
+            d = float(time_info.outputBufferDacTime - time_info.currentTime)
+            if 0.0 <= d < 1.0:
+                lat = d
+        except Exception:
+            pass
+        outdata[:] = self._next_block(frames, lat)
 
     def _fallback_loop(self) -> None:
         period = BLOCK / self.sr

@@ -3,11 +3,11 @@ from __future__ import annotations
 
 import time
 
-from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtGui import QBrush, QColor
+from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt, QTimer, Signal
+from PySide6.QtGui import QBrush, QColor, QFont
 from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QColorDialog, QComboBox, QGridLayout, QGroupBox,
                                QHBoxLayout, QHeaderView, QInputDialog, QLabel, QMenu, QMessageBox, QPushButton,
-                               QScrollArea, QSlider, QSpinBox, QSplitter, QTableWidget, QTableWidgetItem, QTreeWidget, QTreeWidgetItem, QListWidget, QListWidgetItem,
+                               QScrollArea, QSlider, QSpinBox, QSplitter, QTableView, QTableWidget, QTableWidgetItem, QTreeWidget, QTreeWidgetItem, QListWidget, QListWidgetItem,
                                QVBoxLayout, QWidget, QLineEdit)
 
 from ..core.model import KIND_LABELS, SUGGESTION_KINDS
@@ -17,9 +17,116 @@ from .session import RESERVED_KEYS, Session
 
 
 # ============================================================== cue list
+class CueModel(QAbstractTableModel):
+    """The cue list as a lazy model: Qt only asks for the rows on screen, so a rebuild is
+    a cheap reset instead of thousands of table items (adding a cue mid-song stays smooth)."""
+    COLS = ["Timecode", "Lane", "Cue", "Label", "Fade", "Temp", "Notes", "Src"]
+
+    def __init__(self, session: Session) -> None:
+        super().__init__()
+        self.s = session
+        self.cues: list = []
+        self.nums: dict[str, float] = {}
+        self.lit: dict[str, str] = {}
+        self.on_edit = None
+
+    def reload(self, cues: list, nums: dict[str, float]) -> None:
+        self.beginResetModel()
+        self.cues, self.nums = cues, nums
+        self.lit = {}
+        self.endResetModel()
+
+    def rowCount(self, parent=QModelIndex()) -> int:
+        return 0 if parent.isValid() else len(self.cues)
+
+    def columnCount(self, parent=QModelIndex()) -> int:
+        return 0 if parent.isValid() else len(self.COLS)
+
+    def headerData(self, section, orientation, role=Qt.DisplayRole):
+        if orientation == Qt.Horizontal and role == Qt.DisplayRole:
+            return self.COLS[section]
+        return None
+
+    def flags(self, index):
+        f = Qt.ItemIsEnabled | Qt.ItemIsSelectable
+        if index.column() not in (1, 7):
+            f |= Qt.ItemIsEditable
+        return f
+
+    def data(self, index, role=Qt.DisplayRole):
+        if not index.isValid() or index.row() >= len(self.cues):
+            return None
+        c = self.cues[index.row()]
+        col = index.column()
+        p = self.s.project
+        if role == Qt.UserRole:
+            return c.id
+        lane = p.lane(c.lane_id)
+        num = self.nums.get(c.id)
+        if role in (Qt.DisplayRole, Qt.EditRole):
+            if col == 0:
+                return seconds_to_tc(c.time, p.frame_rate, p.tc_offset)
+            if col == 1:
+                return lane.name if lane else "?"
+            if col == 2:
+                return "" if num is None else f"{num:g}"
+            if col == 3:
+                return c.label
+            if col == 4:
+                return "" if c.fade is None else f"{c.fade:g}"
+            if col == 5:
+                return "" if not c.duration else f"{c.duration:.2f}"
+            if col == 6:
+                return c.notes
+            return "AI" if c.source == "ai-accepted" else ""
+        mode = self.lit.get(c.id)
+        if role == Qt.BackgroundRole and mode:
+            bg = QColor(lane.color if lane else theme.ACCENT)
+            bg.setAlpha(150 if mode == "fired" else 60)
+            return QBrush(bg)
+        if role == Qt.ForegroundRole:
+            if col == 1 and lane:
+                return QColor(lane.color)
+            if col == 2 and c.number is None:
+                return QColor(theme.FG_DIM)
+            if col == 7:
+                return QColor("#ffd54f")
+        if role == Qt.FontRole and (mode == "fired" or (col == 2 and c.number is None)):
+            f = QFont()
+            f.setBold(mode == "fired")
+            f.setItalic(col == 2 and c.number is None)
+            return f
+        if role == Qt.ToolTipRole:
+            seq = (lane.ma3_sequence + p.song.seq_offset) if lane else 0
+            if col == 1 and lane:
+                return f"grandMA3 Sequence {seq}"
+            if col == 2 and num is not None:
+                return (f"Automatic: Sequence {seq} Cue {num:g} (in time order from the song's first cue number). "
+                        "Type a number to fix it.") if c.number is None else \
+                    f"Fixed: Sequence {seq} Cue {num:g}. Clear it to number automatically."
+            if col == 6 and c.notes:
+                return c.notes
+        return None
+
+    def setData(self, index, value, role=Qt.EditRole):
+        if role != Qt.EditRole or not index.isValid() or self.on_edit is None:
+            return False
+        self.on_edit(self.cues[index.row()].id, index.column(), str(value))
+        return True
+
+    def set_lit(self, state: dict[str, str], rows: dict[str, int]) -> None:
+        changed = set(self.lit) | set(state)
+        self.lit = state
+        for cid in changed:
+            r = rows.get(cid)
+            if r is not None:
+                self.dataChanged.emit(self.index(r, 0), self.index(r, len(self.COLS) - 1),
+                                      [Qt.BackgroundRole, Qt.FontRole])
+
+
 class CueTable(QWidget):
     seek_requested = Signal(float)
-    COLS = ["Timecode", "Lane", "Cue", "Label", "Fade", "Temp", "Notes", "Src"]
+    COLS = CueModel.COLS
 
     def __init__(self, session: Session, parent=None) -> None:
         super().__init__(parent)
@@ -29,7 +136,7 @@ class CueTable(QWidget):
         lay.setContentsMargins(4, 4, 4, 4)
         top = QHBoxLayout()
         self.lane_filter = QComboBox()
-        self.lane_filter.currentIndexChanged.connect(self.rebuild)
+        self.lane_filter.currentIndexChanged.connect(self.rebuild_now)
         top.addWidget(QLabel("Lane:"))
         top.addWidget(self.lane_filter, 1)
         self.count = QLabel()
@@ -42,11 +149,15 @@ class CueTable(QWidget):
         self.follow.toggled.connect(lambda v: (session.settings.set("cue_list_follow", v), self._light(force=True)))
         top.addWidget(self.follow)
         lay.addLayout(top)
-        self.table = QTableWidget(0, len(self.COLS))
-        self.table.setHorizontalHeaderLabels(self.COLS)
+        self.model = CueModel(session)
+        self.model.on_edit = self._edited
+        self.table = QTableView()
+        self.table.setModel(self.model)
         self.table.verticalHeader().setVisible(False)
+        self.table.verticalHeader().setDefaultSectionSize(22)
         self.table.setAlternatingRowColors(True)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.table.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed)
         hh = self.table.horizontalHeader()
         hh.setSectionResizeMode(QHeaderView.Interactive)
@@ -55,8 +166,7 @@ class CueTable(QWidget):
         for i, w in enumerate([92, 80, 44, 120, 40, 40, 80, 28]):
             if i != 3:
                 self.table.setColumnWidth(i, w)
-        self.table.itemSelectionChanged.connect(self._sel_from_table)
-        self.table.itemChanged.connect(self._edited)
+        self.table.selectionModel().selectionChanged.connect(self._sel_from_table)
         self.table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self._menu)
         lay.addWidget(self.table)
@@ -70,6 +180,10 @@ class CueTable(QWidget):
         self._tick.setInterval(60)
         self._tick.timeout.connect(self._light)
         self._tick.start()
+        self._pending = QTimer(self)                 # several changes in one edit -> one rebuild
+        self._pending.setSingleShot(True)
+        self._pending.setInterval(0)
+        self._pending.timeout.connect(self.rebuild_now)
         hint = QLabel("Double-click a cell to edit · right-click for more")
         hint.setStyleSheet(f"color: {theme.FG_DIM}; font-size: 10px;")
         lay.addWidget(hint)
@@ -82,18 +196,25 @@ class CueTable(QWidget):
 
     def _lanes(self) -> None:
         cur = self.lane_filter.currentData()
-        self.lane_filter.blockSignals(True)
-        self.lane_filter.clear()
-        self.lane_filter.addItem("All lanes", "")
-        for l in self.s.project.lanes:
-            self.lane_filter.addItem(l.name, l.id)
-        i = self.lane_filter.findData(cur)
-        self.lane_filter.setCurrentIndex(max(0, i))
-        self.lane_filter.blockSignals(False)
+        names = [("All lanes", "")] + [(l.name, l.id) for l in self.s.project.lanes]
+        if [(self.lane_filter.itemText(i), self.lane_filter.itemData(i))
+                for i in range(self.lane_filter.count())] != names:
+            self.lane_filter.blockSignals(True)
+            self.lane_filter.clear()
+            for n, lid in names:
+                self.lane_filter.addItem(n, lid)
+            i = self.lane_filter.findData(cur)
+            self.lane_filter.setCurrentIndex(max(0, i))
+            self.lane_filter.blockSignals(False)
         self.rebuild()
 
     def rebuild(self) -> None:
+        """Ask for a rebuild; several requests in a row are merged into one."""
+        self._pending.start()
+
+    def rebuild_now(self) -> None:
         from ..core.editing import effective_cue_numbers
+        self._pending.stop()
         p = self.s.project
         lane_id = self.lane_filter.currentData()
         cues = [c for c in p.cues if not lane_id or c.lane_id == lane_id]
@@ -102,39 +223,7 @@ class CueTable(QWidget):
             nums.update(effective_cue_numbers(p, l.id))
         self._auto_nums = nums
         self._syncing = True
-        self.table.setRowCount(len(cues))
-        for r, c in enumerate(cues):
-            lane = p.lane(c.lane_id)
-            auto = c.number is None
-            num = nums.get(c.id)
-            vals = [seconds_to_tc(c.time, p.frame_rate, p.tc_offset), lane.name if lane else "?",
-                    "" if num is None else f"{num:g}", c.label,
-                    "" if c.fade is None else f"{c.fade:g}", "" if not c.duration else f"{c.duration:.2f}",
-                    c.notes, "AI" if c.source == "ai-accepted" else ""]
-            for col, v in enumerate(vals):
-                it = QTableWidgetItem(v)
-                it.setData(Qt.UserRole, c.id)
-                if col in (1, 7):
-                    it.setFlags(it.flags() & ~Qt.ItemIsEditable)
-                if col == 1 and lane:
-                    it.setForeground(QColor(lane.color))
-                    it.setToolTip(f"grandMA3 Sequence {lane.ma3_sequence + p.song.seq_offset}")
-                if col == 2 and lane:
-                    seq = lane.ma3_sequence + p.song.seq_offset
-                    if auto:
-                        it.setForeground(QColor(theme.FG_DIM))
-                        f = it.font()
-                        f.setItalic(True)
-                        it.setFont(f)
-                        it.setToolTip(f"Automatic: Sequence {seq} Cue {num:g} (in time order from the song's first "
-                                      "cue number). Type a number to fix it.")
-                    else:
-                        it.setToolTip(f"Fixed: Sequence {seq} Cue {num:g}. Clear it to number automatically.")
-                if col == 7:
-                    it.setForeground(QColor("#ffd54f"))
-                if col == 6 and c.notes:
-                    it.setToolTip(c.notes)
-                self.table.setItem(r, col, it)
+        self.model.reload(cues, nums)
         self.count.setText(f"{len(cues)} cues")
         self._rows = {c.id: r for r, c in enumerate(cues)}
         self._lit = {}
@@ -182,61 +271,41 @@ class CueTable(QWidget):
             state, latest = {}, None
         elif not playing and not force and (not self._lit or eng.position() == self._last_pos):
             return                              # stopped and nothing moved: nothing to do
+        elif not self.isVisible() and not force:
+            return                              # hidden tab: no work while playing
         else:
             state, latest = self.active_cues(eng.position())
         self._last_pos = eng.position()
         state = {k: v for k, v in state.items() if k in self._rows}
         if state == self._lit and not force:
             return
-        p = self.s.project
-        was, self._syncing = self._syncing, True      # styling emits itemChanged: not an edit
-        for cid in set(self._lit) | set(state):
-            r = self._rows.get(cid)
-            if r is None:
-                continue
-            c = p.cue(cid)
-            lane = p.lane(c.lane_id) if c else None
-            mode = state.get(cid)
-            if mode:
-                col = QColor(lane.color if lane else theme.ACCENT)
-                col.setAlpha(150 if mode == "fired" else 60)
-                brush = QBrush(col)
-            else:
-                brush = QBrush()
-            for k in range(self.table.columnCount()):
-                it = self.table.item(r, k)
-                if it is None:
-                    continue
-                it.setBackground(brush)
-                f = it.font()
-                f.setBold(mode == "fired")
-                it.setFont(f)
-        self._syncing = was
+        self.model.set_lit(state, self._rows)
         self._lit = state
         if playing and latest in self._rows and latest in state and state[latest] == "fired" \
                 and time.monotonic() - self._user_scrolled > 3.0:
-            self.table.scrollToItem(self.table.item(self._rows[latest], 0), QAbstractItemView.PositionAtCenter)
+            self.table.scrollTo(self.model.index(self._rows[latest], 0), QAbstractItemView.PositionAtCenter)
 
     def _sel_from_session(self) -> None:
+        from PySide6.QtCore import QItemSelection, QItemSelectionModel
         self._syncing = True
-        self.table.clearSelection()
-        mode = self.table.selectionMode()
-        self.table.setSelectionMode(QAbstractItemView.MultiSelection)
+        sel = QItemSelection()
         first = None
-        for r in range(self.table.rowCount()):
-            it = self.table.item(r, 0)
-            if it and it.data(Qt.UserRole) in self.s.sel_cues:
-                self.table.selectRow(r)
-                first = first if first is not None else r
-        self.table.setSelectionMode(mode)
+        last_col = self.model.columnCount() - 1
+        for cid in self.s.sel_cues:
+            r = self._rows.get(cid)
+            if r is not None:
+                sel.select(self.model.index(r, 0), self.model.index(r, last_col))
+                first = r if first is None else min(first, r)
+        self.table.selectionModel().select(sel, QItemSelectionModel.ClearAndSelect)
         if first is not None:
-            self.table.scrollToItem(self.table.item(first, 0))
+            self.table.scrollTo(self.model.index(first, 0))
         self._syncing = False
 
-    def _sel_from_table(self) -> None:
+    def _sel_from_table(self, *_) -> None:
         if self._syncing:
             return
-        ids = {self.table.item(i.row(), 0).data(Qt.UserRole) for i in self.table.selectionModel().selectedRows()}
+        ids = {self.model.cues[i.row()].id for i in self.table.selectionModel().selectedRows()
+               if i.row() < len(self.model.cues)}
         self._syncing = True
         self.s.select(cues=ids)
         self._syncing = False
@@ -245,12 +314,8 @@ class CueTable(QWidget):
             if c:
                 self.seek_requested.emit(c.time)
 
-    def _edited(self, it: QTableWidgetItem) -> None:
-        if self._syncing:
-            return
-        cid = it.data(Qt.UserRole)
-        col = it.column()
-        txt = it.text().strip()
+    def _edited(self, cid: str, col: int, txt: str) -> None:
+        txt = txt.strip()
         p = self.s.project
         try:
             if col == 0:
@@ -283,7 +348,12 @@ class CueTable(QWidget):
         for lane in self.s.project.lanes:
             sub.addAction(lane.name, lambda lid=lane.id: self.s.move_selected_to_lane(lid))
         m.addAction("Clear cue numbers (auto)", self._clear_numbers)
+        m.addAction(f"Hold / fade for {len(self.s.sel_cues)} cue(s)…", self._hold_fade)
         m.exec(self.table.viewport().mapToGlobal(pos))
+
+    def _hold_fade(self) -> None:
+        from .dialogs import HoldFadeDialog
+        HoldFadeDialog(self.s, set(self.s.sel_cues), self).exec()
 
     def _clear_numbers(self) -> None:
         with self.s.edit("Clear numbers"):
@@ -486,14 +556,34 @@ class SuggestionPanel(QWidget):
         tip.setStyleSheet(f"color: {theme.FG_DIM}; font-size: 10px;")
         lay.addWidget(tip)
 
+        self._stale = False
+        self._pending = QTimer(self)                 # coalesce: one refresh per burst of edits
+        self._pending.setSingleShot(True)
+        self._pending.setInterval(0)
+        self._pending.timeout.connect(self.refresh_now)
         session.cues_changed.connect(self.refresh)
         session.lanes_changed.connect(self.refresh)
         session.project_replaced.connect(self.refresh)
         session.selection_changed.connect(self._sel_from_session)
         session.busy.connect(lambda m: self.analyse_btn.setEnabled(not m.startswith("Analys")))
-        self.refresh()
+        self.refresh_now()
 
     def refresh(self) -> None:
+        """Refresh soon; a hidden panel (another tab in front) refreshes when it is shown."""
+        if not self.isVisible():
+            self._stale = True
+            return
+        self._pending.start()
+
+    def showEvent(self, e) -> None:
+        super().showEvent(e)
+        if self._stale:
+            self._stale = False
+            self.refresh_now()
+
+    def refresh_now(self) -> None:
+        self._pending.stop()
+        self._stale = False
         self._refreshing = True
         s = self.s
         for r in self.rows.values():

@@ -132,6 +132,75 @@ def grid_from_click(y: np.ndarray, sr: int, beats_per_bar: int = 4) -> BeatGrid:
                     beats_per_bar, "click track", confirmed=False, confidence=round(0.7 + 0.3 * stability, 3))
 
 
+def regular_bars(beats: np.ndarray, downbeat_hits: np.ndarray, bpb: int, switch_cost: float = 3.0) -> np.ndarray:
+    """Bar lines every `bpb` beats, following a model's downbeat guesses only where they hold
+    up: Viterbi over the position in the bar. Counting on costs nothing, a model downbeat on
+    position 1 earns a point, one elsewhere (or a missing one on position 1) costs a point,
+    and restarting the count costs `switch_cost` — so one stray or missing downbeat never
+    makes a short bar, while a real odd bar (the model agreeing for ~2 bars) is followed.
+    Returns the indices of the downbeats in `beats`."""
+    n = len(beats)
+    if n == 0 or bpb < 2:
+        return np.arange(0, n, max(1, bpb))
+    hit = np.zeros(n, bool)
+    if len(downbeat_hits):
+        j = np.clip(np.searchsorted(beats, downbeat_hits), 1, n - 1)
+        near = np.where(np.abs(beats[j - 1] - downbeat_hits) < np.abs(beats[j] - downbeat_hits), j - 1, j)
+        ok = np.abs(beats[near] - downbeat_hits) < 0.1
+        hit[near[ok]] = True
+    emit = np.zeros((n, bpb))
+    emit[:, 0] = np.where(hit, 1.0, -1.0)
+    emit[hit, 1:] = -1.0
+    score = emit[0].copy()
+    back = np.zeros((n, bpb), int)
+    for i in range(1, n):
+        cont = np.roll(score, 1)                       # position k-1 -> k (bpb-1 -> 0)
+        best_prev = int(np.argmax(score))
+        jump = score[best_prev] - switch_cost          # restart the count anywhere
+        new = np.where(cont >= jump, cont, jump)
+        back[i] = np.where(cont >= jump, (np.arange(bpb) - 1) % bpb, best_prev)
+        score = new + emit[i]
+    pos = np.zeros(n, int)
+    pos[-1] = int(np.argmax(score))
+    for i in range(n - 1, 0, -1):
+        pos[i - 1] = back[i, pos[i]]
+    return np.flatnonzero(pos == 0)
+
+
+def _tidy_model_grid(g: BeatGrid, y: np.ndarray, sr: int) -> BeatGrid:
+    """A deep model's raw beats / downbeats: fill missed beats, drop doubled ones, smooth
+    the timing like our own tracker, and make the bars a regular length."""
+    import librosa
+    b = np.asarray(g.beats, float)
+    if len(b) < 8:
+        return g
+    med = float(np.median(np.diff(b)))
+    keep = [b[0]]
+    for x in b[1:]:                                    # a beat far too soon after the last: doubled
+        if x - keep[-1] >= 0.55 * med:
+            keep.append(x)
+    b = np.asarray(keep)
+    filled = [b[0]]
+    for x in b[1:]:                                    # missed beats (short dropouts only)
+        n = int(round((x - filled[-1]) / med))
+        if 1 < n <= 3:
+            filled += [filled[-1] + (x - filled[-1]) * k / n for k in range(1, n)]
+        filled.append(x)
+    b = np.asarray(filled)
+    env = librosa.onset.onset_strength(y=y, sr=sr, hop_length=HOP)
+    onsets = librosa.onset.onset_detect(onset_envelope=env, sr=sr, hop_length=HOP, units="frames")
+    on_t = _attack_times(y, sr, librosa.frames_to_time(onsets, sr=sr, hop_length=HOP)) if len(onsets) else np.zeros(0)
+    period0 = float(np.median(np.diff(b)))
+    free = free_pauses(internal_gaps(y, sr, period0), b, on_t)
+    if not free:
+        b, _ = _regularise(b, on_t)
+    b = b[b >= 0]
+    idx = regular_bars(b, np.asarray(g.downbeats, float), g.beats_per_bar)
+    downs = b[idx]
+    return BeatGrid([round(float(x), 6) for x in b], [round(float(x), 6) for x in downs], g.beats_per_bar,
+                    g.source, g.confirmed, g.confidence, round(float(downs[0]), 6) if len(downs) else None)
+
+
 def _torch_device() -> str:
     try:
         import torch
@@ -303,29 +372,57 @@ def internal_gaps(y: np.ndarray, sr: int, period: float, drop_db: float = 34.0) 
     return out
 
 
+def free_pauses(gaps: list[tuple[float, float]], beats: np.ndarray, on_t: np.ndarray,
+                tol: float = 0.12, drift: float = 0.02) -> list[tuple[float, float]]:
+    """The pauses after which the music comes back OFF the beat grid it left (free time,
+    a fermata, a restart). Stops where the band keeps counting (stabs, stop-time, a break
+    of a few beats) come back on a beat of the extrapolated grid and are not returned: for
+    those the grid and bar count carry on. The allowance is `tol` of a beat plus `drift`
+    per beat of rest, because a live band's tempo wanders while it rests."""
+    out = []
+    for a, b in gaps:
+        before = beats[beats <= a + 0.05]
+        if len(on_t):                                  # beats that really had a hit on them
+            near = np.min(np.abs(before[:, None] - on_t[None, :]), axis=1) < 0.06 if len(before) else []
+            played = before[near] if len(before) else before
+        else:
+            played = before
+        if len(before) < 4:
+            continue                                   # no tempo to extrapolate: leave it alone
+        p = float(np.median(np.diff(before[-9:])))     # the tracker's beat (hits may be bars apart)
+        anchor = played[-1] if len(played) and played[-1] > a - 4 * p else before[-1]
+        after = on_t[on_t >= b - 0.15]
+        if not len(after) or p <= 0:
+            continue
+        k = (after[0] - anchor) / p                    # beats from the last played beat to the re-entry
+        if abs(k - round(k)) > tol + drift * abs(k) and (b - a) >= 0.6:
+            out.append((a, b))
+    return out
+
+
 def _segmented_downbeats(beats: np.ndarray, feats, bpb: int, gaps: list[tuple[float, float]],
-                         period: float) -> tuple[np.ndarray, np.ndarray, float]:
+                         period: float, free: list[tuple[float, float]] | None = None
+                         ) -> tuple[np.ndarray, np.ndarray, float]:
     """Downbeat phase per stretch of music between pauses.
 
     After a pause the band may come back on any beat. When the pause lasted a whole number
     of beats the count probably carried on (a 'stop' of two bars), so continuing the count is
     preferred unless the music after the pause clearly says otherwise; after a free-time
-    pause each stretch decides its own bar 1. Returns (beats, downbeats, clarity)."""
+    pause each stretch decides its own bar 1. `free` (default: all gaps) are the pauses the
+    music comes back from off the grid (free_pauses()); the others keep counting unless the
+    music after them clearly starts a new bar. Returns (beats, downbeats, clarity)."""
+    free_set = set(gaps if free is None else free)
     keep = np.ones(len(beats), bool)
     cuts = []                              # beat index where a new segment starts, continuous?
-    for a, b in gaps:
-        length = (b - a) / period
-        continuous = abs(length - round(length)) < 0.2
+    for a, b in free_set:
         inside = (beats > a + 0.35 * period) & (beats < b - 0.35 * period)
-        if not continuous:
-            keep &= ~inside                # beats invented in a free-time pause
+        keep &= ~inside                    # beats invented in a free-time pause
     beats = beats[keep]
     feats = tuple(f[..., keep] if f.ndim > 1 else f[keep] for f in feats)
     for a, b in gaps:
         k = int(np.searchsorted(beats, b - 0.35 * period))
         if 0 < k < len(beats):
-            length = (b - a) / period
-            cuts.append((k, abs(length - round(length)) < 0.2))
+            cuts.append((k, (a, b) not in free_set))
     bounds = [0] + [k for k, _ in cuts] + [len(beats)]
     cont = {k: c for k, c in cuts}
     down_idx: list[int] = []
@@ -469,8 +566,7 @@ def detect_beats_librosa(y: np.ndarray, sr: int, beats_per_bar: int = 0) -> Beat
     # a free-time pause (not a whole number of beats) restarts the grid: regularise each
     # stretch of music on its own so a steady song isn't forced onto one grid across it
     period0 = float(np.median(np.diff(beats)))
-    gaps = internal_gaps(y, sr, period0)
-    free = [(a, b) for a, b in gaps if abs((b - a) / period0 - round((b - a) / period0)) >= 0.2]
+    free = free_pauses(internal_gaps(y, sr, period0), beats, on_t)
     if free:
         parts, steadies = [], []
         bounds = [-np.inf] + [x for gap in sorted(free) for x in gap] + [np.inf]
@@ -497,9 +593,9 @@ def detect_beats_librosa(y: np.ndarray, sr: int, beats_per_bar: int = 0) -> Beat
     feats = _beat_features(y, sr, beats)
     if not beats_per_bar:
         beats_per_bar = _detect_meter(feats)
-    gaps = internal_gaps(y, sr, period0)
-    beats, downbeats, clarity = _segmented_downbeats(beats, feats, beats_per_bar, gaps,
-                                                     float(np.median(np.diff(beats))))
+    beats, downbeats, clarity = _segmented_downbeats(beats, feats, beats_per_bar,
+                                                     internal_gaps(y, sr, period0),
+                                                     float(np.median(np.diff(beats))), free)
     med = float(np.median(np.diff(beats)))
     cv = float(np.std(np.diff(beats)) / (med + 1e-9))
     stability = 1.0 - min(1.0, cv * 3)
@@ -545,6 +641,7 @@ def detect_beats(y: np.ndarray, sr: int, use_deep: bool = True, beats_per_bar: i
     if use_deep:
         g = detect_beats_beat_this(y, sr)
         if g is not None:
+            g = _tidy_model_grid(g, y, sr)
             g = _trim_grid(g, y, sr)
             if g.bar_one is None and g.downbeats:
                 g.bar_one = g.downbeats[0]

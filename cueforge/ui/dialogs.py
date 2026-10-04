@@ -390,6 +390,68 @@ class SectionDialog(QDialog):
         super().accept()
 
 
+class HoldFadeDialog(QDialog):
+    """Hold / fade for all selected cues at once: turn Go cues into Temps and back."""
+
+    def __init__(self, session, cue_ids, parent=None) -> None:
+        super().__init__(parent)
+        self.s = session
+        self.ids = list(cue_ids)
+        cues = [c for c in session.project.cues if c.id in set(self.ids)]
+        self.setWindowTitle(f"Hold / fade — {len(cues)} cue(s)")
+        lay = QVBoxLayout(self)
+        temps = [c for c in cues if c.duration]
+        info = QLabel(f"{len(cues)} cue(s) selected: {len(temps)} Temp(s), {len(cues) - len(temps)} Go cue(s).")
+        lay.addWidget(info)
+        form = QFormLayout()
+        self.hold_mode = QComboBox()
+        for txt, key in (("Leave as they are", "keep"), ("Make them Temps with this hold", "temp"),
+                         ("Make them Go cues (no hold)", "go")):
+            self.hold_mode.addItem(txt, key)
+        self.hold_mode.setCurrentIndex(1 if len(temps) < len(cues) else 0)
+        form.addRow("Hold", self.hold_mode)
+        hold_row = QHBoxLayout()
+        self.hold = QDoubleSpinBox()
+        self.hold.setRange(0.03, 120.0)
+        self.hold.setDecimals(3)
+        self.hold.setSingleStep(0.1)
+        self.hold.setSuffix(" s")
+        self.hold.setValue(temps[0].duration if temps else session.temp_hold or 0.5)
+        hold_row.addWidget(self.hold)
+        g = session.project.beat_grid
+        for txt, mult in (("½ beat", 0.5), ("1 beat", 1.0), ("1 bar", float(g.beats_per_bar))):
+            b = QPushButton(txt)
+            b.setEnabled(len(g.beats) > 1)
+            b.clicked.connect(lambda _=False, m=mult: (self.hold.setValue(60.0 / g.bpm() * m) if g.bpm() else None,
+                                                       self.hold_mode.setCurrentIndex(1)))
+            hold_row.addWidget(b)
+        form.addRow("", hold_row)
+        self.fade_mode = QComboBox()
+        for txt, key in (("Leave as they are", "keep"), ("Set to", "set"), ("Clear (sequence default)", "clear")):
+            self.fade_mode.addItem(txt, key)
+        form.addRow("Fade", self.fade_mode)
+        self.fade = QDoubleSpinBox()
+        self.fade.setRange(0.0, 600.0)
+        self.fade.setDecimals(2)
+        self.fade.setSuffix(" s")
+        fades = [c.fade for c in cues if c.fade is not None]
+        self.fade.setValue(fades[0] if fades else 0.0)
+        self.fade.valueChanged.connect(lambda _v: self.fade_mode.setCurrentIndex(1))
+        form.addRow("", self.fade)
+        lay.addLayout(form)
+        lay.addWidget(_buttons(self, "Apply"))
+
+    def apply(self) -> int:
+        hm, fm = self.hold_mode.currentData(), self.fade_mode.currentData()
+        hold = False if hm == "keep" else (self.hold.value() if hm == "temp" else None)
+        fade = False if fm == "keep" else (self.fade.value() if fm == "set" else None)
+        return self.s.set_hold_fade(self.ids, hold, fade)
+
+    def accept(self) -> None:
+        self.apply()
+        super().accept()
+
+
 class CueDialog(QDialog):
     def __init__(self, session, cue_id: str, parent=None) -> None:
         super().__init__(parent)
@@ -610,7 +672,9 @@ SHORTCUTS = [
               ("↑ / ↓ or click a lane header", "Change the active lane"),
               ("Shift+W / Shift+Q", "Make selected cues Temps / normal cues"),
               ("1 … 9 (lane tap keys)", "Drop a cue in that lane at the playhead (works while playing)"),
-              ("Hold 1 … 9 while playing", "Drop a Temp for as long as the key is held (snaps to the grid)"),
+              ("Hold 1 … 9 while playing", "Drop a Temp for as long as the key is held (snaps to the grid); "
+                                           "keys hold independently"),
+              ("H", "Hold / fade for all selected cues (turn Go cues into Temps and back)"),
               ("Drag a lane header", "Reorder lanes (keys 1–9 follow the order)"),
               ("Double-click lane", "Add cue (Alt = don't snap)"), ("Double-click cue", "Edit cue"),
               ("Drag cue", "Move (snaps to beats when Snap is on; hold Alt to disable); drag to another lane to move it"),

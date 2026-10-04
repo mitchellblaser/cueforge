@@ -11,9 +11,27 @@ from typing import Callable
 
 from PySide6.QtCore import QObject, QTimer, Signal, Slot
 
-from .actions import WHITE, ControlSettings, MidiMapping, color_velocity
+from .actions import WHITE, ControlSettings, MidiMapping, color_velocity, midifighter_velocity
 
 MIN_HOLD = 0.05
+
+
+def match_port(saved: str, names: list[str]) -> str | None:
+    """The port `saved` refers to, even if the OS renumbered it since ("Midi Fighter Spectra 0"
+    -> "Midi Fighter Spectra 1", or ":24:0" client numbers on Linux)."""
+    if not saved:
+        return None
+    if saved in names:
+        return saved
+    import re
+
+    def base(n: str) -> str:
+        n = re.sub(r"\s+\d+:\d+$", "", n)            # ALSA "Name 24:0"
+        n = re.sub(r"[\s:]+\d+$", "", n)             # Windows "Name 1"
+        return n.strip().lower()
+    want = base(saved)
+    hits = [n for n in names if base(n) == want] or [n for n in names if want and want in n.lower()]
+    return hits[0] if hits else None
 
 
 class ControlHub(QObject):
@@ -63,6 +81,10 @@ class ControlHub(QObject):
         self.send_feedback()
 
     # ------------------------------------------------------------------ MIDI
+    def _refresh_feedback_later(self) -> None:
+        """Called on the MIDI thread: the UI thread re-sends the pad colours on its next event."""
+        self._fb_needed = True
+
     @staticmethod
     def midi_ports() -> tuple[list[str], list[str]]:
         try:
@@ -76,20 +98,48 @@ class ControlHub(QObject):
             import mido
         except Exception:
             return
+        ins, outs = self.midi_ports()
+        self._in_name = self._out_name = ""
         if self.cfg.midi_in:
+            name = match_port(self.cfg.midi_in, ins) or self.cfg.midi_in
             try:
-                self._in = mido.open_input(self.cfg.midi_in, callback=self._on_midi)
-                self.status.emit(f"MIDI in: {self.cfg.midi_in}")
+                self._in = mido.open_input(name, callback=self._on_midi)
+                self._in_name = name
+                self.status.emit(f"MIDI in: {name}")
             except Exception as exc:
-                self.status.emit(f"MIDI in failed: {exc}")
+                self.status.emit(f"MIDI in failed ({self.cfg.midi_in}): {exc}")
         if self.cfg.midi_out:
+            name = match_port(self.cfg.midi_out, outs) or self.cfg.midi_out
             try:
-                self._out = mido.open_output(self.cfg.midi_out)
+                self._out = mido.open_output(name)
+                self._out_name = name
             except Exception as exc:
-                self.status.emit(f"MIDI out failed: {exc}")
+                self.status.emit(f"MIDI out failed ({self.cfg.midi_out}): {exc}")
 
     def _on_midi(self, msg) -> None:            # rtmidi thread
         self.handle_midi(msg, self.s.engine.position())
+
+    def is_midifighter(self) -> bool:
+        names = (getattr(self, "_in_name", "") or self.cfg.midi_in) + " " + \
+            (getattr(self, "_out_name", "") or self.cfg.midi_out)
+        return "midi fighter" in names.lower() or "midifighter" in names.lower()
+
+    def feedback_mode(self) -> str:
+        if self.cfg.feedback != "auto":
+            return self.cfg.feedback
+        return "midifighter" if self.is_midifighter() else "palette"
+
+    def feedback_channel(self, m) -> int:
+        """Channel to light a pad on: the mapping's own, else the configured one, else the
+        channel the device was last heard on (Midi Fighters use channel 3)."""
+        if m.channel >= 0:
+            return m.channel
+        if self.cfg.feedback_channel >= 0:
+            return self.cfg.feedback_channel
+        seen = getattr(self, "_seen_channel", None)
+        if seen is not None:
+            return seen
+        return 2 if self.is_midifighter() else 0
 
     def handle_midi(self, msg, t: float) -> None:
         """Map one MIDI message (thread-safe; also used by tests)."""
@@ -97,6 +147,9 @@ class ControlHub(QObject):
         if kind is None:
             return
         number = msg.note if kind == "note" else msg.control
+        if getattr(self, "_seen_channel", None) != msg.channel:
+            self._seen_channel = msg.channel          # light pads back on the device's channel
+            self._refresh_feedback_later()
         if kind == "note":
             pressed = msg.type == "note_on" and msg.velocity > 0
         else:
@@ -107,7 +160,7 @@ class ControlHub(QObject):
                 self._learn.emit(MidiMapping(kind, msg.channel, number, ""))
             return
         for m in self.cfg.mappings():
-            if m.key() == (kind, msg.channel, number):
+            if m.matches(kind, msg.channel, number):
                 self._event.emit(m.action, pressed, t)
 
     def start_learn(self) -> None:
@@ -179,6 +232,9 @@ class ControlHub(QObject):
 
     @Slot(str, bool, float)
     def _dispatch(self, action: str, pressed: bool, t: float) -> None:
+        if getattr(self, "_fb_needed", False):         # the device's channel changed: relight pads
+            self._fb_needed = False
+            QTimer.singleShot(0, self.send_feedback)
         if action.startswith(("cue:", "temp:")):
             temp = action.startswith("temp:")
             if action.endswith(":active"):
@@ -216,21 +272,25 @@ class ControlHub(QObject):
         lane = self.s.project.lane(lid) if lid else None
         if lane is None:
             return 0
-        if self.cfg.feedback == "onoff":
+        mode = self.feedback_mode()
+        if mode == "onoff":
             return 127
         active = lid == self.s.active_lane_id
-        return color_velocity(lane.color, dim=not active and action.startswith("temp:"))
+        dim = not active and action.startswith("temp:")
+        if mode == "midifighter":
+            return midifighter_velocity(lane.color, dim=dim)
+        return color_velocity(lane.color, dim=dim)
 
     def feedback_messages(self) -> list:
         import mido
         out = []
-        if self.cfg.feedback == "off":
+        if self.feedback_mode() == "off":
             return out
         for m in self.cfg.mappings():
             if m.kind != "note":
                 continue
             v = self._pad_velocity(m.action)
-            out.append(mido.Message("note_on", channel=m.channel, note=m.number, velocity=v))
+            out.append(mido.Message("note_on", channel=self.feedback_channel(m), note=m.number, velocity=v))
         return out
 
     def send_feedback(self) -> None:
@@ -260,7 +320,9 @@ class ControlHub(QObject):
         for m in self.cfg.mappings():
             if m.action == action and m.kind == "note":
                 try:
-                    self._out.send(mido.Message("note_on", channel=m.channel, note=m.number, velocity=WHITE))
+                    flash = 127 if self.feedback_mode() in ("midifighter", "onoff") else WHITE
+                    self._out.send(mido.Message("note_on", channel=self.feedback_channel(m), note=m.number,
+                                                velocity=flash))
                 except Exception:
                     return
         QTimer.singleShot(120, self.send_feedback)

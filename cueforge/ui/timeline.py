@@ -66,6 +66,7 @@ class TimelineCanvas(QWidget):
         self._drag: dict | None = None
         self._last_playhead_x = -1
         self._render_w: int | None = None
+        self.hold_preview = None          # [(lane id, start, now)] for lane keys being held
         self._cache_t0 = 0.0
         self._cache_key = None
         self.font_small = QFont()
@@ -73,9 +74,12 @@ class TimelineCanvas(QWidget):
         self.font_bold = QFont()
         self.font_bold.setBold(True)
 
-        for sig in (session.tracks_changed, session.mixer_changed, session.lanes_changed, session.cues_changed,
-                    session.selection_changed, session.project_replaced, session.active_lane_changed):
+        for sig in (session.tracks_changed, session.mixer_changed, session.lanes_changed,
+                    session.project_replaced, session.active_lane_changed):
             sig.connect(self.invalidate)
+        for sig in (session.cues_changed, session.selection_changed):
+            sig.connect(self._content_changed)
+        self._dirty_rows: set[str] = set()
         session.project_replaced.connect(self._on_project)
 
         self.timer = QTimer(self)
@@ -162,7 +166,18 @@ class TimelineCanvas(QWidget):
 
     def invalidate(self, *_) -> None:
         self._cache = None
+        self._dirty_rows = set()
         self.update()
+
+    def _content_changed(self, *_) -> None:
+        """Cues / selection changed. When the edit says which lanes it touched (a tap while
+        playing), only those rows are redrawn into the cached strip."""
+        lanes = getattr(self.s, "touched_lanes", None)
+        if lanes is not None and self._cache is not None and self._drag is None:
+            self._dirty_rows |= set(lanes)
+            self.update()
+        else:
+            self.invalidate()
 
     def resizeEvent(self, e) -> None:
         self.invalidate()
@@ -202,6 +217,9 @@ class TimelineCanvas(QWidget):
     def paintEvent(self, e) -> None:
         if not self._cache_ok():
             self._render_strip()
+        elif self._dirty_rows:
+            self._repaint_rows(self._dirty_rows)
+        self._dirty_rows = set()
         dpr = self.devicePixelRatioF()
         p = QPainter(self)
         body_w = max(1, self.width() - HEADER_W)
@@ -221,18 +239,18 @@ class TimelineCanvas(QWidget):
         hp = getattr(self, "hold_preview", None)
         if not hp:
             return
-        lane_id, t0, t1 = hp
-        row = next((r for r in self._rows if r.kind == "lane" and r.id == lane_id), None)
-        lane = self.s.project.lane(lane_id)
-        if row is None or lane is None:
-            return
-        rr = self.row_rect(row)
-        x0, x1 = max(HEADER_W, self.x_of(t0)), self.x_of(t1)
-        if x1 <= HEADER_W:
-            return
-        col = QColor(lane.color)
-        col.setAlpha(110)
-        p.fillRect(QRectF(x0, rr.top() + 20, max(2.0, x1 - x0), rr.height() - 24), col)
+        for lane_id, t0, t1 in (hp if isinstance(hp, list) else [hp]):
+            row = next((r for r in self._rows if r.kind == "lane" and r.id == lane_id), None)
+            lane = self.s.project.lane(lane_id)
+            if row is None or lane is None:
+                continue
+            rr = self.row_rect(row)
+            x0, x1 = max(HEADER_W, self.x_of(t0)), self.x_of(t1)
+            if x1 <= HEADER_W:
+                continue
+            col = QColor(lane.color)
+            col.setAlpha(110)
+            p.fillRect(QRectF(x0, rr.top() + 20, max(2.0, x1 - x0), rr.height() - 24), col)
 
     def _render_strip(self) -> None:
         """Render a strip wider than the view, starting a little before it."""
@@ -247,6 +265,43 @@ class TimelineCanvas(QWidget):
             self.t0 = t0
             self._render_w = None
         self._cache_key = (self.width(), self.height(), self.devicePixelRatioF(), self.pps, self.v_off)
+
+    def _repaint_rows(self, lane_ids: set[str]) -> None:
+        """Redraw some lane rows into the cached strip (in the strip's own coordinates)."""
+        t0 = self.t0
+        self.t0 = self._cache_t0
+        self._render_w = int(self._cache.width() / self.devicePixelRatioF())
+        try:
+            p = QPainter(self._cache)
+            p.setRenderHint(QPainter.Antialiasing, False)
+            w = self._w()
+            body = QRect(HEADER_W, TOP_H, w - HEADER_W, self.height() - TOP_H)
+            self._vis_by_lane = {}
+            for sg in self.s.project.visible_suggestions():
+                self._vis_by_lane.setdefault(sg.lane_id, []).append(sg)
+            for i, r in enumerate(self._rows):
+                if r.kind != "lane" or r.id not in lane_ids:
+                    continue
+                rr = self.row_rect(r)
+                if rr.bottom() < TOP_H or rr.top() > self.height():
+                    continue
+                p.save()
+                p.setClipRect(QRect(0, max(rr.top(), TOP_H), w, rr.height()))
+                p.fillRect(rr, QColor("#232a33") if r.id == self.s.active_lane_id
+                           else QColor("#1c1f25" if i % 2 else "#1f2229"))
+                p.setPen(QColor("#2a2e36"))
+                p.drawLine(0, rr.bottom(), w, rr.bottom())
+                self._paint_loop(p, body)
+                self._paint_grid(p, body)
+                p.setClipRect(QRect(HEADER_W, max(rr.top(), TOP_H), w - HEADER_W, rr.height()))
+                self._paint_lane(p, r, rr)
+                p.setClipping(False)
+                self._paint_header(p, r, rr)
+                p.restore()
+            p.end()
+        finally:
+            self.t0 = t0
+            self._render_w = None
 
     def _render_cache(self) -> None:
         dpr = self.devicePixelRatioF()
@@ -1147,6 +1202,10 @@ class TimelineCanvas(QWidget):
         self.s.status.emit("Looping section (L toggles loop)")
         self.invalidate()
 
+    def _hold_fade_dialog(self) -> None:
+        from .dialogs import HoldFadeDialog
+        HoldFadeDialog(self.s, set(self.s.sel_cues), self).exec()
+
     def _context_menu(self, e) -> None:
         pos = e.position()
         s = self.s
@@ -1171,6 +1230,7 @@ class TimelineCanvas(QWidget):
             m.addAction("Snap to grid", s.snap_selected)
             m.addAction(f"Make Temp (hold {s.temp_hold:g}s)", lambda: s.set_selected_temp(True))
             m.addAction("Make normal cue", lambda: s.set_selected_temp(False))
+            m.addAction(f"Hold / fade for {len(s.sel_cues)} cue(s)…  (H)", self._hold_fade_dialog)
             sub = m.addMenu("Move to lane")
             for lane in s.project.lanes:
                 sub.addAction(lane.name, lambda lid=lane.id: s.move_selected_to_lane(lid))
