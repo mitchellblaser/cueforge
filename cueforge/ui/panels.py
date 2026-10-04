@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QColorDialog, QComb
                                QScrollArea, QSlider, QSpinBox, QSplitter, QTableView, QTableWidget, QTableWidgetItem, QTreeWidget, QTreeWidgetItem, QListWidget, QListWidgetItem,
                                QVBoxLayout, QWidget, QLineEdit)
 
-from ..core.model import KIND_LABELS, SUGGESTION_KINDS
+from ..core.model import KIND_LABELS, SUGGESTION_KINDS, lane_per_song
 from ..core.timecode import parse_tc, seconds_to_tc
 from . import theme
 from .session import RESERVED_KEYS, Session
@@ -125,7 +125,8 @@ class CueModel(QAbstractTableModel):
             return (self._bold_italic if it else self._bold) if fired else (self._italic if it else None)
         # tooltip
         p = self.s.project
-        seq = (lane.ma3_sequence + p.song.seq_offset) if lane else 0
+        from ..core.editing import sequence_number
+        seq = sequence_number(p, lane) if lane else 0
         if col == 1 and lane:
             return f"grandMA3 Sequence {seq}"
         if col == 2 and num is not None:
@@ -727,7 +728,7 @@ class SuggestionPanel(QWidget):
 
 # ============================================================== lanes
 class LanePanel(QWidget):
-    COLS = ["Name", "Colour", "Tap key", "MA3 seq", "Export"]
+    COLS = ["Name", "Colour", "Tap key", "MA3 seq", "Per song", "Export"]
 
     def __init__(self, session: Session, parent=None) -> None:
         super().__init__(parent)
@@ -747,7 +748,7 @@ class LanePanel(QWidget):
         vh.setDefaultAlignment(Qt.AlignCenter)
         vh.sectionMoved.connect(self._header_moved)
         vh.setToolTip("Drag to reorder lanes")
-        for i, w in enumerate([0, 56, 56, 64, 50]):
+        for i, w in enumerate([0, 56, 56, 64, 60, 50]):
             if w:
                 self.table.setColumnWidth(i, w)
         self.table.cellDoubleClicked.connect(self._dbl)
@@ -774,8 +775,8 @@ class LanePanel(QWidget):
         self.dup.setStyleSheet("color: #ffb74d;")
         lay.addWidget(self.dup)
         help_ = QLabel("Drag a lane by its ≡ handle (or its header on the timeline) to reorder; keys 1–9 follow the "
-                       "order. Each lane exports to one grandMA3 sequence. Cue numbers are automatic (in time "
-                       "order) unless you type one.")
+                       "order. Each lane exports to a grandMA3 sequence: its own one per song (Per song), or one "
+                       "shared by every song. Cue numbers are automatic (in time order) unless you type one.")
         help_.setWordWrap(True)
         help_.setStyleSheet(f"color: {theme.FG_DIM}; font-size: 10px;")
         lay.addWidget(help_)
@@ -843,10 +844,16 @@ class LanePanel(QWidget):
             seq.editingFinished.connect(lambda lid=l.id, w=seq: self.s.update_lane(lid, ma3_sequence=w.value())
                                         if self.s.project.lane(lid).ma3_sequence != w.value() else None)
             self.table.setCellWidget(r, 3, seq)
+            own = QCheckBox()
+            own.setChecked(lane_per_song(l))
+            own.setToolTip("On: every song gets its own sequence for this lane (Seq + the song's offset), "
+                           "cues from 1.\nOff: one sequence shared by all songs (e.g. hits, strobe).")
+            own.toggled.connect(lambda v, lid=l.id: self.s.update_lane(lid, per_song=v))
+            self.table.setCellWidget(r, 4, own)
             ex = QCheckBox()
             ex.setChecked(l.export)
             ex.toggled.connect(lambda v, lid=l.id: self.s.update_lane(lid, export=v))
-            self.table.setCellWidget(r, 4, ex)
+            self.table.setCellWidget(r, 5, ex)
             if l.id == cur:
                 self.table.selectRow(r)
         self._syncing = False
@@ -980,8 +987,9 @@ class SongList(QWidget):
             it = QListWidgetItem(f"{i}.  {song.name}\n{sub}\n{sub2}")
             it.setData(Qt.UserRole, song.id)
             it.setToolTip(f"{song.name}\nStarts at {seconds_to_tc(0, p.frame_rate, song.tc_offset)}\n"
-                          f"grandMA3 Timecode {song.ma3_timecode}, cues from {song.cue_start:g}"
-                          + (f", sequences +{song.seq_offset}" if song.seq_offset else "")
+                          f"grandMA3 Timecode {song.ma3_timecode}"
+                          + (f", own sequences +{song.seq_offset}" if song.seq_offset else "")
+                          + f", cues in shared lanes from {song.cue_start:g}"
                           + (f"\n{song.notes}" if song.notes else "")
                           + (f"\n{hidden} more suggestion(s) hidden by the Suggestion filters "
                              "(not rejected)" if hidden else ""))

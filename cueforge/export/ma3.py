@@ -49,7 +49,8 @@ def export_lanes(project: Project) -> list:
 
 
 def seq_number(project: Project, lane) -> int:
-    return lane.ma3_sequence + project.song.seq_offset
+    from ..core.editing import sequence_number
+    return sequence_number(project, lane)
 
 
 def build_ma3_xml(project: Project, timecode_number: int | None = None, duration: float | None = None,

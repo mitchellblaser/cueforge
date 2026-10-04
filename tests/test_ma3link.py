@@ -151,6 +151,8 @@ def test_song_switch_and_reload_do_not_restore(link, tmp_path):
     for k in (1, 0):                                   # what Session.switch_song does
         p.select_song(p.songs[k].id)
         s.project_replaced.emit()
+    # with two songs, per-song sequences are renamed "<song> <lane>" once; nothing is stored again
+    assert not any(c.startswith("Store") for c in link.sync_cues())
     assert link.sync_cues() == []
     from cueforge.core.model import Project
     s.project = Project.from_dict(p.to_dict())        # saved + reopened
@@ -168,7 +170,8 @@ def test_scope_changes_never_delete(link):
     p.select_song(song2.id)
     p.cues.append(Cue(lane_id=p.lanes[0].id, time=2.0, label="S2"))
     p.select_song(p.songs[0].id)
-    assert any("Cue 101" in c for c in link.sync_cues())
+    seq2 = p.lanes[0].ma3_sequence + song2.seq_offset                # song 2's own Main Cues
+    assert any(f"Sequence {seq2} Cue 1 " in c for c in link.sync_cues())
     link.cfg.all_songs = False
     p.lanes[1].export = False
     assert link.sync_cues() == []
@@ -243,11 +246,19 @@ def test_all_songs_sync(link):
     song2 = p.songs[-1]
     p.select_song(song2.id)
     p.cues.append(Cue(lane_id=p.lanes[0].id, time=2.0, label="S2"))
+    hits = p.lanes[1]
+    p.cues.append(Cue(lane_id=hits.id, time=3.0, duration=0.5))
     link.cfg.all_songs = True
     cmds = link.push_all()
-    nums = {c for c in cmds if c.startswith("Store")}
-    assert any(f"Cue {song2.cue_start:g} " in c for c in nums)        # second song's cue range
-    assert any(" Cue 1 " in c for c in nums)                          # first song too
+    stores = {c for c in cmds if c.startswith("Store")}
+    main = p.lanes[0]
+    seq1, seq2 = main.ma3_sequence, main.ma3_sequence + song2.seq_offset
+    assert f"Store Sequence {seq2} Cue 1 /Merge /NoConfirm" in stores    # song 2's own Main Cues, from 1
+    assert f"Store Sequence {seq1} Cue 1 /Merge /NoConfirm" in stores    # song 1's
+    # Hits is shared: song 2's cues go into the same sequence, in its own range
+    assert f"Store Sequence {hits.ma3_sequence} Cue {song2.cue_start:g} /Merge /NoConfirm" in stores
+    assert f'Label Sequence {seq2} "Second {main.name}"' in cmds
+    assert f'Label Sequence {hits.ma3_sequence} "{hits.name}"' in cmds
 
 
 def test_disabled_link_sends_nothing(link):
@@ -416,3 +427,31 @@ def test_fades_sync_to_console(link):
     assert link.sync_cues() == [f"Sequence {seq} Cue 1 CueFade 0"]       # removed: back to 0
     intro.fade = 3.0
     assert f"Sequence {seq} Cue 1 CueFade 3" in build_ma3_macro_commands(p)
+
+
+def test_old_project_moves_to_per_song_sequences(link):
+    """A two-song show pushed before per-song sequences: song 2's Main Cues (pinned 101, 102
+    in Sequence 1) move to their own sequence, numbered from 1; hand-typed numbers stay."""
+    from cueforge.core.model import Project
+    s = link.s
+    p = s.project
+    s2 = p.add_song("Second")
+    s2.seq_offset = 0                                  # as projects were before
+    main = p.lanes[0]
+    p.select_song(s2.id)
+    p.cues += [Cue(lane_id=main.id, time=1.0), Cue(lane_id=main.id, time=2.0),
+               Cue(lane_id=main.id, time=3.0, number=150.0)]          # last one typed by hand
+    p.sort_cues()
+    link.sync_cues()                                   # pins 101, 102 (old behaviour: shared range)
+    d = p.to_dict()
+    d.pop("per_song_seqs")
+    for sd in d["songs"]:
+        sd["seq_offset"] = 0
+    for c in d["songs"][1]["cues"]:                    # what the old numbering had pinned
+        if c["number"] is None or c["number"] < 150:
+            c["number"] = {1.0: 101.0, 2.0: 102.0}[c["time"]]
+            d["console"]["cues"][c["id"]] = [main.ma3_sequence, c["number"], ""]
+    q = Project.from_dict(d)
+    q.select_song(q.songs[1].id)
+    assert q.songs[1].seq_offset == 100
+    assert sorted(effective_cue_numbers(q, main.id).values()) == [1, 2, 150]

@@ -126,6 +126,10 @@ Rename, recolour, add or remove lanes in the **Lanes** panel. Each lane has:
 - **Colour** – double-click to change. MIDI pad lights follow this colour too.
 - **Tap key** – the key (1–9 by default) that drops a cue into this lane.
 - **MA3 seq** – the grandMA3 sequence number this lane exports to.
+- **Per song** – ticked: every song gets its own sequence for this lane (the lane's sequence
+  plus the song's offset: Main Cues on Seq 1 becomes Seq 1, 101, 201…) and its cues start at
+  1. Unticked: one sequence shared by every song, each song in its own cue range (1…, 101…,
+  201…). New projects tick it for Main Cues, Colour and FX, and leave Hits and Strobe shared.
 - **Export** – untick to keep a lane in CueForge only (handy for notes or ideas).
 
 Drag a lane by its **≡** handle in the panel, or by its header on the timeline, to reorder.
@@ -313,7 +317,8 @@ their fade. **Shift+W** / **Shift+Q** are quick ways to make the selection Temps
 ### Cue numbers
 
 You normally don't need to think about cue numbers. Each lane's cues are numbered in time
-order, starting from the song's *First cue number*. Automatic numbers are shown dimmed.
+order: from 1 in a per-song lane, from the song's *First cue in shared lanes* (1, 101, 201…)
+in a shared lane. Automatic numbers are shown dimmed.
 
 - Type a number on a cue to fix it. A cue added between two fixed numbers gets a point
   number such as 5.1.
@@ -451,13 +456,14 @@ Click **⚙** or double-click a song:
 - **Name**
 - **Starts at timecode** – where this song sits on the timecode.
 - **grandMA3 Timecode slot** – which Timecode pool object it imports into.
-- **First cue number** – where its cue numbers start.
-- **Sequence offset** – only if each song uses its own block of sequences.
+- **First cue in shared lanes** – where this song's cues start in sequences shared by every
+  song (hits, strobe).
+- **Own sequences offset** – added to the sequence of every *Per song* lane for this song.
 - **Notes**
 
 New songs get sensible defaults automatically: song 2 starts at 02:00:00:00, takes the next
-Timecode slot, and gets its own cue range (1, 101, 201…). Right-click › **Auto-number
-setlist** resets every song to that scheme.
+Timecode slot, gets its own sequences (+100: Main Cues on Seq 101) and its own cue range in
+shared lanes (101…). Right-click › **Auto-number setlist** resets every song to that scheme.
 
 ---
 
@@ -639,7 +645,7 @@ back lane names, colours, the active lane, the song name, and timecode while pla
 | Too many weak suggestions | Raise the type's confidence threshold, then **Reject hidden**. |
 | Few or no melody / lead suggestions | Import stems or tick Demucs. From a full mix, lead lines are off by default. |
 | Analysis is very slow | Untick Demucs, or install the GPU build of the AI models (Windows + NVIDIA). |
-| Export warns about cue number clashes | Give songs different first cue numbers (setlist › right-click › *Auto-number setlist*). |
+| Export warns about cue number clashes | Give songs different sequence offsets and shared-lane cue ranges (setlist › right-click › *Auto-number setlist*). |
 | Export warns about Go+ | Keep Temps in their own lane, or switch *Normal cues fire* to Goto. |
 | Two lanes use the same sequence | **Lanes panel › Numbering ▾ › Number MA3 sequences 1, 2, 3…** |
 | Live link: nothing happens on the console | Click *Send test*. On the console check *Receive Command* = Yes, the line and *Enable Input* are on, and the Prefix is empty (CueForge sends to `/cmd`). The System Monitor shows every OSC message received. |

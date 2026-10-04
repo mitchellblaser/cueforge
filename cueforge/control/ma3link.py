@@ -22,6 +22,7 @@ from dataclasses import asdict, dataclass
 from PySide6.QtCore import QObject, QTimer, Signal
 
 from ..core.editing import effective_cue_numbers, temp_cue_label
+from ..core.model import lane_per_song
 
 
 @dataclass
@@ -381,8 +382,9 @@ class MA3Link(QObject):
         for song in self._scope():
             with in_song(p, song):
                 for lane, seq, _, _ in self._lane_cues(p):
-                    multi = self.cfg.all_songs and song.seq_offset and len(p.songs) > 1
-                    out[seq] = f"{song.name} {lane.name}" if multi else lane.name
+                    # a per-song sequence is named after its song; a shared one after its lane
+                    own = lane_per_song(lane) and len(p.songs) > 1
+                    out[seq] = f"{song.name} {lane.name}" if own else lane.name
         return out
 
     def sync_cues(self) -> list[str]:

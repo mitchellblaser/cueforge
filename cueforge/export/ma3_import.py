@@ -168,9 +168,10 @@ def import_into_song(project: Project, show: TcShow, replace: bool = True, set_o
     for seq, tname, _ in items:
         if (seq, tname) in [(a, b) for a, b, _ in lanes_used]:
             continue
-        base_seq = None if seq is None else seq - song.seq_offset
-        lane = next((l for l in project.lanes if base_seq is not None and l.ma3_sequence == base_seq), None) \
+        from ..core.editing import sequence_number
+        lane = next((l for l in project.lanes if seq is not None and sequence_number(project, l) == seq), None) \
             or next((l for l in project.lanes if l.name.lower() == (tname or "").lower()), None)
+        base_seq = None if seq is None else seq - song.seq_offset
         if lane is None:
             n = len(project.lanes)
             lane = Lane(tname or f"Seq {seq}", LANE_COLORS[n % len(LANE_COLORS)], "", base_seq or n + 1)

@@ -52,6 +52,20 @@ class Lane:
     ma3_sequence: int = 1        # target sequence on export
     export: bool = True
     id: str = field(default_factory=new_id)
+    # own sequence per song (song's sequence offset added, cues from 1) or one sequence shared by
+    # every song (hits, strobes). None = decide by name (projects from before the option)
+    per_song: bool | None = None
+
+
+GLOBAL_LANE_WORDS = ("hit", "strobe")
+
+
+def lane_per_song(lane: Lane) -> bool:
+    """Does this lane get its own MA3 sequence in every song? Hits / strobe lanes default to
+    one shared sequence; everything else is per song."""
+    if lane.per_song is not None:
+        return bool(lane.per_song)
+    return not any(w in lane.name.lower() for w in GLOBAL_LANE_WORDS)
 
 
 @dataclass
@@ -229,8 +243,8 @@ class Song:
         self.view: dict[str, Any] = {}
         self.tc_offset = 0.0         # timecode at song time 0, in seconds (e.g. 3600 = 01:00:00:00)
         self.ma3_timecode = 1        # grandMA3 Timecode pool slot for this song
-        self.seq_offset = 0          # added to each lane's MA3 sequence number for this song
-        self.cue_start = 1.0         # first auto cue number for this song
+        self.seq_offset = 0          # added to per-song lanes' MA3 sequence numbers for this song
+        self.cue_start = 1.0         # first auto cue number for this song in shared (global) lanes
         self.notes = ""
         self.sections: list[SectionMarker] = []
         self.analysed = ""           # when the AI analysis last ran (ISO time), "" = never
@@ -363,6 +377,9 @@ class Project:
         s.tc_offset = (prev.tc_offset + 3600.0) if prev else 0.0
         s.ma3_timecode = (max(x.ma3_timecode for x in self.songs) + 1) if self.songs else 1
         s.cue_start = float(100 * (n - 1) + 1)
+        # per-song lanes: song 2's Main Cues goes to sequence 1 + 100 and so on (stored, so
+        # reordering the setlist never moves a song to other sequences)
+        s.seq_offset = (max(x.seq_offset for x in self.songs) + 100) if self.songs else 0
         self.songs.append(s)
         return s
 
@@ -403,7 +420,8 @@ class Project:
             used = {l.tap_key for l in self.lanes}
             n = len(self.lanes)
             lane = Lane(name, LANE_COLORS[n % len(LANE_COLORS)], key if key not in used else "",
-                        max((l.ma3_sequence for l in self.lanes), default=0) + 1)
+                        max((l.ma3_sequence for l in self.lanes), default=0) + 1,
+                        per_song=kind not in ("hit", "fill"))
             self.lanes.append(lane)
         self.analysis.lane_for_kind[kind] = lane.id
         return lane.id
@@ -467,6 +485,7 @@ class Project:
             "current": self.current,
             "console": self.console,
             "snap_div": self.snap_div,
+            "per_song_seqs": True,
         }
 
     @classmethod
@@ -493,4 +512,34 @@ class Project:
         p.analysis.lane_for_kind = dict(d.get("analysis", {}).get("lane_for_kind", {}))
         if not p.lanes:
             p.add_default_lanes()
+        if not d.get("per_song_seqs") and len(p.songs) > 1:
+            # from before per-song sequences: give each song its own block of sequences, and let
+            # per-song lanes number from 1 again — numbers the live link fixed (101, 102 … in
+            # song 2) are cleared; numbers typed by hand are kept
+            if not any(s.seq_offset for s in p.songs):
+                for i, s in enumerate(p.songs):
+                    s.seq_offset = 100 * i
+            from .editing import _number_plain
+            pinned = p.console.get("cues", {})
+            for s in p.songs:
+                if s.cue_start == 1:
+                    continue
+                for lane in (l for l in p.lanes if lane_per_song(l)):
+                    cues = sorted((c for c in s.cues if c.lane_id == lane.id), key=lambda c: c.time)
+                    # a link-fixed number is exactly what automatic numbering gave the cue
+                    maybe = {c.id for c in cues if c.number is not None and c.id in pinned}
+                    plain = [c for c in cues if not c.duration]
+                    keep = {c.id: c.number for c in plain}
+                    for c in plain:
+                        if c.id in maybe:
+                            c.number = None
+                    auto = _number_plain(s.cue_start, plain)
+                    for c in plain:
+                        c.number = None if (c.id in maybe and auto[c.id] == keep[c.id]) else keep[c.id]
+                    temps = [c for c in cues if c.duration and c.id in maybe]
+                    top = max((n for n in auto.values()), default=None)
+                    shared = s.cue_start if top is None else float(int(top) + 1)
+                    for c in temps:
+                        if c.number == shared:
+                            c.number = None
         return p

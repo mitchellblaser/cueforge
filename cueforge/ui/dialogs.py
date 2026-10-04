@@ -284,18 +284,21 @@ class SongDialog(QDialog):
         self.cue_start.setRange(0.001, 99999)
         self.cue_start.setDecimals(3)
         self.cue_start.setValue(song.cue_start)
-        self.cue_start.setToolTip("First automatic cue number for this song (explicit cue numbers are kept)")
-        form.addRow("First cue number", self.cue_start)
+        self.cue_start.setToolTip("First automatic cue number for this song in lanes shared by every song "
+                                  "(hits, strobe). Per-song lanes always start at 1. Fixed numbers are kept.")
+        form.addRow("First cue in shared lanes", self.cue_start)
         self.seq_offset = QSpinBox()
         self.seq_offset.setRange(0, 9999)
         self.seq_offset.setValue(song.seq_offset)
-        self.seq_offset.setToolTip("Added to every lane's sequence number for this song "
-                                   "(use it if each song has its own block of sequences)")
-        form.addRow("Sequence offset", self.seq_offset)
+        self.seq_offset.setToolTip("Added to the sequence number of every per-song lane for this song, so each "
+                                   "song gets its own Main Cues etc. Shared lanes keep their sequence.")
+        form.addRow("Own sequences offset", self.seq_offset)
         self.notes = QPlainTextEdit(song.notes)
         self.notes.setFixedHeight(60)
         form.addRow("Notes", self.notes)
-        seqs = ", ".join(f"{l.name} → Seq {l.ma3_sequence + song.seq_offset}" for l in p.lanes if l.export)
+        from ..core.model import lane_per_song
+        seqs = ", ".join(f"{l.name} → Seq {l.ma3_sequence + (song.seq_offset if lane_per_song(l) else 0)}"
+                         + ("" if lane_per_song(l) else " (shared)") for l in p.lanes if l.export)
         info = QLabel(f"<span style='color:{theme.FG_DIM}'>{seqs}</span>")
         info.setWordWrap(True)
         form.addRow(info)

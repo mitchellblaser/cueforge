@@ -235,11 +235,13 @@ class Session(QObject):
             self.cues_changed.emit()   # timecode display / ruler may change
 
     def auto_number_setlist(self, first_tc: float = 3600.0, gap: float = 3600.0) -> None:
-        """Song N starts at first_tc + (N-1)*gap, uses Timecode slot N and cues N01..."""
+        """Song N starts at first_tc + (N-1)*gap, uses Timecode slot N, its own sequences
+        +(N-1)*100 and cues N01... in shared lanes."""
         for i, song in enumerate(self.project.songs):
             song.tc_offset = first_tc + i * gap
             song.ma3_timecode = i + 1
             song.cue_start = float(100 * i + 1)
+            song.seq_offset = 100 * i
         self._touch()
         self.songs_changed.emit()
         self.cues_changed.emit()

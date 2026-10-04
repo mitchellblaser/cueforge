@@ -111,12 +111,13 @@ def effective_cue_numbers(project: Project, lane_id: str) -> dict[str, float]:
     cues = project.cues_in_lane(lane_id)
     plain = [c for c in cues if not c.duration]
     temps = [c for c in cues if c.duration]
-    result = _number_plain(project, plain)
+    start = first_cue_number(project, lane_id)
+    result = _number_plain(start, plain)
     if temps:
         shared = next((c.number for c in temps if c.number is not None), None)
         if shared is None:
             top = max(result.values(), default=None)
-            shared = float(project.song.cue_start) if top is None else float(int(top) + 1)
+            shared = float(start) if top is None else float(int(top) + 1)
         for c in temps:
             result[c.id] = shared
     return result
@@ -129,9 +130,24 @@ def temp_cue_label(project: Project, lane_id: str) -> str:
                 lane.name if lane else "")
 
 
-def _number_plain(project: Project, cues: list) -> dict[str, float]:
+def first_cue_number(project: Project, lane_id: str) -> float:
+    """Where automatic cue numbers start: 1 in a per-song lane (the song has the sequence to
+    itself), the song's own range (101, 201 …) in a lane shared by every song."""
+    from .model import lane_per_song
+    lane = project.lane(lane_id)
+    return 1.0 if lane is not None and lane_per_song(lane) else float(project.song.cue_start)
+
+
+def sequence_number(project: Project, lane) -> int:
+    """The lane's grandMA3 sequence in the current song: per-song lanes add the song's
+    sequence offset, shared lanes use the same sequence in every song."""
+    from .model import lane_per_song
+    return lane.ma3_sequence + (project.song.seq_offset if lane_per_song(lane) else 0)
+
+
+def _number_plain(start: float, cues: list) -> dict[str, float]:
     result: dict[str, float] = {}
-    last = project.song.cue_start - 1
+    last = start - 1
     used = {c.number for c in cues if c.number is not None}
     i = 0
     while i < len(cues):

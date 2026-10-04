@@ -13,7 +13,7 @@ from cueforge.analysis.tuning import learn_thresholds
 from cueforge.audio.engine import AudioEngine, db_to_gain
 from cueforge.audio.loader import ENGINE_SR, PeakPyramid, load_audio
 from cueforge.core import editing
-from cueforge.core.model import Project
+from cueforge.core.model import Project, lane_per_song
 from cueforge.core.timecode import FRAME_RATES, frame_count_to_tc
 from cueforge.export.csv_export import export_csv
 from cueforge.export.ltc import decode_ltc, generate_ltc, render_ltc_for_project
@@ -243,12 +243,19 @@ def test_setlist_exports(tmp_path):
     p = _project_with_cues()
     s2 = p.add_song("Second Song")
     assert s2.tc_offset == pytest.approx(3600) and s2.ma3_timecode == 2 and s2.cue_start == 101
+    assert s2.seq_offset == 100
     p.select_song(s2.id)
-    editing.add_cue(p, p.lanes[0].id, 5.0, label="Song2 intro")
-    editing.add_cue(p, p.lanes[0].id, 9.0)
-    # numbering starts at the song's cue_start
-    nums = sorted(editing.effective_cue_numbers(p, p.lanes[0].id).values())
-    assert nums == [101, 102]
+    main, hits = p.lanes[0], next(l for l in p.lanes if l.name == "Hits")
+    assert lane_per_song(main) and not lane_per_song(hits)
+    editing.add_cue(p, main.id, 5.0, label="Song2 intro")
+    editing.add_cue(p, main.id, 9.0)
+    editing.add_cue(p, hits.id, 6.0)
+    # Main Cues: the song's own sequence (1 + 100), numbered from 1
+    assert sorted(editing.effective_cue_numbers(p, main.id).values()) == [1, 2]
+    assert editing.sequence_number(p, main) == main.ma3_sequence + 100
+    # Hits: one sequence shared by every song, this song's cues from 101
+    assert list(editing.effective_cue_numbers(p, hits.id).values()) == [101]
+    assert editing.sequence_number(p, hits) == hits.ma3_sequence
     assert not cue_number_clashes(p)
     paths = export_ma3_xml_all(p, str(tmp_path / "xml"))
     assert len(paths) == 2 and "Second Song" in paths[1]
@@ -260,13 +267,16 @@ def test_setlist_exports(tmp_path):
     assert lua.count("{name=") >= 2 and "tc=2" in lua and "cue=101" in lua
     _luac_ok(lua, tmp_path)
     cmds = build_ma3_macro_commands(p, all_songs=True)
-    assert "Store Sequence 1 Cue 101 /Merge /NoConfirm" in cmds and "Store Sequence 1 Cue 1 /Merge /NoConfirm" in cmds
+    seq_main2 = main.ma3_sequence + 100
+    assert f"Store Sequence {seq_main2} Cue 1 /Merge /NoConfirm" in cmds          # song 2's own Main Cues
+    assert f"Store Sequence {main.ma3_sequence} Cue 1 /Merge /NoConfirm" in cmds  # song 1's
+    assert f"Store Sequence {hits.ma3_sequence} Cue 101 /Merge /NoConfirm" in cmds  # shared Hits
     # current song unchanged by the exports
     assert p.song.id == s2.id
-    # clash when the second song is set to start at cue 1 too
-    s2.cue_start = 1
+    # clash when the second song's own sequences overlap the first song's
+    s2.seq_offset = 0
     assert cue_number_clashes(p)
-    s2.seq_offset = 10
+    s2.seq_offset = 100
     assert not cue_number_clashes(p)
     path = tmp_path / "all.csv"
     export_csv(p, str(path), all_songs=True)
