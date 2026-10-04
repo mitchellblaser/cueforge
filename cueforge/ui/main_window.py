@@ -110,6 +110,9 @@ class MainWindow(QMainWindow):
             "loop:toggle": lambda: self.a_loop.toggle(),
         })
         self.control.status.connect(lambda m: self.statusBar().showMessage(m, 5000))
+        from ..control.ma3link import MA3Link
+        self.ma3link = MA3Link(self.s)
+        self.ma3link.status.connect(lambda m: self.statusBar().showMessage(m, 5000))
         self._build_menus()
         self._build_statusbar()
         self._tap_shortcuts: list[QShortcut] = []
@@ -468,6 +471,7 @@ class MainWindow(QMainWindow):
         f.addAction(self._act("Project settings (frame rate, TC offset)…", self.project_settings))
         f.addAction(self._act("Audio output…", self.audio_device))
         f.addAction(self._act("MIDI && OSC control…", self.control_settings))
+        f.addAction(self._act("grandMA3 live link…", self.link_settings, "Ctrl+L"))
         f.addSeparator()
         f.addAction(self._act("Quit", self.close, QKeySequence.Quit))
 
@@ -562,7 +566,7 @@ class MainWindow(QMainWindow):
         for act in (self.a_zoom_in, self.a_zoom_out, self.a_fit, self.a_follow):
             v.addAction(act)
         self.a_scrub = self._act("Scrub audio (hear audio while dragging the playhead)", self._set_scrub,
-                                 "Ctrl+Shift+S", True)
+                                 "Ctrl+Alt+S", True)
         self.a_scrub.setChecked(self.canvas.scrub_audio)
         v.addAction(self.a_scrub)
         v.addSeparator()
@@ -598,6 +602,9 @@ class MainWindow(QMainWindow):
         sb.addPermanentWidget(self.prog)
         sb.addPermanentWidget(self.cancel_btn)
         sb.addPermanentWidget(self.audio_label)
+        self.link_label = QLabel("")
+        self.link_label.setStyleSheet("color: #66bb6a; padding-left: 8px;")
+        sb.addPermanentWidget(self.link_label)
 
     # ================================================================ state sync
     def _project_replaced(self) -> None:
@@ -1034,6 +1041,16 @@ class MainWindow(QMainWindow):
         self.s.songs_changed.emit()
         QMessageBox.information(self, "Imported", "\n".join(report))
 
+    def link_settings(self) -> None:
+        from .link_dialog import LinkDialog
+        LinkDialog(self.ma3link, self).exec()
+        self._link_badge()
+
+    def _link_badge(self) -> None:
+        on = self.ma3link.active
+        self.link_label.setText("● MA3 link" if on else "")
+        self.link_label.setToolTip(f"Sending to {self.ma3link.cfg.host}:{self.ma3link.cfg.port}" if on else "")
+
     def control_settings(self) -> None:
         from .control_dialog import ControlDialog
         ControlDialog(self.control, self).exec()
@@ -1208,6 +1225,7 @@ class MainWindow(QMainWindow):
         if st:
             self.restoreState(QByteArray.fromHex(st.encode()))
         QTimer.singleShot(0, self.control.apply)   # open configured MIDI / OSC
+        QTimer.singleShot(0, lambda: (self.ma3link.apply(), self._link_badge()))
         from PySide6.QtGui import QGuiApplication
         if self.s.settings.get("dual_monitor") and len(QGuiApplication.screens()) > 1:
             QTimer.singleShot(300, lambda: self.dual_monitor(True))

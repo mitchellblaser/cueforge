@@ -79,21 +79,56 @@ def renumber_lane(project: Project, lane_id: str, start: float = 1.0, step: floa
 
 
 def effective_cue_numbers(project: Project, lane_id: str) -> dict[str, float]:
-    """Cue numbers used on export: explicit numbers kept, others filled in ascending."""
+    """Cue numbers used on export: explicit numbers kept, others filled in ascending.
+
+    Cues inserted before an explicitly numbered one share out the gap as point numbers
+    (5.1, 5.2 …) so numbers stay in time order and numbers already on the console never
+    shift. If a gap is too small even for 1/1000 steps, the leftovers continue past the
+    fixed cue (cue_number_clashes reports it)."""
     result: dict[str, float] = {}
     last = project.song.cue_start - 1
-    used = {c.number for c in project.cues_in_lane(lane_id) if c.number is not None}
-    for c in project.cues_in_lane(lane_id):
+    cues = project.cues_in_lane(lane_id)
+    used = {c.number for c in cues if c.number is not None}
+    i = 0
+    while i < len(cues):
+        c = cues[i]
         if c.number is not None:
             last = c.number
             result[c.id] = c.number
+            i += 1
             continue
+        j = i
+        while j < len(cues) and cues[j].number is None:
+            j += 1
+        run = cues[i:j]                                    # unnumbered cues before the next fixed one
+        nxt = cues[j].number if j < len(cues) else None
+        whole = []
         n = float(int(last) + 1)
-        while n in used:
+        for _ in run:
+            while n in used:
+                n += 1
+            whole.append(n)
             n += 1
-        used.add(n)
-        result[c.id] = n
-        last = n
+        if nxt is not None and whole and whole[-1] >= nxt:
+            nums = None
+            for step in (1.0, 0.1, 0.01, 0.001):
+                first = (int(round(last / step)) + 1) * step
+                cand = [round(first + k * step, 3) for k in range(len(run))]
+                if cand[-1] < nxt - 1e-9 and not used.intersection(cand):
+                    nums = cand
+                    break
+            if nums is None:                                # even 1/1000 steps don't fit
+                gap = (nxt - last) / (len(run) + 1)
+                cand = [round(last + gap * (k + 1), 3) for k in range(len(run))]
+                ok = len(set(cand)) == len(cand) and cand[0] > last and cand[-1] < nxt and not used.intersection(cand)
+                nums = cand if ok else whole
+        else:
+            nums = whole
+        for cue, num in zip(run, nums):
+            result[cue.id] = num
+            used.add(num)
+        last = nums[-1]
+        i = j
     return result
 
 

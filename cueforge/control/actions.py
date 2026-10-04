@@ -74,7 +74,7 @@ class ControlSettings:
     hold_from_press: bool = False  # Temp hold = how long the pad/button is held
     midi_map: list[dict] = field(default_factory=lambda: [asdict(m) for m in default_midi_map()])
     osc_enabled: bool = False
-    osc_port: int = 8000
+    osc_port: int = 8100         # not 8000: grandMA3 often uses 8000 on the same machine
     osc_feedback_host: str = "127.0.0.1"
     osc_feedback_port: int = 9000
 

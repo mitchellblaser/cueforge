@@ -36,7 +36,7 @@ class TcShow:
     tracks: list[TcTrack] = field(default_factory=list)
 
 
-def _seconds(v: str | None) -> float | None:
+def _seconds(v: str | None, ticks: bool = True) -> float | None:
     if v is None or v == "":
         return None
     v = v.strip().rstrip("s")
@@ -46,8 +46,20 @@ def _seconds(v: str | None) -> float | None:
         n = int(v)
     except ValueError:
         return None
-    # MA3 stores times in 1/2^24 s ticks; small integers are plain seconds
-    return n / MA3_TICKS_PER_SECOND if abs(n) >= 1_000_000 else float(n)
+    # MA3 stores times in 1/2^24 s ticks; files written in seconds use small integers
+    return n / MA3_TICKS_PER_SECOND if ticks else float(n)
+
+
+def _uses_ticks(tc) -> bool:
+    """Decide the time unit once per file: any integer time of a second's worth of ticks
+    or more means the whole file is in ticks (a cue at 0.04 s is 671089 ticks)."""
+    ints = []
+    for el in tc.iter():
+        for key in ("Time", "Offset", "Duration"):
+            v = (el.get(key) or "").strip().rstrip("s")
+            if v.lstrip("-").isdigit():
+                ints.append(abs(int(v)))
+    return bool(ints) and max(ints) >= 1_000_000
 
 
 def _seq_from(text: str | None) -> int | None:
@@ -72,13 +84,14 @@ def parse_timecode_xml(text: str) -> TcShow:
     tc = root if root.tag == "Timecode" else root.find(".//Timecode")
     if tc is None:
         raise ValueError("No <Timecode> in this file")
-    show = TcShow(tc.get("Name", "Timecode"), _seconds(tc.get("Offset")))
+    ticks = _uses_ticks(tc)
+    show = TcShow(tc.get("Name", "Timecode"), _seconds(tc.get("Offset"), ticks))
     for tr in tc.iter("Track"):
         track = TcTrack(tr.get("Name", ""), _seq_from(tr.get("Target")))
         for el in tr.iter():
             if el is tr or el.get("Time") is None or el.tag in ("TimeRange",):
                 continue
-            t = _seconds(el.get("Time"))
+            t = _seconds(el.get("Time"), ticks)
             if t is None:
                 continue
             cmd = el.find("RealtimeCmd")

@@ -35,9 +35,13 @@ Demucs (advanced AI) · PyInstaller (packaging).
 | 4 | AI v2 — per-stem hits (imported stems / Demucs), energy, batch accept, threshold learning | Done |
 | 5 | Live music & beyond drums — tempo-following beats, meter, tap-along grid, drum fills → strobes, chord changes → colour, lead lines → chase steps, multi-genre accuracy corpus | Done (see docs/ACCURACY.md) |
 | 6 | Setlist: multiple songs per project with own timecode / MA3 slot / cue range; fast-fill strobe detection | Done |
-| 7 | Later — live LTC/MTC output, OSC to console | Not started |
+| 7 | Arranging & control — sections, copy/paste, pattern fill, scrub, pop-out/dual monitor, MIDI/OSC tapping with feedback, MA3 round trip | Done |
+| 8 | grandMA3 live link — OSC command line: live preview, cue-list sync, number pinning, timecode push to onPC | Done (needs console verification) |
+| 9 | Later — live LTC/MTC output | Not started |
 
 ## Known limitations / next steps
+- Live link command syntax (`/gma3/cmd`, `Temp`/`Off`, `Import Timecode … /File`) and the
+  onPC library path are unverified; all commands are editable templates in the link dialog.
 - grandMA3 timecode XML layout is undocumented: verify an import in grandMA3 onPC; fall back to the Lua plugin.
 - Deep-learning backends (Beat This!, Demucs, All-In-One) are wired in and tested with stand-in
   models; real weights download on first use and were not exercised in CI.

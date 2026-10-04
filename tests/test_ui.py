@@ -556,3 +556,17 @@ def test_import_ma3_ui(app, win, monkeypatch):
     win.import_ma3(paths, replace=True)
     assert [c.label for c in s.project.songs[0].cues] == ["A"]
     assert [c.label for c in s.project.songs[1].cues] == ["B"]
+
+
+def test_ma3_link_dialog(app, win):
+    from cueforge.ui.link_dialog import LinkDialog
+    d = LinkDialog(win.ma3link, win)
+    d.enabled.setChecked(True)
+    d.port.setValue(9)                        # discard port: nothing listens
+    d.tpl["go"].setText("Go Sequence {seq}")
+    d.accept()
+    assert win.ma3link.active and win.ma3link.cfg.cmd_go == "Go Sequence {seq}"
+    win._link_badge()
+    assert "MA3" in win.link_label.text()
+    win.ma3link.cfg.enabled = False
+    win.ma3link.apply()

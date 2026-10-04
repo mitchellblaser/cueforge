@@ -278,8 +278,10 @@ def test_go_plus_tokens_and_warnings():
     assert set(cue_tokens(p, lane).values()) == {"Goto"}
     p.export.ma3_cue_token = "Go+"
     assert not go_plus_warnings(p)
-    p.cues_in_lane(lane)[-1].number = 0.5           # last cue numbered before the others
+    p.cues_in_lane(lane)[0].number = 10             # first cue numbered after the others
+    p.cues_in_lane(lane)[-1].number = 2
     assert any("not in time order" in w for w in go_plus_warnings(p))
+    p.cues_in_lane(lane)[0].number = None
     p.cues_in_lane(lane)[-1].number = None
     p.cues_in_lane(lane)[1].duration = 0.5          # Temp mixed with Go+ cues -> warning
     assert any("Temps" in w for w in go_plus_warnings(p))

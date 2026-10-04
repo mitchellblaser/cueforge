@@ -202,7 +202,7 @@ on the timeline.
    - **Feedback**: pads light in their lane's colour (Launchpad / APC mini mk2-style velocity
      palette, or plain on/off). The active lane's Temp pad is full brightness and pads flash
      white on a hit.
-   - **OSC** (TouchOSC, Open Stage Control, a Stream Deck plugin…): listens on port 8000 by
+   - **OSC** (TouchOSC, Open Stage Control, a Stream Deck plugin…): listens on port 8100 by
      default. Addresses: `/cueforge/lane/N/cue|temp`, `/cueforge/cue|temp [lane]`,
      `/cueforge/play|stop|loop|undo|section`, `/cueforge/lane/next|prev`,
      `/cueforge/song/next|prev`, `/cueforge/suggestion/next|prev|accept|reject`. Float
@@ -255,6 +255,50 @@ anywhere, or use *View › Pop out*.
   from both windows, and the layout is remembered.
 - *View › Reset panel layout* puts everything back.
 
+## grandMA3 live link (File › grandMA3 live link…, Ctrl+L)
+
+CueForge can drive a grandMA3 console or onPC directly over the network while you program.
+Nothing has to run on the console: CueForge sends command-line text over OSC.
+
+**Console setup (once).** *Menu › In & Out › OSC*, add a line:
+- Destination IP: the CueForge computer. Port: 8000 (the port set in CueForge).
+- Mode: UDP. Tick **Receive** and **Receive Command**. Prefix: `gma3`.
+- Enable OSC input.
+
+CueForge sends to `/gma3/cmd`. On the same computer as onPC, use IP `127.0.0.1`.
+
+What the link does:
+- **Live preview.** While CueForge plays, each cue fires on the console as the playhead
+  reaches it: Go+ or Goto as in the export. Temps fire `Temp` at the cue and `Off` on the
+  sequence when the hold ends.
+  - When you start playback or jump, every lane is put on its current cue.
+  - Stopping releases any Temp that is still running.
+- **Cue-list sync.** New cues are created (`Store … /Merge`) and labelled in their
+  sequence, and sequences are named after their lanes. Changes are sent about half a second
+  after you edit.
+  - The project file remembers which cues are already on the console. Switching songs,
+    undoing or reopening the project doesn't create them again.
+  - Deleting cues on the console is off unless you tick it. Even then, CueForge only deletes
+    cues it created itself, and only when you deleted them in CueForge. A song that drops
+    out of the sync, or a lane you stop exporting, never triggers a delete.
+  - *Push all cues now* creates everything again, for example for a fresh show file.
+- **Fixed cue numbers** (on by default). A cue's number is frozen once it has been sent to
+  the console.
+  - A cue you add later between 5 and 6 becomes 5.1, so cues you have already programmed
+    looks into never get renumbered.
+- **Timecode push** (onPC on the same computer). Each song's timecode XML is written into
+  onPC's timecode library and imported into the song's slot (`Import Timecode`).
+  - It updates automatically a few seconds after you stop editing.
+  - The library folder is a best guess; check it in the dialog.
+- **Command syntax** is editable (tick *Command syntax* in the dialog) in case your MA3
+  version wants different wording. *Last commands sent* shows exactly what went out.
+
+> **Keep the programmer clear** while the link creates cues: `Store /Merge` stores whatever
+> is in the programmer into the new cue. The command syntax (OSC `cmd` address, `Temp` /
+> `Temp` / `Off` wording, `Import Timecode` options) was written from MA3 v2.x documentation and
+> could not be tried on a console here. Try it on onPC first and adjust the templates if a
+> command is rejected. The console's command-line feedback shows any errors.
+
 ## Round trip from the console
 
 *File › Import grandMA3 timecode XML…* reads timecode shows back in, for example after
@@ -295,6 +339,8 @@ and cue numbers and labels are kept. Choose **Replace** (console is master) or *
 | Ctrl+PgUp / Ctrl+PgDn | Previous / next song in the setlist |
 | Ctrl+Shift+N | Add a song |
 | Ctrl+Z / Ctrl+Shift+Z | Undo / redo |
+| Ctrl+L | grandMA3 live link settings |
+| Ctrl+Alt+S | Scrub audio on/off |
 
 ---
 

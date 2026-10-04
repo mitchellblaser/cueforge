@@ -582,7 +582,8 @@ SHORTCUTS = [
                         ("Double-click suggestion", "Accept"),
                         ("Right-click lead line", "Accept as chase steps (one cue per note)")]),
     ("View", [("Ctrl + wheel / + / -", "Zoom"), ("Wheel / Shift+wheel", "Scroll"), ("F", "Follow playhead on/off"),
-              ("Z", "Zoom to fit")]),
+              ("Z", "Zoom to fit"), ("Ctrl+Alt+S", "Scrub audio on/off")]),
+    ("grandMA3", [("Ctrl+L", "Live link: preview cues on the console while playing, keep cue lists in sync")]),
 ]
 
 

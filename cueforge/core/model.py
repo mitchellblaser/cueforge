@@ -299,6 +299,9 @@ class Project:
         self.lanes: list[Lane] = []
         self.analysis = AnalysisSettings()
         self.export = ExportSettings()
+        # what the grandMA3 live link has already created on the console (not undoable:
+        # it records the console's state): {"cues": {cue id: [seq, number, label]}, "seqs": {seq: name}}
+        self.console: dict[str, Any] = {}
         self.add_default_lanes()
 
     # -- songs ------------------------------------------------------------
@@ -429,6 +432,7 @@ class Project:
             "export": asdict(self.export),
             "songs": [s.to_dict() for s in self.songs],
             "current": self.current,
+            "console": self.console,
         }
 
     @classmethod
@@ -442,6 +446,7 @@ class Project:
             p.analysis.thresholds.setdefault(k, defaults.thresholds[k])
             p.analysis.visible.setdefault(k, True)
         p.export = _from_dict(ExportSettings, d.get("export", {}))
+        p.console = d.get("console") or {}
         if "songs" in d:
             p.songs = [Song.from_dict(x) for x in d["songs"]] or [Song("Song 1")]
             p.current = int(d.get("current", 0))
