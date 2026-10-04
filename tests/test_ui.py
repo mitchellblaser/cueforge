@@ -1087,3 +1087,21 @@ def test_pad_lights_output_and_overrides(app, win, monkeypatch):
     assert shown and shown[0][1] == 0 and len({v for _, v in shown}) == len(shown)
     hub.cfg.midi_in = hub.cfg.midi_out = ""
     hub.apply()
+
+
+def test_pad_lights_explain_why_not(app, win, monkeypatch):
+    import mido
+    hub = win.control
+    monkeypatch.setattr(type(hub), "midi_ports", staticmethod(lambda: (["MIDIIN2 (Midi Fighter Spectra)"],
+                                                                          ["MIDIOUT2 (Midi Fighter Spectra)"])))
+    monkeypatch.setattr(mido, "open_input", lambda name, callback=None: object())
+
+    def busy(name):
+        raise OSError("MMSYSERR_ALLOCATED")
+    monkeypatch.setattr(mido, "open_output", busy)
+    hub.cfg.midi_in, hub.cfg.midi_out = "MIDIIN2 (Midi Fighter Spectra)", ""
+    hub.apply()
+    assert hub.test_lights() == []
+    assert "MIDIOUT2 (Midi Fighter Spectra)" in hub.midi_error and "one program at a time" in hub.midi_error
+    hub.cfg.midi_in = ""
+    hub.apply()

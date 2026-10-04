@@ -137,6 +137,7 @@ class ControlDialog(QDialog):
         lay.addWidget(bb)
         hub.learned.connect(self._learned)
         self._fill()
+        self._auto_output()                        # an input is set but no output yet: fill it in
 
     def _fill(self) -> None:
         n_lanes = max(8, len(self.hub.s.project.lanes))
@@ -181,7 +182,12 @@ class ControlDialog(QDialog):
         self.hub.apply()
         shown = self.hub.test_lights()
         if not shown:
-            self.learn_label.setText("No pad lights sent: choose the controller as Output (pad lights).")
+            why = getattr(self.hub, "midi_error", "") or ""
+            if not why and not cfg.midi_in and not cfg.midi_out:
+                why = "Choose your controller as Input (and Output) first."
+            elif not why:
+                why = "The output port didn't open. Choose your controller as Output (pad lights)."
+            self.learn_label.setText(f"<span style='color:#ffb74d'>No pad lights sent.</span> {why}")
             return
         self.learn_label.setText("Pads lit with LED values: " + ", ".join(f"note {n} = {v}" for n, v in shown[:16])
                                  + ". Note the colours you like and type them into Pad light.")

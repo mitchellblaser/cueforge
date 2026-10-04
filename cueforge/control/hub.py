@@ -30,8 +30,20 @@ def match_port(saved: str, names: list[str]) -> str | None:
         n = re.sub(r"[\s:]+\d+$", "", n)             # Windows "Name 1"
         return n.strip().lower()
     want = base(saved)
-    hits = [n for n in names if base(n) == want] or [n for n in names if want and want in n.lower()]
-    return hits[0] if hits else None
+    hits = [n for n in names if base(n) == want] or [n for n in names if want and want in n.lower()] or \
+        [n for n in names if base(n) and base(n) in want]
+    if hits:
+        return hits[0]
+    # different wrappers on input / output ("MIDIIN2 (Midi Fighter Spectra)" vs "MIDIOUT2 (…)"):
+    # the port sharing the most distinctive words
+    junk = {"midi", "in", "out", "port", "input", "output", "midiin", "midiout", "usb", "device"}
+
+    def words(n: str) -> set[str]:
+        return {w for w in re.findall(r"[a-z][a-z0-9]+", n.lower())
+                if len(w) > 2 and w not in junk and not re.fullmatch(r"midi(in|out)\d*", w)}
+    ws = words(saved)
+    scored = sorted(((len(ws & words(n)), n) for n in names), reverse=True)
+    return scored[0][1] if scored and scored[0][0] >= 1 else None
 
 
 class ControlHub(QObject):
@@ -100,6 +112,7 @@ class ControlHub(QObject):
             return
         ins, outs = self.midi_ports()
         self._in_name = self._out_name = ""
+        self.midi_error = ""
         if self.cfg.midi_in:
             name = match_port(self.cfg.midi_in, ins) or self.cfg.midi_in
             try:
@@ -107,15 +120,22 @@ class ControlHub(QObject):
                 self._in_name = name
                 self.status.emit(f"MIDI in: {name}")
             except Exception as exc:
+                self.midi_error = f"Could not open input '{name}': {exc}"
                 self.status.emit(f"MIDI in failed ({self.cfg.midi_in}): {exc}")
-        out_wanted = self.cfg.midi_out or (self._in_name and match_port(self._in_name, outs)) or ""
+        out_wanted = self.cfg.midi_out or match_port(self._in_name or self.cfg.midi_in, outs) or ""
         if out_wanted:                             # no output chosen: the input device's own output
             name = match_port(out_wanted, outs) or out_wanted
             try:
                 self._out = mido.open_output(name)
                 self._out_name = name
             except Exception as exc:
-                self.status.emit(f"MIDI out failed ({self.cfg.midi_out}): {exc}")
+                self.midi_error = (f"Could not open output '{name}': {exc}. On Windows a MIDI port can only be "
+                                   "used by one program at a time: close the Midi Fighter Utility, onPC, a DAW or "
+                                   "anything else using the controller, then try again.")
+                self.status.emit(f"MIDI out failed ({out_wanted}): {exc}")
+        elif self.cfg.midi_in:
+            self.midi_error = ("No output port matches the input '" + self.cfg.midi_in + "'. Output ports found: "
+                               + (", ".join(outs) or "none") + ". Choose it as Output (pad lights).")
 
     def _on_midi(self, msg) -> None:            # rtmidi thread
         self.handle_midi(msg, self.s.engine.position())
