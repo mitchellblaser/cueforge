@@ -52,6 +52,13 @@ class AnalysisResult:
     log: list[str] = field(default_factory=list)
 
 
+def _fit(x: np.ndarray, n: int) -> np.ndarray:
+    """x trimmed or zero-padded to n samples, so sources of different lengths line up."""
+    if len(x) >= n:
+        return x[:n]
+    return np.concatenate([x, np.zeros(n - len(x), dtype=x.dtype)])
+
+
 def _timeline_mix(items: list[tuple[AudioData, float]], sr: int, stereo: bool = False) -> np.ndarray:
     if not items:
         return np.zeros((0, 2) if stereo else 0, np.float32)
@@ -139,7 +146,7 @@ def run_analysis(project: Project, audio: dict[str, AudioData], opts: AnalysisOp
     other_stems = []
     for t in stems:
         nm = t.name.lower()
-        ys = _timeline_mix([(audio[t.id], t.offset)], sr)
+        ys = _fit(_timeline_mix([(audio[t.id], t.offset)], sr), len(y))   # stems can differ in length
         if any(w in nm for w in DRUM_WORDS):
             drum_src = ys if drum_src is None else drum_src + ys
         elif "bass" not in nm:
@@ -160,7 +167,7 @@ def run_analysis(project: Project, audio: dict[str, AudioData], opts: AnalysisOp
         sep = separate(ys2, 44100, cache_dir)
         if sep:
             def r(x):
-                return resample(x[:, None], 44100, sr)[:, 0]
+                return _fit(resample(x[:, None], 44100, sr)[:, 0], len(y))
             drum_src = r(sep["drums"]) if "drums" in sep else None
             if "vocals" in sep:
                 melodic_srcs.append(("Vocal", r(sep["vocals"]), False))

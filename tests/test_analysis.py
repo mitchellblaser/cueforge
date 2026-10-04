@@ -91,3 +91,20 @@ def test_suggestions_never_touch_cues(analysed):
     editing.merge_suggestions(q, res.suggestions, res.kinds)
     assert len(q.cues) == 1 and q.cues[0] is c and c.label == "mine"
     assert all(s.status == "pending" for s in q.suggestions)
+
+
+def test_stems_of_different_lengths(song, tmp_path):
+    """Stem files rarely end on the same sample; mixing them must not crash."""
+    path, _, _ = song
+    audio, sr = sf.read(path)
+    p = Project()
+    files = {}
+    for name, cut in (("Guitar", 0), ("Keys", sr * 3), ("Drums", sr)):
+        f = tmp_path / f"{name}.wav"
+        sf.write(f, audio[:len(audio) - cut] if cut else audio, sr)
+        t = Track(name, str(f), role="Stem")
+        p.tracks.append(t)
+        files[t.id] = load_audio(str(f))
+    res = run_analysis(p, files, AnalysisOptions(use_deep_models=False, hits=False, fills=False,
+                                                 melody=False, harmony=False))
+    assert res.grid is not None and res.grid.bpm() == pytest.approx(120, abs=1)
