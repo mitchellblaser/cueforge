@@ -246,6 +246,7 @@ class MA3Link(QObject):
         self._receiver = None
         self._pull_base: dict[str, tuple] = {}            # song id -> console version last seen
         self._pull_defined = False                        # CF_PULL sent to the console
+        self._pull_seqs = None                            # sequence names CF_PULL watches
         self._pull_unanswered = 0
         self._pull_manual = False
         self.pulled.connect(self._on_pulled)
@@ -286,6 +287,7 @@ class MA3Link(QObject):
         self._pull_timer.stop()
         self._pull_base = {}
         self._pull_defined = False
+        self._pull_seqs = None
         self._pull_unanswered = 0
         if self._receiver is not None:
             self._receiver.close()
@@ -321,10 +323,18 @@ class MA3Link(QObject):
 
     def _pull_cmds(self, force: bool, slots: list[int]) -> list[str]:
         from .ma3pull import PULL_LUA
+        from ..core.editing import sequence_name
         cmds = []
         if not self._pull_defined:
             cmds += push_commands(CONSOLE_DIR_LUA + PULL_LUA, int(self.cfg.max_cmd or MAX_CMD))
             self._pull_defined = True
+            self._pull_seqs = None
+        p = self.s.project
+        names = [sequence_name(p, l) for l in p.lanes if l.export]      # watched for cues added there
+        if names != self._pull_seqs:
+            cmds.append('Lua "CF_SEQS={}"')
+            cmds += [f'Lua "table.insert(CF_SEQS,[[{n}]])"' for n in names]
+            self._pull_seqs = names
         args = ",".join(str(int(s)) for s in slots)
         cmds.append(f'Lua "CF_PULL({int(self.cfg.reply_line)},{"true" if force else "false"},{args})"')
         return cmds
@@ -374,6 +384,7 @@ class MA3Link(QObject):
                 self.status.emit(f"MA3 link: Timecode {slot} " + ("doesn't exist on the console" if text == "none"
                                                                  else "could not be exported on the console"))
             return
+        self._check_console_cues(text)
         items = show_to_cues(parse_pull(text))
         theirs = signature(items)
         ours = signature(own_items(p))
@@ -405,6 +416,33 @@ class MA3Link(QObject):
                + (f" (no lane for {', '.join(stats['unmatched'])})" if stats["unmatched"] else ""))
         self.status.emit(msg)
         self.console_changed.emit(msg)
+
+    def _check_console_cues(self, text: str) -> None:
+        """Cues stored on the console that CueForge doesn't have become 'Added on the console'
+        suggestions; cues renamed there take the new name (one undo step)."""
+        from .ma3pull import console_cues, parse_sequences
+        seqs = parse_sequences(text)
+        if not seqs:
+            return
+        p = self.s.project
+        found = console_cues(p, seqs, self.record, [])
+        if not (found["new"] or found["renamed"]):
+            return
+        with self.s.edit("Cues from the console"):
+            p.suggestions += found["new"]
+            p.suggestions.sort(key=lambda sg: sg.time)
+            for c, name in found["renamed"]:
+                c.label = name
+                if c.id in self.record:
+                    self.record[c.id][2] = name
+        self.s.cues_changed.emit()
+        parts = []
+        if found["new"]:
+            parts.append(f"{len(found['new'])} cue(s) added on the console — see Suggestions ▸ Added on the console")
+        if found["renamed"]:
+            parts.append(f"{len(found['renamed'])} renamed on the console")
+        self.status.emit("MA3 link: " + "; ".join(parts))
+        self.console_changed.emit("; ".join(parts))
 
     def _last_pushed_items(self, song):
         """What CueForge last pushed for a song, as items (its current items if never pushed)."""

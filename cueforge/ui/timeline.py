@@ -25,7 +25,7 @@ LANE_H = 46
 HIT_PX = 6
 
 KIND_SHAPES = {"hit": "diamond", "section": "square", "energy": "triangle", "fill": "bolt",
-               "harmony": "circle", "melody": "note"}
+               "harmony": "circle", "melody": "note", "console": "square"}
 
 
 @dataclass

@@ -692,8 +692,12 @@ def _console_pull(tmp_path, export_xml, force=True, runs=1):
             f"function t:Export(d, f) local i = io.open([[{src}]]) local x = i:read('*a') i:close() "
             "local o = io.open(d .. '/' .. f, 'w') o:write(x) o:close() return true end return t end "
             "local tcs = {tcode(1)} "
-            "function DataPool() return {Sequences={Children=function() return {} end}, "
+            "local function q(no, name) return {no=no, name=name} end "
+            "local main = {no=7, name='Song 1 Main Cues', Children=function() return "
+            "{q(0, 'OffCue'), q(1000, 'Intro'), q(1500, 'Big, \"new\"'), q(2000, 'Verse')} end} "
+            "function DataPool() return {Sequences={Children=function() return {main} end}, "
             "Timecodes={Children=function() return tcs end}} end "
+            "CF_SEQS = {'Song 1 Main Cues', 'Not there'} "
             "Enums = {PathType={Library='lib'}} "
             f"function GetPath(k) if k == 'lib' then return [[{disk}]] end error('no') end "
             "function ErrPrintf(f, ...) print('ERR ' .. string.format(f, ...)) end "
@@ -834,3 +838,53 @@ def test_polling_defines_cf_pull_once_and_gives_up_without_replies(link):
         link._sender.wait_idle(5)
         link._poll_pull()
     assert any("no reply from the console" in m for m in msgs) and not link._pull_timer.isActive()
+
+
+def test_console_reports_its_sequences(tmp_path):
+    from cueforge.control.ma3pull import parse_sequences
+    texts = _console_pull(tmp_path, MA_EXPORT)
+    seqs = parse_sequences(texts[0])
+    assert seqs == {"Song 1 Main Cues": [(1.0, "Intro"), (1.5, 'Big, "new"'), (2.0, "Verse")]}   # thousandths -> cues
+
+
+def test_cues_added_or_renamed_on_the_console(link):
+    from cueforge.control.ma3pull import console_cues
+    from cueforge.core.editing import accept_suggestion
+    s = link.s
+    s._sync_engine = lambda: None
+    p = s.project
+    main = p.lanes[0]
+    link.sync_cues()                                       # cues 1 Intro (1 s), 2 Verse (5 s) on the console
+    intro, verse = p.cues_in_lane(main.id)[:2]
+    seqs = {"Song 1 Main Cues": [(1.0, "Opening"), (1.5, "Big"), (2.0, "Verse"), (9.0, "Late")]}
+    found = console_cues(p, seqs, link.record, [])
+    assert [(c.id, n) for c, n in found["renamed"]] == [(intro.id, "Opening")]
+    new = {sg.number: sg for sg in found["new"]}
+    assert set(new) == {1.5, 9.0}
+    assert new[1.5].time == 3.0 and new[1.5].lane_id == main.id and new[1.5].label == "Big"   # between cues 1 and 2
+    assert new[9.0].time == 7.0                                                             # 2 s after the last
+    # through the link: one undo step, then accepting gives the cue its console number
+    msgs = []
+    link.status.connect(msgs.append)
+    link._check_console_cues("S|Song 1 Main Cues%0AC|1|Opening%0AC|1.5|Big%0AC|2|Verse")
+    assert p.cue(intro.id).label == "Opening" and "1 cue(s) added on the console" in msgs[-1]
+    sg = next(x for x in p.suggestions if x.kind == "console")
+    cue = accept_suggestion(p, sg)
+    assert cue.number == 1.5 and cue.label == "Big" and cue.source == "manual"
+    # nothing new the next time (accepted / pending / rejected ones are remembered)
+    assert console_cues(p, {"Song 1 Main Cues": [(1.5, "Big")]}, link.record, [])["new"] == []
+    # a cue CueForge pushed and you deleted (delete on the console is off) is not suggested back
+    p.cues = [c for c in p.cues if c.id != verse.id]
+    assert console_cues(p, {"Song 1 Main Cues": [(2.0, "Verse")]}, link.record, [])["new"] == []
+
+
+def test_shared_sequence_cues_of_other_songs_are_not_new(link):
+    from cueforge.control.ma3pull import console_cues
+    p = link.s.project
+    hits = next(l for l in p.lanes if l.name == "Hits")
+    s2 = p.add_song("Second")
+    p.select_song(s2.id)
+    p.cues.append(Cue(lane_id=hits.id, time=4.0))           # song 2's hit: cue 101 in the shared Hits
+    p.select_song(p.songs[0].id)
+    found = console_cues(p, {"Hits": [(1.0, ""), (101.0, ""), (102.0, "Extra")]}, {}, [])
+    assert [sg.number for sg in found["new"]] == [102.0]

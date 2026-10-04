@@ -563,6 +563,10 @@ open song's timecode show every 10 seconds while you are stopped. Events moved, 
 deleted in MA's timecode editor come back into the lanes as one undo step. Moved cues keep
 their labels, fades and notes.
 
+- Cues stored in a song's sequences on the console that CueForge doesn't have show up as
+  **Added on the console** suggestions, placed between their neighbours by cue number: move
+  them to where they should fire and accept (they keep the console's cue number). Cues renamed
+  on the console get the new name in CueForge.
 - If only the console changed, its version comes in.
 - If both the console and CueForge changed since the last push, CueForge keeps its own and
   says so in the status bar. **Pull from console** takes the console's version anyway.

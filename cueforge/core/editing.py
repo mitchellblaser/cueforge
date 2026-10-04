@@ -255,10 +255,13 @@ def accept_suggestion(project: Project, s: Suggestion) -> Cue | None:
     if existing:
         cue = existing
     else:
-        note = f"AI: {s.reason} ({s.confidence:.0%})"
+        if s.kind == "console":
+            note, source = s.reason, "manual"
+        else:
+            note, source = f"AI: {s.reason} ({s.confidence:.0%})", "ai-accepted"
         if s.idea:
             note += f" — idea: {s.idea}"
-        cue = Cue(lane_id=lane_id, time=t, label=s.label, source="ai-accepted", notes=note,
+        cue = Cue(lane_id=lane_id, time=t, label=s.label, source=source, notes=note, number=s.number,
                   duration=round(s.duration, 3) if s.duration > 0 else None)
         project.cues.append(cue)
         project.sort_cues()

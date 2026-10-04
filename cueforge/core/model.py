@@ -10,9 +10,9 @@ from .timecode import DEFAULT_RATE, FrameRate, get_rate
 TRACK_ROLES = ["Track", "Stem", "Click", "Cue/Guide", "Other"]
 ANALYSED_ROLES = {"Track", "Stem"}
 
-SUGGESTION_KINDS = ["hit", "fill", "section", "energy", "harmony", "melody"]
+SUGGESTION_KINDS = ["hit", "fill", "section", "energy", "harmony", "melody", "console"]
 KIND_LABELS = {"hit": "Hits", "fill": "Drum fills", "section": "Sections", "energy": "Energy",
-               "harmony": "Chord changes", "melody": "Lead lines"}
+               "harmony": "Chord changes", "melody": "Lead lines", "console": "Added on the console"}
 # lane each suggestion kind goes to by default: (lane name, tap key)
 KIND_DEFAULT_LANE = {"hit": ("Hits", "2"), "fill": ("Strobe", "3"), "section": ("Main Cues", "1"),
                      "energy": ("Main Cues", "1"), "harmony": ("Colour", "4"), "melody": ("FX / Chase", "5")}
@@ -95,6 +95,7 @@ class Suggestion:
     duration: float = 0.0        # span (fills, phrases)
     idea: str = ""               # what the programmer might do here
     steps: list[float] = field(default_factory=list)  # note times (lead lines) for chase steps
+    number: float | None = None  # cue number it gets when accepted (cues found on the console)
     id: str = field(default_factory=new_id)
 
 
@@ -189,7 +190,7 @@ class MixerState:
 class AnalysisSettings:
     # Minimum confidence shown per suggestion kind (filter, no re-analysis needed)
     thresholds: dict[str, float] = field(default_factory=lambda: {
-        "hit": 0.75, "fill": 0.6, "section": 0.5, "energy": 0.6, "harmony": 0.6, "melody": 0.5})
+        "hit": 0.75, "fill": 0.6, "section": 0.5, "energy": 0.6, "harmony": 0.6, "melody": 0.5, "console": 0.0})
     visible: dict[str, bool] = field(default_factory=lambda: {k: True for k in SUGGESTION_KINDS})
     lane_for_kind: dict[str, str] = field(default_factory=dict)  # kind -> lane id
     snap_to_grid: bool = True
