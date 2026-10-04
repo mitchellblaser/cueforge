@@ -1134,3 +1134,28 @@ def test_empty_mapping_falls_back_to_default_pads(app, win):
     cfg = ControlSettings(midi_map=[])
     maps = cfg.mappings()
     assert len(maps) == 16 and {m.number for m in maps} == set(range(36, 52))
+
+
+def test_test_lights_go_back_to_lane_colours(app, win, monkeypatch):
+    from cueforge.ui.control_dialog import ControlDialog
+    hub = win.control
+    sent = []
+    monkeypatch.setattr(type(hub), "send_feedback", lambda self: sent.append("lanes"))
+    monkeypatch.setattr(type(hub), "test_lights", lambda self: [(36, 21)])
+    monkeypatch.setattr(type(hub), "apply", lambda self: None)
+    monkeypatch.setattr(hub, "_out_name", "Midi Fighter Spectra", raising=False)
+    saved_in = hub.cfg.midi_in
+    d = ControlDialog(hub, win)
+    d._revert.setInterval(50)
+    d._test_lights()
+    assert sent == []
+    wait(app, lambda: sent == ["lanes"], 3)          # the test pattern reverts by itself
+    d._test_lights()
+    sent.clear()
+    restored = []
+    monkeypatch.setattr(type(hub), "apply", lambda self: restored.append(self.cfg.midi_in))
+    d.reject()                                        # Cancel puts the saved settings (and colours) back
+    assert restored == [saved_in] and not d._revert.isActive()
+    d2 = ControlDialog(hub, win)
+    d2.reject()                                       # closing without testing still refreshes the pads
+    assert sent == ["lanes"]

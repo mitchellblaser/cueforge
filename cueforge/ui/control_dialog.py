@@ -1,10 +1,11 @@
 """MIDI & OSC control settings, mapping table and MIDI learn."""
 from __future__ import annotations
 
+import copy
 import socket
 from dataclasses import asdict
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout,
                                QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QPushButton, QSpinBox,
                                QTableWidget, QTableWidgetItem, QVBoxLayout)
@@ -40,6 +41,12 @@ class ControlDialog(QDialog):
         self.hub = hub
         hub.suspended = True                       # pressing pads here (Learn, testing) adds no cues
         cfg = hub.cfg
+        self._saved_cfg = copy.deepcopy(cfg)       # Test lights applies unsaved choices; Cancel undoes that
+        self._tested = False
+        self._revert = QTimer(self)                # the test pattern goes back to the lane colours by itself
+        self._revert.setSingleShot(True)
+        self._revert.setInterval(4000)
+        self._revert.timeout.connect(self.hub.send_feedback)
         self.maps = cfg.mappings()
         lay = QVBoxLayout(self)
 
@@ -74,7 +81,6 @@ class ControlDialog(QDialog):
         self.conn.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.conn.setStyleSheet(f"color: {theme.FG_DIM}; font-family: monospace;")
         mf.addRow(self.conn)
-        from PySide6.QtCore import QTimer
         self._conn_timer = QTimer(self)
         self._conn_timer.setInterval(300)
         self._conn_timer.timeout.connect(lambda: self.conn.setText(self.hub.connection_report()))
@@ -191,6 +197,7 @@ class ControlDialog(QDialog):
         cfg.feedback = self.fb.currentData()
         cfg.midi_map = [asdict(m) for m in self.maps]
         self.hub.apply()
+        self._tested = True
         shown = self.hub.test_lights()
         self.conn.setText(self.hub.connection_report())
         if not shown:
@@ -206,7 +213,9 @@ class ControlDialog(QDialog):
         self.learn_label.setText(f"Sent {len(shown)} pad lights to '{self.hub._out_name}' on MIDI channel {ch}: "
                                  + ", ".join(f"note {n} = {v}" for n, v in shown[:16])
                                  + ". If nothing lit up, the controller isn't listening on that channel — "
-                                 "check its MIDI settings (Midi Fighter Utility).")
+                                 "check its MIDI settings (Midi Fighter Utility). The pads go back to the lane "
+                                 "colours in 4 seconds.")
+        self._revert.start()
 
     def _add(self) -> None:
         nxt = max((m.number for m in self.maps if m.kind == "note"), default=35) + 1
@@ -257,7 +266,13 @@ class ControlDialog(QDialog):
         super().accept()
 
     def done(self, r) -> None:
+        self._revert.stop()
         self.hub.suspended = False
+        if r != QDialog.Accepted and self._tested:   # undo the unsaved settings Test lights applied
+            self.hub.cfg = self._saved_cfg
+            self.hub.apply()                         # re-opens the saved ports and sends the lane colours
+        else:
+            self.hub.send_feedback()
         self.hub.stop_learn()
         try:
             self.hub.learned.disconnect(self._learned)
