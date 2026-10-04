@@ -10,7 +10,6 @@ timecode show through the console's own object API and command line.
 """
 from __future__ import annotations
 
-import uuid
 from contextlib import contextmanager
 from xml.sax.saxutils import quoteattr
 
@@ -18,11 +17,6 @@ from ..core.editing import effective_cue_numbers, temp_cue_label
 from ..core.model import Project, Song
 
 MA3_TICKS_PER_SECOND = 16777216  # MA3 stores times as 1/2^24 s
-
-
-def _guid() -> str:
-    h = uuid.uuid4().hex.upper()
-    return " ".join(h[i:i + 2] for i in range(0, 32, 2))
 
 
 def _fmt_time(seconds: float, unit: str) -> str:
@@ -69,19 +63,19 @@ def build_ma3_xml(project: Project, timecode_number: int | None = None, duration
         duration = max((c.time + (c.duration or 0) for c in project.cues), default=0.0) + 5.0
     lines = ['<?xml version="1.0" encoding="UTF-8"?>',
              f'<GMA3 DataVersion="{ex.ma3_data_version}">',
-             f'\t<Timecode Name={quoteattr(name)} Guid="{_guid()}" Cursor="0" LoopCount="0" '
+             f'\t<Timecode Name={quoteattr(name)} Cursor="0" LoopCount="0" '
              f'TCSlot="-1" SwitchOff="Keep Playbacks" Duration="{_fmt_time(duration, unit)}" '
              f'Offset="{_fmt_time(project.tc_offset, unit)}" TimeDisplayFormat="&lt;Auto&gt;" '
              f'FrameReadout="{_frame_readout(project)}">',
-             f'\t\t<TrackGroup Name={quoteattr(name)} Guid="{_guid()}">',
-             f'\t\t\t<MarkerTrack Name="Marker" Guid="{_guid()}"/>']
+             f'\t\t<TrackGroup Name={quoteattr(name)}>',
+             f'\t\t\t<MarkerTrack Name="Marker"/>']
     for lane in export_lanes(project):
         seq = seq_number(project, lane)
         nums = effective_cue_numbers(project, lane.id)
-        lines.append(f'\t\t\t<Track Name={quoteattr(lane.name)} Guid="{_guid()}" '
+        lines.append(f'\t\t\t<Track Name={quoteattr(lane.name)} '
                      f'Target="ShowData.DataPools.Default.Sequences.{seq}">')
-        lines.append(f'\t\t\t\t<TimeRange Guid="{_guid()}" Duration="{_fmt_time(duration, unit)}">')
-        lines.append(f'\t\t\t\t\t<CmdSubTrack Guid="{_guid()}">')
+        lines.append(f'\t\t\t\t<TimeRange Duration="{_fmt_time(duration, unit)}">')
+        lines.append(f'\t\t\t\t\t<CmdSubTrack>')
         tokens = cue_tokens(project, lane.id)
         for c in project.cues_in_lane(lane.id):
             num = nums[c.id]
@@ -140,7 +134,7 @@ def go_plus_warnings(project: Project, all_songs: bool = True) -> list[str]:
 
 
 def _event(name: str, t: float, unit: str, token: str, status: str, cue_ref: str) -> list[str]:
-    return [f'\t\t\t\t\t\t<CmdEvent Name={quoteattr(name)} Guid="{_guid()}" Time="{_fmt_time(t, unit)}">',
+    return [f'\t\t\t\t\t\t<CmdEvent Name={quoteattr(name)} Time="{_fmt_time(t, unit)}">',
             f'\t\t\t\t\t\t\t<RealtimeCmd Type="Key" Source="Original" UserProfile="0" Status="{status}" '
             f'Token="{token}" Cue="{cue_ref}"/>',
             '\t\t\t\t\t\t</CmdEvent>']

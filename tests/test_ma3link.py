@@ -330,3 +330,10 @@ def test_old_default_address_moves_to_cmd_once(app, tmp_path):
     lk.save()
     assert MA3Link(s).cfg.address == "/gma3/cmd"
     s.engine.close()
+
+
+def test_timecode_xml_has_no_guids(link):
+    from cueforge.export.ma3 import build_ma3_xml
+    xml = build_ma3_xml(link.s.project)
+    assert "Guid" not in xml                     # MA3 rejected ours ("Illegal property"); it makes its own
+    ET.fromstring(xml)
