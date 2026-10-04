@@ -1,7 +1,7 @@
 """Live link to grandMA3 over OSC: preview, cue-list sync and timecode push.
 
 grandMA3 executes command-line text it receives on its OSC "cmd" address when *Receive
-Command* is enabled for the OSC line (In & Out ▸ OSC). Default address: /gma3/cmd. No
+Command* is enabled for the OSC line (In & Out ▸ OSC). Default address: /cmd (MA's documented command address). No
 plugin has to run on the console for this.
 
 * Live preview — while CueForge plays, cues fire on the console as the playhead passes
@@ -36,7 +36,8 @@ class LinkSettings:
     enabled: bool = False
     host: str = "127.0.0.1"
     port: int = 8000
-    address: str = "/gma3/cmd"
+    address: str = "/cmd"
+    addr_v2: bool = True          # settings already moved off the old /gma3/cmd default
     preview: bool = True          # fire cues on the console while CueForge plays
     sync_cues: bool = True        # create / label cues as you program
     allow_delete: bool = False    # delete console cues that were deleted in CueForge
@@ -103,7 +104,11 @@ class MA3Link(QObject):
             return getattr(LinkSettings, "cmd_" + name).format(**args)
 
     def _load(self) -> LinkSettings:
-        d = self.s.settings.get("ma3link", {}) or {}
+        d = dict(self.s.settings.get("ma3link", {}) or {})
+        if d and not d.get("addr_v2"):              # once: the old default /gma3/cmd -> /cmd
+            if d.get("address") == "/gma3/cmd":
+                d["address"] = "/cmd"
+        d["addr_v2"] = True
         return LinkSettings(**{k: v for k, v in d.items() if k in LinkSettings.__dataclass_fields__})
 
     def save(self) -> None:

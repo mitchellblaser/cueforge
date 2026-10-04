@@ -44,7 +44,7 @@ def self_test() -> int:
         frames = decode_ltc(generate_ltc(0, 10, p.frame_rate), 48000, p.frame_rate)
         print(f"ltc ok: {len(frames)} frames")
         from pythonosc.udp_client import SimpleUDPClient
-        SimpleUDPClient("127.0.0.1", 9).send_message("/gma3/cmd", "Go+ Sequence 1")
+        SimpleUDPClient("127.0.0.1", 9).send_message("/cmd", "Go+ Sequence 1")
         import mido  # noqa: F401
         from .control import ma3link  # noqa: F401
         print("osc/midi/ma3 link ok")

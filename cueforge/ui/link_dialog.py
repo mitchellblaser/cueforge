@@ -8,14 +8,15 @@ from ..control.ma3link import LinkSettings, default_timecode_dir
 from . import theme
 
 HELP = """<b>On the console / onPC</b>: Menu ▸ In &amp; Out ▸ OSC ▸ add a line: Destination IP = this
-computer, Port = the port below, Mode = UDP, <b>Receive</b> and <b>Receive Command</b> ticked, Prefix
-<code>gma3</code>. Then enable the OSC line. CueForge sends command-line text to
-<code>/gma3/cmd</code>.<br>
-<b>Seen in the System Monitor but nothing happens?</b> The console logs every OSC message it
-receives, also the ones it ignores. Check, on the OSC line: <b>Receive Command</b> = Yes (not just
-Receive), the line is enabled and <b>Enable Input</b> at the top of the OSC window is on, and the
-line's <b>Prefix</b> is <code>gma3</code> (with an empty Prefix use the address <code>/cmd</code>).
-<i>Send test</i> prints "CueForge link OK" in the console's command line feedback.<br>
+computer, Port = the port below, Mode = UDP, <b>Receive</b> and <b>Receive Command</b> = Yes, Prefix
+empty. Then enable the line and <b>Enable Input</b>. CueForge sends command-line text to <code>/cmd</code>
+(MA's command address).<br>
+<b>Seen in the System Monitor but nothing happens?</b> The console lists every OSC message it
+receives, also the ones it ignores (<code>/cmd ,s Go+ …</code> is a correct message: address, "one
+string", command). Check <b>Receive Command</b> = Yes, the line and <b>Enable Input</b> are on, and the
+address matches the Prefix: empty Prefix → <code>/cmd</code>; Prefix <code>gma3</code> (no slash) →
+<code>/gma3/cmd</code>. <i>Send test</i> prints "CueForge link OK" in the console's command line
+feedback.<br>
 <span style='color:#ffb74d'>Creating cues uses <code>Store … /Merge</code>: keep the programmer
 clear while the link creates cues, or your programmer values go into the new cue.</span>"""
 
@@ -125,7 +126,7 @@ class LinkDialog(QDialog):
         c.enabled = self.enabled.isChecked()
         c.host = self.host.text().strip() or "127.0.0.1"
         c.port = self.port.value()
-        c.address = self.addr.text().strip() or "/gma3/cmd"
+        c.address = self.addr.text().strip() or "/cmd"
         c.preview = self.preview.isChecked()
         c.sync_cues = self.sync.isChecked()
         c.allow_delete = self.delete.isChecked()

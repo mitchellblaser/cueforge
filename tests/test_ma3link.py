@@ -88,7 +88,7 @@ def test_preview_fires_cues_and_releases_temps(link):
                         f"Off Sequence {seq_hits}",
                         f"Go+ Sequence {seq_main}"]
     msgs = received(link.rx)
-    assert msgs[0] == ("/gma3/cmd", f"Goto Sequence {seq_main} Cue 1")
+    assert msgs[0] == ("/cmd", f"Goto Sequence {seq_main} Cue 1")
     assert len(msgs) == 4
 
 
@@ -319,3 +319,14 @@ def test_temps_share_one_cue(link):
 def test_link_test_command():
     from cueforge.ui.link_dialog import TEST_CMD
     assert TEST_CMD.startswith("Lua ") and "Printf" in TEST_CMD
+
+
+def test_old_default_address_moves_to_cmd_once(app, tmp_path):
+    s = Session(UserSettings(str(tmp_path / "s.json")))
+    s.settings.set("ma3link", {"address": "/gma3/cmd"})
+    lk = MA3Link(s)
+    assert lk.cfg.address == "/cmd"
+    lk.cfg.address = "/gma3/cmd"                    # chosen on purpose afterwards: kept
+    lk.save()
+    assert MA3Link(s).cfg.address == "/gma3/cmd"
+    s.engine.close()
