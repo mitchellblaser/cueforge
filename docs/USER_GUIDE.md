@@ -544,6 +544,12 @@ timecode now**. *Last commands sent* shows exactly what went out.
 If your MA3 version wants different command wording, tick **Command syntax** in the dialog
 and edit the templates. *Defaults* puts them back.
 
+The timecode push travels as a series of short `Lua` commands (MA cuts long command lines
+off), then the console writes and imports the show itself. The System Monitor shows
+"CueForge: Timecode N imported" when it is done. If the console reports *unfinished string*,
+lower **Longest push command** (under **Command syntax**); if it reports *lost data*, just push
+again.
+
 ---
 
 ## 13. Programming with MIDI pads or OSC
@@ -564,8 +570,8 @@ APC-style controllers, on any MIDI channel.
   suggestion, accept/reject, undo, add section and loop.
 - **Temp pads** use the Hold time, or (optionally) how long you hold the pad, for live
   strobes.
-- **Pad lights:** pads light in their lane's colour, cue pads bright and Temp pads dim, and
-  flash white when hit. Leave *Output* empty to use the same device automatically. Change a
+- **Pad lights:** pads light in their lane's colour (cue and Temp pads alike) and flash
+  white when hit. Leave *Output* empty to use the same device automatically. Change a
   lane's colour to change its pads, or type an LED value (0–127) in the *Pad light* column.
   **Test lights** shows every colour.
 - While this window is open, pads never add cues, so learning and testing are safe.
