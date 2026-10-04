@@ -4,35 +4,48 @@ import sys
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QColor, QGuiApplication, QImage, QPainter, QPen
+from PySide6.QtGui import (QColor, QGuiApplication, QImage, QLinearGradient, QPainter, QPen, QPolygonF,
+                           QRadialGradient)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 RES = os.path.join(os.path.dirname(HERE), "cueforge", "resources")
 
 
 def render(size: int) -> QImage:
+    """A glowing cue diamond (keyframe) on a faint beat grid: the moment a cue fires."""
     img = QImage(size, size, QImage.Format_ARGB32)
     img.fill(Qt.transparent)
     p = QPainter(img)
     p.setRenderHint(QPainter.Antialiasing)
     s = size / 256
-    p.setBrush(QColor("#16181c"))
+    bg = QLinearGradient(0, 0, 0, 256 * s)
+    bg.setColorAt(0, QColor("#14161c"))
+    bg.setColorAt(1, QColor("#0b0c10"))
+    p.setBrush(bg)
     p.setPen(Qt.NoPen)
-    p.drawRoundedRect(QRectF(8 * s, 8 * s, 240 * s, 240 * s), 48 * s, 48 * s)
-    # waveform bars
-    import math
-    p.setBrush(QColor("#90a4ae"))
-    for i in range(16):
-        x = 36 * s + i * 12 * s
-        h = (20 + 70 * abs(math.sin(i * 0.9)) * (0.4 + 0.6 * (i % 3 == 0))) * s
-        p.drawRoundedRect(QRectF(x, 150 * s - h / 2, 7 * s, h), 3 * s, 3 * s)
-    # cue markers
-    for x, col in ((70, "#4FC3F7"), (130, "#FFB74D"), (190, "#E57373")):
-        p.setPen(QPen(QColor(col), 8 * s))
-        p.drawLine(QPointF(x * s, 50 * s), QPointF(x * s, 210 * s))
-        p.setPen(Qt.NoPen)
-        p.setBrush(QColor(col))
-        p.drawRect(QRectF(x * s, 46 * s, 34 * s, 22 * s))
+    p.drawRoundedRect(QRectF(8 * s, 8 * s, 240 * s, 240 * s), 52 * s, 52 * s)
+    if size >= 64:                                   # the grid is noise at taskbar sizes
+        for i, x in enumerate(range(40, 230, 24)):
+            p.setPen(QPen(QColor(255, 255, 255, 60 if i % 4 == 0 else 22), (3 if i % 4 == 0 else 2) * s))
+            p.drawLine(QPointF(x * s, 40 * s), QPointF(x * s, 216 * s))
+    glow = QRadialGradient(QPointF(128 * s, 128 * s), 92 * s)
+    glow.setColorAt(0, QColor(255, 140, 40, 200))
+    glow.setColorAt(0.45, QColor(255, 90, 30, 70))
+    glow.setColorAt(1, QColor(255, 60, 20, 0))
+    p.setPen(Qt.NoPen)
+    p.setBrush(glow)
+    p.drawEllipse(QPointF(128 * s, 128 * s), 92 * s, 92 * s)
+    outer = QPolygonF([QPointF(128 * s, 62 * s), QPointF(194 * s, 128 * s), QPointF(128 * s, 194 * s),
+                       QPointF(62 * s, 128 * s)])
+    fill = QLinearGradient(0, 62 * s, 0, 194 * s)
+    fill.setColorAt(0, QColor("#ffe08a"))
+    fill.setColorAt(1, QColor("#ff7a1a"))
+    p.setBrush(fill)
+    p.drawPolygon(outer)
+    inner = QPolygonF([QPointF(128 * s, 92 * s), QPointF(164 * s, 128 * s), QPointF(128 * s, 164 * s),
+                       QPointF(92 * s, 128 * s)])
+    p.setBrush(QColor("#16181c"))
+    p.drawPolygon(inner)
     p.end()
     return img
 
@@ -43,6 +56,7 @@ def main() -> None:
     big = render(512)
     big.save(os.path.join(RES, "icon.png"))
     render(256).save(os.path.join(HERE, "icon.ico"))
+    render(32).save(os.path.join(HERE, "icon_32_preview.png"))
     if not render(512).save(os.path.join(HERE, "icon.icns")):
         print("ICNS not supported by this Qt build; macOS build will use the default icon")
     print("icons written")
