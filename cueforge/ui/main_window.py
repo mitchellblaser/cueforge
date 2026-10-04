@@ -339,6 +339,14 @@ class MainWindow(QMainWindow):
         self.a_play = self._act("▶  Play", self.s.engine.toggle, "Space", tip="Play / pause (Space)")
         tb.addAction(self.a_start)
         tb.addAction(self.a_play)
+        btn = tb.widgetForAction(self.a_play)        # same width as Play and as Pause: the bar never shifts
+        widths = []
+        for txt in ("▶  Play", "❚❚  Pause"):
+            self.a_play.setText(txt)
+            btn.ensurePolished()
+            widths.append(btn.sizeHint().width())
+        self.a_play.setText("▶  Play")
+        btn.setFixedWidth(max(widths))
         self.tc_label = QLabel("00:00:00:00")
         f = QFont("Menlo, Consolas, DejaVu Sans Mono, monospace")
         f.setStyleHint(QFont.Monospace)

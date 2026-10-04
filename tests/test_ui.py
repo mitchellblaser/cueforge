@@ -477,12 +477,12 @@ def test_midi_control_and_feedback(app, win):
     pump(app)
     c3 = s.project.cues_in_lane(lanes[2].id)
     assert c3[0].duration == pytest.approx(0.8, abs=0.04)
-    # colour feedback follows lane colours: cue pads bright, Temp pads dim, whatever is active
+    # colour feedback follows lane colours: Cue and Temp pads at full lane colour, whatever is active
     s.set_active_lane(lanes[0].id)
     msgs = {m.note: m.velocity for m in hub.feedback_messages()}
     assert msgs[36] == color_velocity(lanes[0].color)
-    assert msgs[44] == color_velocity(lanes[0].color, dim=True)     # fixed: not tied to the active lane
-    assert msgs[45] == color_velocity(lanes[1].color, dim=True)     # other temp pads dimmer
+    assert msgs[44] == color_velocity(lanes[0].color)     # fixed: not tied to the active lane
+    assert msgs[45] == color_velocity(lanes[1].color)
     assert msgs[36 + len(lanes)] == 0 if len(lanes) < 8 else True   # pads beyond the lanes are off
     # MIDI learn
     got = []
@@ -1159,3 +1159,22 @@ def test_test_lights_go_back_to_lane_colours(app, win, monkeypatch):
     d2 = ControlDialog(hub, win)
     d2.reject()                                       # closing without testing still refreshes the pads
     assert sent == ["lanes"]
+
+
+def test_play_button_keeps_its_width(app, win):
+    from PySide6.QtWidgets import QToolBar
+    tb = win.findChildren(QToolBar)[0]
+    btn = tb.widgetForAction(win.a_play)
+    w = btn.width()
+    win.a_play.setText("❚❚  Pause")
+    app.processEvents()
+    assert btn.width() == w and btn.minimumWidth() == btn.maximumWidth()
+
+
+def test_midifighter_colours():
+    from cueforge.control.actions import MF_WHITE, midifighter_velocity
+    assert midifighter_velocity("#ff0000") == 15            # red: bright range 13-18
+    assert midifighter_velocity("#ffd000") == 39            # yellow 37-42 (not orange)
+    assert midifighter_velocity("#00ffff") == 75            # cyan 73-78 (not green)
+    assert midifighter_velocity("#ffd000", dim=True) == 45
+    assert midifighter_velocity("#eeeeee") == MF_WHITE

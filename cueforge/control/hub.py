@@ -305,11 +305,11 @@ class ControlHub(QObject):
             return MF_OFF if mode == "midifighter" else 0
         if mode == "onoff":
             return 127
-        # fixed colours: a pad never changes because of what was pressed last
-        dim = action.startswith("temp:")
+        # fixed, full-brightness lane colour for Cue and Temp pads alike: a pad never changes
+        # because of what was pressed last
         if mode == "midifighter":
-            return midifighter_velocity(lane.color, dim=dim)
-        return color_velocity(lane.color, dim=dim)
+            return midifighter_velocity(lane.color)
+        return color_velocity(lane.color)
 
     def feedback_messages(self) -> list:
         import mido

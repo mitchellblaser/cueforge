@@ -118,15 +118,15 @@ PALETTE = _palette()
 WHITE = 3
 
 
-# Midi Fighter Spectra / 3D (DJ TechTools user guide, "MIDI Color Velocity Settings"): ten
-# colours, each with a bright and a dim velocity range; 1-6 is off. Velocity 0 hands the pad
-# back to its own (Utility) colour, and 121-127 forces its active colour.
+# Midi Fighter Spectra / 3D: colours in 6-step velocity ranges, each colour bright then dim
+# (red 13-18 bright / 19-24 dim, orange 25 / 31 …), checked on a Spectra. 1-6 is off and 7-12
+# is white. Velocity 0 hands the pad back to its own (Utility) colour.
 MF_COLORS = [  # (name, rgb, bright range start, dim range start)
-    ("red", (237, 28, 36), 7, 13), ("orange", (242, 101, 34), 19, 25), ("yellow", (255, 204, 0), 31, 37),
-    ("lime", (194, 216, 43), 43, 49), ("green", (0, 200, 0), 55, 61), ("cyan", (0, 255, 255), 67, 73),
-    ("blue", (0, 0, 255), 79, 85), ("purple", (128, 0, 255), 91, 97), ("magenta", (208, 0, 160), 103, 109),
+    ("red", (237, 28, 36), 13, 19), ("orange", (242, 101, 34), 25, 31), ("yellow", (255, 204, 0), 37, 43),
+    ("lime", (194, 216, 43), 49, 55), ("green", (0, 200, 0), 61, 67), ("cyan", (0, 255, 255), 73, 79),
+    ("blue", (0, 0, 255), 85, 91), ("purple", (128, 0, 255), 97, 103), ("magenta", (208, 0, 160), 109, 115),
 ]
-MF_WHITE = 117
+MF_WHITE = 9
 MF_OFF = 3
 
 
@@ -140,7 +140,7 @@ def midifighter_velocity(hex_color: str, dim: bool = False) -> int:
         return MF_WHITE
     hue, sat, val = colorsys.rgb_to_hsv(r, g, b)
     if sat < 0.18:
-        return MF_WHITE if not dim else MF_WHITE    # white has no dim state
+        return MF_WHITE
     best, bd = MF_COLORS[0], 9.0
     for c in MF_COLORS:
         ch, cs, cv = colorsys.rgb_to_hsv(*(x / 255 for x in c[1]))
