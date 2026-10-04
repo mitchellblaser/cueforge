@@ -49,7 +49,7 @@ class Lane:
     name: str
     color: str = LANE_COLORS[0]
     tap_key: str = ""            # key that taps a cue into this lane
-    ma3_sequence: int = 1        # target sequence on export
+    ma3_sequence: int = 1        # unused (see ExportSettings.ma3_seq_start); kept so old files load
     export: bool = True
     id: str = field(default_factory=new_id)
     # own sequence per song (song's sequence offset added, cues from 1) or one sequence shared by
@@ -203,6 +203,7 @@ class ExportSettings:
     ma3_data_version: str = "2.1.1.5"
     ma3_cue_token: str = "Go+"        # command for normal cues: "Go+" or "Goto"
     ma3_first_goto: bool = True       # first cue of each lane is a Goto (resyncs the sequence)
+    ma3_seq_start: int = 1            # CueForge's sequences are created from this number up
     ltc_sample_rate: int = 48000
     ltc_level_db: float = -12.0
     ltc_preroll: float = 2.0
@@ -510,6 +511,8 @@ class Project:
         p.analysis.lane_for_kind = dict(d.get("analysis", {}).get("lane_for_kind", {}))
         if not p.lanes:
             p.add_default_lanes()
+        if "ma3_seq_start" not in d.get("export", {}):   # from when each lane had its own number
+            p.export.ma3_seq_start = min((l.ma3_sequence for l in p.lanes if l.export), default=1)
         if not d.get("per_song_seqs") and len(p.songs) > 1:
             # from before per-song sequences: give each song its own block of sequences, and let
             # per-song lanes number from 1 again — numbers the live link fixed (101, 102 … in

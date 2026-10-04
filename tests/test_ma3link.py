@@ -59,6 +59,11 @@ def link(app, tmp_path):
     rx.close()
 
 
+def plan(project):
+    from cueforge.core.editing import sequence_plan
+    return sequence_plan(project)
+
+
 def q(project, lane, song=None):
     """A sequence as commands address it: its quoted name."""
     from cueforge.core.editing import sequence_name
@@ -128,7 +133,7 @@ def test_sync_creates_labels_pins_and_deletes(link):
     assert f"Store Sequence {seq} Cue 1 /Merge /NoConfirm" in cmds
     assert f'Label Sequence {seq} Cue 1 "Intro"' in cmds
     assert f'Label Sequence {seq} Cue 2 "Verse"' in cmds
-    ensure = f'Lua "CF_ENSURE([[{seq.strip(chr(34))}]],{main.ma3_sequence},1)"'
+    ensure = f'Lua "CF_ENSURE([[{seq.strip(chr(34))}]],{plan(p)[seq.strip(chr(34))]},1)"'
     assert ensure in cmds                                   # created (and named) on the console by Lua
     assert cmds.index(ensure) < cmds.index(f"Store Sequence {seq} Cue 1 /Merge /NoConfirm")
     assert any("CF_P[1]=" in c for c in cmds[:cmds.index(ensure)])      # CF_ENSURE itself sent first
@@ -269,8 +274,10 @@ def test_all_songs_sync(link):
     # Hits is shared: song 2's Temp fires the one shared Temp cue of that sequence
     assert 'Store Sequence "Hits" Cue 1 /Merge /NoConfirm' in stores
     assert not any(f'Sequence "Hits" Cue {song2.cue_start:g} ' in c for c in stores)
-    assert f'Lua "CF_ENSURE([[Second {main.name}]],{main.ma3_sequence},1)"' in cmds
-    assert f'Lua "CF_ENSURE([[{hits.name}]],{hits.ma3_sequence},1)"' in cmds
+    pl = plan(p)                         # shared lanes first, then each song's own, from Sequence start
+    assert f'Lua "CF_ENSURE([[Second {main.name}]],{pl["Second " + main.name]},1)"' in cmds
+    assert f'Lua "CF_ENSURE([[{hits.name}]],{pl[hits.name]},1)"' in cmds
+    assert pl[hits.name] < pl[f"Song 1 {main.name}"] < pl[f"Second {main.name}"]
 
 
 def test_disabled_link_sends_nothing(link):
@@ -627,6 +634,6 @@ def test_old_number_records_adopt_sequences_once(link):
     cmds = link.sync_cues()
     assert f'Label Sequence {main.ma3_sequence} "Song 1 {main.name}"' in cmds          # adopted once
     assert sum(c.startswith(f"Label Sequence {main.ma3_sequence} ") for c in cmds) == 1
-    assert f'Lua "CF_ENSURE([[Second {main.name}]],{main.ma3_sequence},1)"' in cmds    # own sequence
+    assert f'Lua "CF_ENSURE([[Second {main.name}]],{plan(p)["Second " + main.name]},1)"' in cmds   # own one
     assert f'Store Sequence "Second {main.name}" Cue 1 /Merge /NoConfirm' in cmds
     assert not any(f'Store Sequence "Song 1 {main.name}"' in c for c in cmds)           # already there

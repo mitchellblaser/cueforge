@@ -71,6 +71,13 @@ class LinkDialog(QDialog):
         self.pin.setChecked(c.pin_numbers)
         for w in (self.preview, self.sync, self.pin, self.delete, self.all, self.tc):
             f2.addRow(w)
+        self.seq_start = QSpinBox()
+        self.seq_start.setRange(1, 99999)
+        self.seq_start.setValue(int(link.s.project.export.ma3_seq_start or 1))
+        self.seq_start.setToolTip("New sequences are created from this number up (first free numbers), together "
+                                  "in one block. They are found by name, so you can move them on the console. "
+                                  "Same setting as in the grandMA3 export.")
+        f2.addRow("Sequence start", self.seq_start)
         lay.addWidget(g2)
 
         g3 = QGroupBox("Command syntax ({seq}, {cue}, {label}, {fade})")
@@ -135,6 +142,7 @@ class LinkDialog(QDialog):
         c.allow_delete = self.delete.isChecked()
         c.all_songs = self.all.isChecked()
         c.push_timecode = self.tc.isChecked()
+        self.link.s.project.export.ma3_seq_start = self.seq_start.value()
         c.pin_numbers = self.pin.isChecked()
         for k, e in self.tpl.items():
             setattr(c, "cmd_" + k, e.text().strip() or getattr(LinkSettings, "cmd_" + k))

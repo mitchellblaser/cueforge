@@ -538,6 +538,13 @@ class MA3ExportDialog(QDialog):
         self.tc_num.setValue(p.song.ma3_timecode)
         self.tc_num.setToolTip("For the current song; each song's slot is set in its song settings")
         form.addRow("Timecode slot (current song)", self.tc_num)
+        self.seq_start = QSpinBox()
+        self.seq_start.setRange(1, 99999)
+        self.seq_start.setValue(int(ex.ma3_seq_start or 1))
+        self.seq_start.setToolTip("CueForge's sequences are created from this number up, together in one block "
+                                  "(the live link and the plugin take the first free numbers from here). They are "
+                                  "found by name afterwards, so you can move them on the console.")
+        form.addRow("Sequence start", self.seq_start)
         self.ver = QLineEdit(ex.ma3_data_version)
         self.ver.setToolTip("Set to your console/onPC software version, e.g. 2.1.1.5")
         form.addRow("XML DataVersion", self.ver)
@@ -554,8 +561,8 @@ class MA3ExportDialog(QDialog):
         clashes = cue_number_clashes(p)
         if clashes:
             w = QLabel("<span style='color:#ffb74d'><b>Cue number clash:</b> " + "; ".join(clashes[:3])
-                       + (" …" if len(clashes) > 3 else "") + "<br>Give songs different first cue numbers or "
-                       "sequence offsets (setlist ⚙, or right-click ▸ Auto-number setlist).</span>")
+                       + (" …" if len(clashes) > 3 else "") + "<br>Give songs different names and first cue numbers "
+                       "for shared lanes (setlist ⚙, or right-click ▸ Auto-number setlist).</span>")
             w.setWordWrap(True)
             form.addRow(w)
         from ..export.ma3 import go_plus_warnings
@@ -585,6 +592,7 @@ class MA3ExportDialog(QDialog):
         ex = self.s.project.export
         ex.ma3_cue_token = self.token.currentData()
         ex.ma3_first_goto = self.first_goto.isChecked()
+        ex.ma3_seq_start = self.seq_start.value()
         self.s.update_song(self.s.project.song.id, ma3_timecode=self.tc_num.value())
         self.all_songs = self.scope.currentData() == "all"
         ex.ma3_data_version = self.ver.text().strip() or ex.ma3_data_version

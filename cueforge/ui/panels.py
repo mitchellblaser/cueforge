@@ -728,7 +728,7 @@ class SuggestionPanel(QWidget):
 
 # ============================================================== lanes
 class LanePanel(QWidget):
-    COLS = ["Name", "Colour", "Tap key", "Seq from", "Per song", "Export"]
+    COLS = ["Name", "Colour", "Tap key", "Per song", "Export"]
 
     def __init__(self, session: Session, parent=None) -> None:
         super().__init__(parent)
@@ -748,7 +748,7 @@ class LanePanel(QWidget):
         vh.setDefaultAlignment(Qt.AlignCenter)
         vh.sectionMoved.connect(self._header_moved)
         vh.setToolTip("Drag to reorder lanes")
-        for i, w in enumerate([0, 56, 56, 64, 60, 50]):
+        for i, w in enumerate([0, 56, 56, 60, 50]):
             if w:
                 self.table.setColumnWidth(i, w)
         self.table.cellDoubleClicked.connect(self._dbl)
@@ -765,8 +765,6 @@ class LanePanel(QWidget):
         nm.addAction("Number all cues automatically (clear fixed numbers)", lambda: self._auto_numbers(None))
         nm.addAction("Number this lane's cues automatically", lambda: self._auto_numbers(self._lane_id() or False))
         nm.addAction("Renumber this lane from…", self._renumber)
-        nm.addSeparator()
-        nm.addAction("Number MA3 sequences 1, 2, 3… in lane order", self._number_sequences)
         num.setMenu(nm)
         b.addWidget(num, 1, 1, 1, 2)
         lay.addLayout(b)
@@ -776,8 +774,8 @@ class LanePanel(QWidget):
         lay.addWidget(self.dup)
         help_ = QLabel("Drag a lane by its ≡ handle (or its header on the timeline) to reorder; keys 1–9 follow the "
                        "order. Each lane exports to a grandMA3 sequence, found on the console by name: \"<song> <lane>\" "
-                       "(Per song) or the lane name (shared). Seq from: where a missing sequence is created "
-                       "(the first free number from there). Cue numbers are automatic unless you type one.")
+                       "(Per song) or the lane name (shared). New sequences are created from the project's "
+                       "Sequence start (File ▸ Export). Cue numbers are automatic unless you type one.")
         help_.setWordWrap(True)
         help_.setStyleSheet(f"color: {theme.FG_DIM}; font-size: 10px;")
         lay.addWidget(help_)
@@ -810,12 +808,6 @@ class LanePanel(QWidget):
         n = self.s.auto_number_cues(lanes)
         self.s.status.emit(f"{n} cue(s) now numbered automatically" if n else "All cues are already automatic")
 
-    def _number_sequences(self) -> None:
-        if QMessageBox.question(self, "Number sequences", "Give the lanes MA3 sequences 1, 2, 3… in lane order? "
-                                "Lanes that are already on the console point at new sequences afterwards.") \
-                == QMessageBox.Yes:
-            self.s.number_sequences()
-
     def rebuild(self) -> None:
         self._syncing = True
         cur = self._lane_id()
@@ -839,23 +831,17 @@ class LanePanel(QWidget):
             key.setAlignment(Qt.AlignCenter)
             key.editingFinished.connect(lambda lid=l.id, w=key: self._key(lid, w.text()))
             self.table.setCellWidget(r, 2, key)
-            seq = QSpinBox()
-            seq.setRange(1, 9999)
-            seq.setValue(l.ma3_sequence)
-            seq.editingFinished.connect(lambda lid=l.id, w=seq: self.s.update_lane(lid, ma3_sequence=w.value())
-                                        if self.s.project.lane(lid).ma3_sequence != w.value() else None)
-            self.table.setCellWidget(r, 3, seq)
             own = QCheckBox()
             own.setChecked(lane_per_song(l))
             own.setToolTip("On: every song gets its own sequence for this lane, named \"<song> <lane>\", "
                            "cues from 1.\nOff: one sequence shared by all songs, named after the lane "
                            "(e.g. hits, strobe).")
             own.toggled.connect(lambda v, lid=l.id: self.s.update_lane(lid, per_song=v))
-            self.table.setCellWidget(r, 4, own)
+            self.table.setCellWidget(r, 3, own)
             ex = QCheckBox()
             ex.setChecked(l.export)
             ex.toggled.connect(lambda v, lid=l.id: self.s.update_lane(lid, export=v))
-            self.table.setCellWidget(r, 5, ex)
+            self.table.setCellWidget(r, 4, ex)
             if l.id == cur:
                 self.table.selectRow(r)
         self._syncing = False

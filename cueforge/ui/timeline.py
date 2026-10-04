@@ -11,7 +11,7 @@ from PySide6.QtGui import (QBrush, QColor, QFont, QFontMetrics, QImage, QPainter
                            QPolygonF)
 from PySide6.QtWidgets import QGridLayout, QMenu, QScrollBar, QToolTip, QWidget
 
-from ..core.model import KIND_LABELS
+from ..core.model import KIND_LABELS, lane_per_song
 from ..core.timecode import seconds_to_tc
 from . import theme
 from .session import Session
@@ -614,7 +614,7 @@ class TimelineCanvas(QWidget):
             p.setPen(QColor(theme.FG_DIM))
             n = len(self.s.project.cues_in_lane(lane.id))
             pend = sum(1 for s in self.s.project.visible_suggestions() if s.lane_id == lane.id)
-            sub = ("▶ " if active else "") + f"Seq {lane.ma3_sequence} · {n} cues"
+            sub = ("▶ " if active else "") + ("" if lane_per_song(lane) else "shared · ") + f"{n} cues"
             if pend:
                 sub += f" · {pend} AI"
             p.drawText(hr.adjusted(10, 22, -4, 0), Qt.AlignTop | Qt.AlignLeft, sub)

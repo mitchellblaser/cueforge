@@ -878,14 +878,6 @@ class Session(QObject):
                     unpin.append(c.id)
         return len(cues)
 
-    def number_sequences(self) -> None:
-        """MA3 sequences 1, 2, 3 … in lane order (exported lanes first)."""
-        lanes = [l for l in self.project.lanes if l.export] + [l for l in self.project.lanes if not l.export]
-        with self.edit("Number sequences"):
-            for k, l in enumerate(lanes, 1):
-                l.ma3_sequence = k
-        self.lanes_changed.emit()
-
     def set_kind_lane(self, kind: str, lane_id: str) -> None:
         with self.edit("Suggestion lane"):
             self.project.analysis.lane_for_kind[kind] = lane_id

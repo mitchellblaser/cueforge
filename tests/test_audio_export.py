@@ -161,7 +161,13 @@ def test_ma3_xml():
     assert root.tag == "GMA3"
     tracks = root.findall(".//Track")
     assert len(tracks) == 2
-    assert tracks[1].get("Target").endswith("Sequences.7")
+    from cueforge.core.editing import sequence_plan
+    pl = sequence_plan(p)                      # shared Hits first, then the song's Main Cues, from 1
+    assert pl == {"Hits": 1, "Song 1 Main Cues": 2}
+    assert tracks[1].get("Target").endswith("Sequences.1") and tracks[0].get("Target").endswith("Sequences.2")
+    p.export.ma3_seq_start = 40
+    assert build_ma3_xml(p).count('Target="ShowData.DataPools.Default.Sequences.4') == 2   # 40 and 41
+    p.export.ma3_seq_start = 1
     evs = tracks[0].findall(".//CmdEvent")
     assert [e.get("CueDestination") for e in evs] == ["Intro", 'Verse "1"']
     assert float(evs[1].get("Time")) == 16.0                   # seconds, as MA3 writes them
@@ -174,7 +180,7 @@ def test_ma3_xml():
 def test_ma3_lua_and_macro():
     p = _project_with_cues()
     lua = build_ma3_lua(p, 3, all_songs=False)
-    assert "tc=3" in lua and 'seq="Hits", pref=7' in lua and 'label="Verse \\"1\\""' in lua
+    assert "tc=3" in lua and 'seq="Hits", pref=1' in lua and 'label="Verse \\"1\\""' in lua
     assert 'seq="Song 1 Main Cues"' in lua and 'offset="0h00m00.000"' in lua
     assert "CF_ENSURE(lane.seq, lane.pref" in lua and "cf_set_offset(song.tc, song.offset)" in lua
     assert lua.count("{t=") == 3
