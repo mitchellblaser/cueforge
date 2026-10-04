@@ -532,7 +532,7 @@ Open **File › grandMA3 live link…** (Ctrl+L):
 | **Keep cue lists in sync** | Creates and labels cues on the console as you program, about half a second after each edit. Names sequences after their lanes. Sends cue fades too. |
 | **Also delete console cues…** | Off by default. Even when on, only deletes cues CueForge created and you deleted in CueForge. |
 | **Sync every song** | Otherwise only the open song is synced. |
-| **Push timecode shows automatically** | For onPC on the same computer: writes each song's timecode into onPC's library and imports it into the song's slot, a few seconds after you stop editing. Check the *onPC timecode library* folder is right. |
+| **Push timecode shows automatically** | Sends each song's timecode show over the network and imports it into the song's Timecode slot, a few seconds after you stop editing. Works with onPC or a networked console; no files to copy and no folders to set. |
 | **Fix cue numbers once they exist on the console** | On by default. Cues already on the console keep their numbers; a new cue between 5 and 6 becomes 5.1. |
 
 Buttons: **Push all cues now** (recreate everything, e.g. for a fresh show file) and **Push
