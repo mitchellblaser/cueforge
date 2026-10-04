@@ -19,6 +19,9 @@ analysis never creates, moves or deletes a confirmed cue. Accuracy on a six-song
 multi-genre test set (live and studio styles) is documented in
 [docs/ACCURACY.md](docs/ACCURACY.md).
 
+**New to CueForge?** Read the [User Guide](docs/USER_GUIDE.md), a step-by-step manual for
+programming a show.
+
 ![setlist, lanes and suggestions](docs/screenshot_setlist.png)
 
 ---
