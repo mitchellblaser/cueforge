@@ -56,6 +56,17 @@ class LinkSettings:
     cmd_label_seq: str = 'Label Sequence {seq} "{label}"'
 
 
+def fix_file_lua(path: str, fix_src: str) -> str:
+    """One `Lua "…"` command: on the console, fill each @SEQn@ in the timecode file with
+    that sequence's real address, before the file is imported."""
+    p = path.replace("\\", "/")
+    body = (fix_src + f"local p = [[{p}]] local f = io.open(p, 'r') "
+            "if not f then ErrPrintf('CueForge: cannot read %s', p) return end "
+            "local x = f:read('*a') f:close() f = io.open(p, 'w') f:write(cf_fix(x)) f:close()")
+    assert '"' not in body
+    return f'Lua "{body}"'
+
+
 def _q(text: str) -> str:
     return text.replace('"', "'").replace("\n", " ")
 
@@ -400,7 +411,7 @@ class MA3Link(QObject):
     def push_timecode(self) -> list[str]:
         """Write the timecode XML of the open song (or every song) into onPC's library and
         import it into the song's slot."""
-        from ..export.ma3 import build_ma3_xml, export_lanes, in_song
+        from ..export.ma3 import SEQ_FIX_LUA, build_ma3_xml, export_lanes, in_song
         folder = self.cfg.timecode_dir or default_timecode_dir()
         try:
             os.makedirs(folder, exist_ok=True)
@@ -414,15 +425,17 @@ class MA3Link(QObject):
                 if not export_lanes(p):
                     continue
                 fname = f"CueForge_{song.ma3_timecode}.xml"
+                path = os.path.abspath(os.path.join(folder, fname))
                 try:
-                    with open(os.path.join(folder, fname), "w", encoding="utf-8") as f:
-                        f.write(build_ma3_xml(p))
+                    with open(path, "w", encoding="utf-8") as f:
+                        f.write(build_ma3_xml(p, placeholders=True))
                 except OSError as exc:
                     self.status.emit(f"Timecode push failed: {exc}")
                     return []
-                cmds += [f"Delete Timecode {song.ma3_timecode} /NoConfirm",
+                cmds += [fix_file_lua(path, SEQ_FIX_LUA),
+                         f"Delete Timecode {song.ma3_timecode} /NoConfirm",
                          f'Import Timecode {song.ma3_timecode} /File "{fname}" /NoConfirm']
         for c in cmds:
             self.send(c)
-        self.status.emit(f"Timecode pushed ({len(cmds) // 2} song(s))")
+        self.status.emit(f"Timecode pushed ({len(cmds) // 3} song(s))")
         return cmds

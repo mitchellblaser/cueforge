@@ -234,12 +234,13 @@ def test_timecode_push_writes_library_file(link, tmp_path):
     p = link.s.project
     slot = p.song.ma3_timecode
     cmds = link.push_timecode()
-    assert cmds == [f"Delete Timecode {slot} /NoConfirm", f'Import Timecode {slot} /File "CueForge_{slot}.xml" /NoConfirm']
+    assert cmds[0].startswith('Lua "')                 # fill in the console's own addresses first
+    assert cmds[1:] == [f"Delete Timecode {slot} /NoConfirm", f'Import Timecode {slot} /File "CueForge_{slot}.xml" /NoConfirm']
     f = tmp_path / "timecodes" / f"CueForge_{slot}.xml"
     root = ET.parse(f).getroot()
     assert root.find(".//Timecode") is not None or root.tag == "Timecode"
     msgs = received(link.rx)
-    assert [m[1] for m in msgs][-2:] == cmds
+    assert [m[1] for m in msgs][-3:] == cmds
 
 
 def test_all_songs_sync(link):
@@ -337,3 +338,35 @@ def test_timecode_xml_has_no_guids(link):
     xml = build_ma3_xml(link.s.project)
     assert "Guid" not in xml                     # MA3 rejected ours ("Illegal property"); it makes its own
     ET.fromstring(xml)
+
+
+def test_timecode_push_fixes_sequence_addresses_on_console(link):
+    cmds = link.push_timecode()
+    assert cmds[0].startswith('Lua "') and "cf_fix" in cmds[0] and cmds[2].startswith("Import Timecode")
+    folder = link.cfg.timecode_dir
+    xml = open(os.path.join(folder, os.listdir(folder)[0]), encoding="utf-8").read()
+    assert "@SEQ" in xml                          # filled in by the console before the import
+
+
+def test_seq_fix_lua_runs(tmp_path):
+    import shutil
+    import subprocess
+    from cueforge.control.ma3link import fix_file_lua
+    from cueforge.export.ma3 import SEQ_FIX_LUA
+    lua = shutil.which("lua") or shutil.which("lua5.4") or shutil.which("luajit")
+    if not lua:
+        pytest.skip("no Lua interpreter")
+    f = tmp_path / "tc.xml"
+    f.write_text('<a Object="@SEQ5@" V="@CUE5:2.5@"/><b V="@CUE5:9@"/>')
+    body = fix_file_lua(str(f), SEQ_FIX_LUA)[len('Lua "'):-1]
+    mock = ("local function mk(no, addr, kids) return {no=no, AddrNative=function() return addr end, "
+            "Children=function() return kids end} end "
+            "local cues = {mk(0, 'S5.0'), mk(1000, 'S5.1'), mk(2500, 'S5.2')} "     # cue numbers × 1000
+            "local list = {mk(1, 'S1', {}), mk(5, 'S5', cues)} "
+            "function DataPool() return {Sequences={Children=function() return list end}} end "
+            "function ErrPrintf(f, ...) print(string.format(f, ...)) end ")
+    script = tmp_path / "t.lua"
+    script.write_text(mock + body)
+    out = subprocess.run([lua, str(script)], check=True, capture_output=True, text=True).stdout
+    assert f.read_text() == '<a Object="S5" V="S5.2"/><b V=""/>'      # the console's own addresses
+    assert "cue 9 not found" in out

@@ -52,11 +52,16 @@ def seq_number(project: Project, lane) -> int:
     return lane.ma3_sequence + project.song.seq_offset
 
 
-def build_ma3_xml(project: Project, timecode_number: int | None = None, duration: float | None = None) -> str:
+def build_ma3_xml(project: Project, timecode_number: int | None = None, duration: float | None = None,
+                  placeholders: bool = False) -> str:
     """Timecode show XML for the current song, in the layout grandMA3 exports: times in
     seconds, events as RealtimeCmd key presses (ExecToken) on the track's sequence. MA3
     rejects an Offset attribute, so the song's start timecode is added to every time
-    (events sit at the real show timecode, e.g. 07:00:01)."""
+    (events sit at the real show timecode, e.g. 07:00:01).
+
+    With `placeholders`, each sequence address is written as @SEQn@ for the console to fill
+    in (SEQ_FIX_LUA) — MA addresses sequences by their place in the pool, which only the
+    console knows."""
     ex = project.export
     song = project.song
     name = song.name
@@ -83,10 +88,11 @@ def build_ma3_xml(project: Project, timecode_number: int | None = None, duration
             num = nums[c.id]
             if c.duration:
                 # Temp: Temp On at the start, Temp Off when the hold ends (all on the lane's Temp cue)
-                lines += _event(tlabel or f"Cue {num:g}", off + c.time, "Temp", "On", seq, num)
-                lines += _event(tlabel or f"Cue {num:g}", off + c.time + c.duration, "Temp", "Off", seq, num)
+                lines += _event(tlabel or f"Cue {num:g}", off + c.time, "Temp", "On", seq, num, placeholders)
+                lines += _event(tlabel or f"Cue {num:g}", off + c.time + c.duration, "Temp", "Off", seq, num,
+                                placeholders)
             else:
-                lines += _event(c.label or f"Cue {num:g}", off + c.time, tokens[c.id], "On", seq, num)
+                lines += _event(c.label or f"Cue {num:g}", off + c.time, tokens[c.id], "On", seq, num, placeholders)
         lines.append('\t\t\t\t\t</CmdSubTrack>')
         lines.append('\t\t\t\t</TimeRange>')
         lines.append('\t\t\t</Track>')
@@ -140,15 +146,48 @@ def _seq_handle(seq: int) -> str:
     return f"12.12.0.5.{max(0, seq - 1)}"
 
 
-def _event(name: str, t: float, token: str, status: str, seq: int, cue: float) -> list[str]:
-    obj = _seq_handle(seq)
+# Lua (no double quotes, no comments: it also travels as one `Lua "…"` command line) that
+# fills @SEQn@ / @CUEn:c@ in the timecode XML with the addresses grandMA3 itself gives that
+# sequence / cue (handle:AddrNative()), so nothing about the show's pool layout is guessed.
+SEQ_FIX_LUA = (
+    "local cf_seqs = {} "
+    "local function cf_num(x) local ok, v = pcall(function() return x.no end) return ok and tonumber(v) or nil end "
+    "local function cf_find(list, n) "
+    "if not list then return nil end "
+    "for _, o in ipairs(list) do local v = cf_num(o) "
+    "if v and (math.abs(v - n) < 1e-6 or math.abs(v - n * 1000) < 1e-3) then return o end end end "
+    "local function cf_kids(h) local ok, k = pcall(function() return h:Children() end) if ok then return k end end "
+    "local function cf_seq(n) if cf_seqs[n] == nil then "
+    "local ok, pool = pcall(function() return DataPool().Sequences end) "
+    "cf_seqs[n] = (ok and pool and cf_find(cf_kids(pool), n)) or false end return cf_seqs[n] end "
+    "local function cf_addr(h) local ok, a = pcall(function() return h:AddrNative() end) "
+    "if ok and type(a) == 'string' and a ~= '' then return a end "
+    "ok, a = pcall(function() return h:Addr() end) if ok and type(a) == 'string' then return a end end "
+    "local cf_bad = {} "
+    "local function cf_warn(m) if not cf_bad[m] then cf_bad[m] = true ErrPrintf('CueForge: %s', m) end end "
+    "local function cf_fix(x) "
+    "x = x:gsub('@SEQ(%d+)@', function(n) n = tonumber(n) local s = cf_seq(n) local a = s and cf_addr(s) "
+    "if a then return a end cf_warn('Sequence ' .. n .. ' not found: push cues first, then push timecode') "
+    "return 'ShowData.DataPools.Default.Sequences.' .. n end) "
+    "x = x:gsub('@CUE(%d+):([%d%.]+)@', function(n, c) n, c = tonumber(n), tonumber(c) local s = cf_seq(n) "
+    "local q = s and cf_find(cf_kids(s), c) local a = q and cf_addr(q) "
+    "if a then return a end cf_warn('Sequence ' .. n .. ' cue ' .. c .. ' not found: push cues first') "
+    "return '' end) "
+    "return x end "
+)
+
+
+def _event(name: str, t: float, token: str, status: str, seq: int, cue: float,
+           placeholders: bool = False) -> list[str]:
+    obj = f"@SEQ{seq}@" if placeholders else _seq_handle(seq)
+    dest = f"@CUE{seq}:{cue:g}@" if placeholders else f"{obj}.{int(round(cue * 1000))}"
     return [f'\t\t\t\t\t\t<CmdEvent Name={quoteattr(token)} Time="{_fmt_time(t)}" '
             f'CueDestination={quoteattr(name)}>',
             f'\t\t\t\t\t\t\t<RealtimeCmd Type="Key" Source="Original" UserProfile="0" User="1" '
             f'Status="{status}" IsRealtime="0" IsXFade="0" IgnoreFollow="0" IgnoreCommand="0" Assert="0" '
             f'IgnoreNetwork="0" FromTriggerNode="0" IgnoreExecTime="0" IssuedByTimecode="0" '
             f'FromLocalHardwareFader="1" IgnoreExecXFade="0" IsExecXFade="0" Object="{obj}" '
-            f'ExecToken="{token}" ValCueDestination="{obj}.{int(round(cue * 1000))}"/>',
+            f'ExecToken="{token}" ValCueDestination="{dest}"/>',
             '\t\t\t\t\t\t</CmdEvent>']
 
 
@@ -195,7 +234,7 @@ def _song_lua(project: Project, tc_number: int) -> str:
             for c in project.cues_in_lane(lane.id))
         lanes_lua.append(f"      {{name={_lua_str(lane.name)}, seq={seq_number(project, lane)}, events={{\n{evs}\n      }}}}")
     lanes_src = ",\n".join(lanes_lua)
-    xml = build_ma3_xml(project, tc_number)
+    xml = build_ma3_xml(project, tc_number, placeholders=True)
     assert "]==]" not in xml
     return (f"  {{name={_lua_str(project.song.name)}, tc={tc_number}, offset={project.tc_offset:.6f},\n"
             f"    xml=[==[{xml}]==],\n    lanes={{\n{lanes_src}\n    }}}}")
@@ -259,12 +298,14 @@ local function timecode_dirs()
   return dirs
 end
 
+{SEQ_FIX_LUA.replace("{", "{{").replace("}", "}}")}
+
 local function import_xml(song)
   for _, dir in ipairs(timecode_dirs()) do
     local fname = "CueForge_" .. song.tc .. ".xml"
     local f = io.open(dir .. "/" .. fname, "w")
     if f then
-      f:write(song.xml)
+      f:write(cf_fix(song.xml))     -- each sequence's real place in this show's pool
       f:close()
       Cmd("Delete Timecode " .. song.tc .. " /NoConfirm")
       Cmd("Import Timecode " .. song.tc .. ' /File "' .. fname .. '" /NoConfirm')
