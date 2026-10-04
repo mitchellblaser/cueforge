@@ -38,6 +38,7 @@ class ControlDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("MIDI & OSC control")
         self.hub = hub
+        hub.suspended = True                       # pressing pads here (Learn, testing) adds no cues
         cfg = hub.cfg
         self.maps = cfg.mappings()
         lay = QVBoxLayout(self)
@@ -256,6 +257,7 @@ class ControlDialog(QDialog):
         super().accept()
 
     def done(self, r) -> None:
+        self.hub.suspended = False
         self.hub.stop_learn()
         try:
             self.hub.learned.disconnect(self._learned)

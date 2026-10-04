@@ -261,11 +261,18 @@ on the timeline.
      to the grid.
    - **Feedback (pad lights)**: if you don't pick an *Output*, CueForge uses the same device's
      output automatically. Pads light in their lane's colour, sent back on the channel the
-     controller uses. Change a lane's colour to change its pads. To fix a pad's light, type an
-     LED value (0–127) into its **Pad light** column. **Test lights** lights every pad with a
-     different value, so you can see which number gives which colour on your controller. *Automatic* picks the colour scheme for the connected device: a Launchpad / APC mini
-     mk2-style palette, or approximate Midi Fighter colours. You can also choose plain on/off.
-     The active lane's Temp pad is full brightness and pads flash on a hit.
+     controller uses: **cue pads bright, Temp pads dim**. The colours are fixed and don't change
+     with what you pressed last. A pad flashes white on a hit.
+     - *Automatic* picks the colour scheme for the connected device: the Midi Fighter Spectra's
+       own table of 10 colours, or a Launchpad / APC mini mk2-style palette. You can also
+       choose plain on/off.
+     - On a Midi Fighter the whole bank is cleared first, so unmapped pads go dark instead of
+       showing their own colour. On quit the pads are handed back to the controller.
+     - Change a lane's colour to change its pads. To fix a pad's light, type an LED value
+       (0–127) into its **Pad light** column.
+     - **Test lights** lights every pad with a different value: on a Midi Fighter, each of its
+       colours, bright then dim.
+     - While the MIDI settings are open, pads never add cues, so Learn and testing are safe.
    - **OSC** (TouchOSC, Open Stage Control, a Stream Deck plugin…): listens on port 8100 by
      default. Addresses: `/cueforge/lane/N/cue|temp`, `/cueforge/cue|temp [lane]`,
      `/cueforge/play|stop|loop|undo|section`, `/cueforge/lane/next|prev`,

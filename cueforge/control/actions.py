@@ -118,20 +118,36 @@ PALETTE = _palette()
 WHITE = 3
 
 
+# Midi Fighter Spectra / 3D (DJ TechTools user guide, "MIDI Color Velocity Settings"): ten
+# colours, each with a bright and a dim velocity range; 1-6 is off. Velocity 0 hands the pad
+# back to its own (Utility) colour, and 121-127 forces its active colour.
+MF_COLORS = [  # (name, rgb, bright range start, dim range start)
+    ("red", (237, 28, 36), 7, 13), ("orange", (242, 101, 34), 19, 25), ("yellow", (255, 204, 0), 31, 37),
+    ("lime", (194, 216, 43), 43, 49), ("green", (0, 200, 0), 55, 61), ("cyan", (0, 255, 255), 67, 73),
+    ("blue", (0, 0, 255), 79, 85), ("purple", (128, 0, 255), 91, 97), ("magenta", (208, 0, 160), 103, 109),
+]
+MF_WHITE = 117
+MF_OFF = 3
+
+
 def midifighter_velocity(hex_color: str, dim: bool = False) -> int:
-    """Approximate Midi Fighter (Spectra / 3D) colour for a lane colour: its LED colour is set
-    by note-on velocity, roughly around the colour wheel. Approximate - use On / off if the
-    colours come out wrong on your unit."""
+    """Midi Fighter velocity for a lane colour: the nearest of its ten colours (by hue, so
+    pastel lane colours still pick the right family), bright or dim."""
     h = hex_color.lstrip("#")
     try:
         r, g, b = (int(h[i:i + 2], 16) / 255 for i in (0, 2, 4))
     except ValueError:
-        return 127
+        return MF_WHITE
     hue, sat, val = colorsys.rgb_to_hsv(r, g, b)
-    if sat < 0.2:
-        return 127                                  # white-ish
-    v = 1 + int(round(hue * 125)) % 126
-    return max(1, v // 2) if dim else v
+    if sat < 0.18:
+        return MF_WHITE if not dim else MF_WHITE    # white has no dim state
+    best, bd = MF_COLORS[0], 9.0
+    for c in MF_COLORS:
+        ch, cs, cv = colorsys.rgb_to_hsv(*(x / 255 for x in c[1]))
+        d = min(abs(hue - ch), 1 - abs(hue - ch))
+        if d < bd:
+            best, bd = c, d
+    return (best[3] if dim else best[2]) + 2      # middle of the 6-step range
 
 
 def color_velocity(hex_color: str, dim: bool = False) -> int:

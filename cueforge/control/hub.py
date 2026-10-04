@@ -11,7 +11,8 @@ from typing import Callable
 
 from PySide6.QtCore import QObject, QTimer, Signal, Slot
 
-from .actions import WHITE, ControlSettings, MidiMapping, color_velocity, midifighter_velocity
+from .actions import (MF_OFF, MF_WHITE, WHITE, ControlSettings, MidiMapping, color_velocity,
+                      midifighter_velocity)
 
 MIN_HOLD = 0.05
 
@@ -66,7 +67,7 @@ class ControlHub(QObject):
         self._pending: dict[str, tuple[str, float]] = {}   # action -> (cue id, press time) for press-length holds
         self._event.connect(self._dispatch)
         self._learn.connect(self.learned.emit)
-        for sig in (session.lanes_changed, session.active_lane_changed, session.project_replaced):
+        for sig in (session.lanes_changed, session.project_replaced):
             sig.connect(self.send_feedback)
         self._tc_timer = QTimer(self)
         self._tc_timer.setInterval(100)
@@ -189,6 +190,8 @@ class ControlHub(QObject):
                 self._learning = False
                 self._learn.emit(MidiMapping(kind, msg.channel, number, ""))
             return
+        if getattr(self, "suspended", False):
+            return                             # the MIDI settings are open: pads don't add cues
         for m in self.cfg.mappings():
             if m.matches(kind, msg.channel, number):
                 self._event.emit(m.action, pressed, t)
@@ -294,16 +297,16 @@ class ControlHub(QObject):
     # ------------------------------------------------------------------ feedback
     def _pad_velocity(self, action: str) -> int:
         if not action.startswith(("cue:lane:", "temp:lane:")):
-            return 0
+            return MF_OFF if self.feedback_mode() == "midifighter" else 0
         lid = self.lane_id(int(action.rsplit(":", 1)[1]))
         lane = self.s.project.lane(lid) if lid else None
-        if lane is None:
-            return 0
         mode = self.feedback_mode()
+        if lane is None:
+            return MF_OFF if mode == "midifighter" else 0
         if mode == "onoff":
             return 127
-        active = lid == self.s.active_lane_id
-        dim = not active and action.startswith("temp:")
+        # fixed colours: a pad never changes because of what was pressed last
+        dim = action.startswith("temp:")
         if mode == "midifighter":
             return midifighter_velocity(lane.color, dim=dim)
         return color_velocity(lane.color, dim=dim)
@@ -313,6 +316,13 @@ class ControlHub(QObject):
         out = []
         if self.feedback_mode() == "off":
             return out
+        mapped = {(self.feedback_channel(m), m.number) for m in self.cfg.mappings() if m.kind == "note"}
+        if self.feedback_mode() == "midifighter":
+            # clear the whole bank first: unmapped pads go dark instead of showing their own colour
+            ch = next(iter(mapped))[0] if mapped else 2
+            for n in range(36, 52):
+                if (ch, n) not in mapped:
+                    out.append(mido.Message("note_on", channel=ch, note=n, velocity=MF_OFF))
         for m in self.cfg.mappings():
             if m.kind != "note":
                 continue
@@ -335,8 +345,13 @@ class ControlHub(QObject):
                                "for the 16-pad layout (notes 36-51), or map pads with Learn.")
             return shown
         ch = next((self.feedback_channel(m) for m in self.cfg.mappings() if m.kind == "note"), 0)
+        if self.feedback_mode() == "midifighter":       # its real colours: bright ones, white, then dim
+            from .actions import MF_COLORS
+            values = [c[2] + 2 for c in MF_COLORS] + [MF_WHITE] + [c[3] + 2 for c in MF_COLORS]
+        else:
+            values = [min(127, i * step) for i in range(len(notes))]
         for i, n in enumerate(notes):
-            v = min(127, i * step)
+            v = values[i % len(values)]
             try:
                 self._out.send(mido.Message("note_on", channel=ch, note=n, velocity=v))
             except Exception as exc:
@@ -386,7 +401,7 @@ class ControlHub(QObject):
         for m in self.cfg.mappings():
             if m.action == action and m.kind == "note":
                 try:
-                    flash = 127 if self.feedback_mode() in ("midifighter", "onoff") else WHITE
+                    flash = {"midifighter": MF_WHITE, "onoff": 127}.get(self.feedback_mode(), WHITE)
                     self._out.send(mido.Message("note_on", channel=self.feedback_channel(m), note=m.number,
                                                 velocity=flash))
                 except Exception:
@@ -405,7 +420,21 @@ class ControlHub(QObject):
             pass
 
     # ------------------------------------------------------------------
+    def release_pads(self) -> None:
+        """Hand the pads back to the controller's own colours (Midi Fighter: velocity 0)."""
+        if self._out is None:
+            return
+        import mido
+        try:
+            for m in self.cfg.mappings():
+                if m.kind == "note":
+                    self._out.send(mido.Message("note_on", channel=self.feedback_channel(m), note=m.number,
+                                                velocity=0))
+        except Exception:
+            pass
+
     def close(self) -> None:
+        self.release_pads()
         for port in (self._in, self._out):
             try:
                 if port is not None:

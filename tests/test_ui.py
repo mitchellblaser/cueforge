@@ -477,11 +477,11 @@ def test_midi_control_and_feedback(app, win):
     pump(app)
     c3 = s.project.cues_in_lane(lanes[2].id)
     assert c3[0].duration == pytest.approx(0.8, abs=0.04)
-    # colour feedback follows lane colours; active lane's Temp pad is full colour
+    # colour feedback follows lane colours: cue pads bright, Temp pads dim, whatever is active
     s.set_active_lane(lanes[0].id)
     msgs = {m.note: m.velocity for m in hub.feedback_messages()}
     assert msgs[36] == color_velocity(lanes[0].color)
-    assert msgs[44] == color_velocity(lanes[0].color)               # active lane temp pad: full
+    assert msgs[44] == color_velocity(lanes[0].color, dim=True)     # fixed: not tied to the active lane
     assert msgs[45] == color_velocity(lanes[1].color, dim=True)     # other temp pads dimmer
     assert msgs[36 + len(lanes)] == 0 if len(lanes) < 8 else True   # pads beyond the lanes are off
     # MIDI learn
@@ -1084,9 +1084,31 @@ def test_pad_lights_output_and_overrides(app, win, monkeypatch):
     hub.send_feedback()
     assert any(m.note == maps[0].number and m.velocity == 77 for m in sent)
     shown = hub.test_lights()
-    assert shown and shown[0][1] == 0 and len({v for _, v in shown}) == len(shown)
+    from cueforge.control.actions import MF_COLORS
+    assert shown and shown[0][1] == MF_COLORS[0][2] + 2 and len({v for _, v in shown}) == len(shown)
+    # unmapped pads of the bank are switched off (1-6), never left on velocity 0 (= device colour)
+    sent.clear()
+    hub.cfg.midi_map = [asdict(m) for m in maps[:4]]
+    hub.send_feedback()
+    offs = {m.note for m in sent if m.velocity == 3}
+    assert offs == set(range(36, 52)) - {m.number for m in maps[:4]}
+    assert not any(m.velocity == 0 for m in sent)
     hub.cfg.midi_in = hub.cfg.midi_out = ""
     hub.apply()
+
+
+def test_learn_does_not_add_cues(app, win):
+    import mido
+    from cueforge.ui.control_dialog import ControlDialog
+    s = win.s
+    d = ControlDialog(win.control, win)
+    win.control.handle_midi(mido.Message("note_on", channel=2, note=36, velocity=127), 1.0)
+    win.control.handle_midi(mido.Message("note_off", channel=2, note=36, velocity=0), 1.1)
+    pump(app, 0.2)
+    assert not s.project.cues                         # dialog open: pads only for Learn / testing
+    d.reject()
+    win.control.handle_midi(mido.Message("note_on", channel=2, note=36, velocity=127), 2.0)
+    wait(app, lambda: len(s.project.cues) == 1, 5)
 
 
 def test_pad_lights_explain_why_not(app, win, monkeypatch):
