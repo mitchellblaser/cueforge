@@ -129,7 +129,12 @@ class TrackStrip(Strip):
         self.role = QComboBox()
         self.role.addItems(TRACK_ROLES)
         self.role.setCurrentText(t.role)
-        self.role.setStyleSheet("font-size: 10px;")
+        # compact for the narrow strip: the theme's roomy combo padding cut the role names short
+        self.role.setStyleSheet("QComboBox { font-size: 9px; padding: 1px 9px 1px 2px; min-height: 14px; }"
+                                "QComboBox::drop-down { width: 9px; }"
+                                "QComboBox::down-arrow { width: 7px; height: 7px; }")
+        self.role.setMinimumContentsLength(1)
+        self.role.view().setMinimumWidth(90)         # the open list may be wider than the strip
         self.role.currentTextChanged.connect(self._role)
         self.lay.insertWidget(1, self.role)
         self.fader.set_db(t.gain_db)
