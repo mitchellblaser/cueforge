@@ -135,6 +135,63 @@ def push_commands(script: str, max_len: int = MAX_CMD) -> list[str]:
     return cmds
 
 
+class OscSender:
+    """Sends OSC on a background thread. Two queues: live commands go first; bulk commands
+    keep their order and are paced (BULK_GAP) so a long push doesn't flood the console."""
+    BULK_GAP = 0.003
+
+    def __init__(self, on_error=None) -> None:
+        import queue
+        import threading
+        self._live: queue.Queue = queue.Queue()
+        self._bulk: queue.Queue = queue.Queue()
+        self._wake = threading.Event()
+        self._on_error = on_error
+        self._idle = threading.Event()
+        self._idle.set()
+        self._lock = threading.Lock()
+        threading.Thread(target=self._run, name="ma3-osc", daemon=True).start()
+
+    def put(self, client, address: str, cmd: str, bulk: bool = False) -> None:
+        with self._lock:
+            (self._bulk if bulk else self._live).put((client, address, cmd))
+            self._idle.clear()
+        self._wake.set()
+
+    def wait_idle(self, timeout: float = 5.0) -> bool:
+        """Block until everything queued so far has gone out (tests, shutdown)."""
+        return self._idle.wait(timeout)
+
+    def _send(self, item) -> None:
+        client, address, cmd = item
+        try:
+            client.send_message(address, cmd)
+        except Exception as exc:
+            if self._on_error:
+                self._on_error(f"MA3 link send failed: {exc}")
+
+    def _run(self) -> None:
+        import queue
+        while True:
+            self._wake.wait()
+            self._wake.clear()
+            while True:
+                try:
+                    self._send(self._live.get_nowait())
+                    continue
+                except queue.Empty:
+                    pass
+                try:
+                    item = self._bulk.get_nowait()
+                except queue.Empty:
+                    break
+                self._send(item)
+                time.sleep(self.BULK_GAP)
+            with self._lock:
+                if self._live.empty() and self._bulk.empty():
+                    self._idle.set()
+
+
 def _q(text: str) -> str:
     return text.replace('"', "'").replace("\n", " ")
 
@@ -158,6 +215,8 @@ class MA3Link(QObject):
         self._last_wall = 0.0
         self._preview_cache = None
         self._offs: list[tuple[float, int]] = []            # pending Temp releases (time, sequence)
+        self._sender = OscSender(lambda msg: self.status.emit(msg))
+        self._pushed_tc: dict[str, str] = {}               # song id -> timecode script last pushed
         self._sync_timer = QTimer(self)
         self._sync_timer.setSingleShot(True)
         self._sync_timer.setInterval(600)
@@ -199,6 +258,7 @@ class MA3Link(QObject):
         self._tick_timer.stop()
         self._was_playing = False
         self._preview_cache = None
+        self._pushed_tc = {}                   # a new connection may be a different console
         if not self.cfg.enabled:
             self.status.emit("MA3 link off")
             return
@@ -217,15 +277,15 @@ class MA3Link(QObject):
     def active(self) -> bool:
         return self._client is not None
 
-    def send(self, cmd: str) -> None:
+    def send(self, cmd: str, bulk: bool = False) -> None:
+        """Queue a command for the sender thread, so the UI never waits on the network.
+        Live commands (preview Go / Temp) go out at once, ahead of bulk work (cue sync, a
+        timecode push), which is paced so the console's OSC input keeps up."""
         self.log.append(cmd)
         del self.log[:-300]
         self.sent.emit(cmd)
         if self._client is not None:
-            try:
-                self._client.send_message(self.cfg.address, cmd)
-            except Exception as exc:
-                self.status.emit(f"MA3 link send failed: {exc}")
+            self._sender.put(self._client, self.cfg.address, cmd, bulk)
 
     # ------------------------------------------------------------------ helpers
     def _lane_cues(self, project):
@@ -444,12 +504,16 @@ class MA3Link(QObject):
                 cmds.append(self.cmd("label_seq", seq, label=name))
                 seqs[str(seq)] = name
         for c in cmds:
-            self.send(c)
-        pinned = self.pin_numbers() if self.cfg.pin_numbers else 0
+            self.send(c, bulk=True)
+        pinned = self.pin_numbers() if self.cfg.pin_numbers else set()
         if cmds or pinned:
             self._touch()
-        if pinned:
-            self.s.cues_changed.emit()
+        if pinned:                              # numbers only shown changed style: repaint those lanes
+            self.s.touched_lanes = pinned
+            try:
+                self.s.cues_changed.emit()
+            finally:
+                self.s.touched_lanes = None
         if cmds:
             self.status.emit(f"MA3 link: {len(cmds)} command(s) sent")
         return cmds
@@ -464,35 +528,37 @@ class MA3Link(QObject):
         self.s.project.console = {}
         return self.sync_cues()
 
-    def pin_numbers(self) -> int:
+    def pin_numbers(self) -> set[str]:
         """Give every synced cue its current number explicitly, so inserting a cue later
-        gets a point number (5.1) instead of shifting cues that already hold looks."""
+        gets a point number (5.1) instead of shifting cues that already hold looks.
+        Returns the lanes that changed."""
         from ..export.ma3 import in_song
         p = self.s.project
         rec = self.record
-        n = 0
+        lanes: set[str] = set()
         for song in self._scope():
             with in_song(p, song):
                 for lane, seq, nums, cues in self._lane_cues(p):
                     for c in cues:
                         if c.number is None and c.id in rec:
                             c.number = nums[c.id]
-                            n += 1
-        return n
+                            lanes.add(lane.id)
+        return lanes
 
     # ------------------------------------------------------------------ timecode push
     def _maybe_push_timecode(self) -> None:
         if not (self.active and self.cfg.push_timecode):
             return
-        if self._sync_timer.isActive():        # let the cues exist first
-            self._tc_timer.start()
+        if self._sync_timer.isActive() or getattr(self.s.engine, "playing", False):
+            self._tc_timer.start()             # let the cues exist first; never re-import mid-song
             return
-        self.push_timecode()
+        self.push_timecode(only_changed=True)
 
-    def push_timecode(self) -> list[str]:
+    def push_timecode(self, only_changed: bool = False) -> list[str]:
         """Send the timecode of the open song (or every song) to the console and import it
         there. Everything travels over OSC and is written to the console's own disk, so a
-        networked console works the same as onPC on this computer — no paths to set."""
+        networked console works the same as onPC on this computer — no paths to set.
+        `only_changed` (the automatic push) skips songs whose timecode is unchanged."""
         from ..export.ma3 import SEQ_FIX_LUA, build_ma3_xml, export_lanes, in_song
         p = self.s.project
         cmds = []
@@ -502,10 +568,13 @@ class MA3Link(QObject):
                 if not export_lanes(p):
                     continue
                 script = import_script(build_ma3_xml(p, placeholders=True), song.ma3_timecode, SEQ_FIX_LUA)
+                if only_changed and self._pushed_tc.get(song.id) == script:
+                    continue
+                self._pushed_tc[song.id] = script
                 cmds += push_commands(script, int(self.cfg.max_cmd or MAX_CMD))
                 songs += 1
         for c in cmds:
-            self.send(c)
-            time.sleep(0.003)                  # pace the packets for the console's OSC input
-        self.status.emit(f"Timecode pushed ({songs} song(s), {len(cmds)} commands)")
+            self.send(c, bulk=True)            # paced by the sender thread, not here
+        if songs:
+            self.status.emit(f"Timecode pushed ({songs} song(s), {len(cmds)} commands)")
         return cmds

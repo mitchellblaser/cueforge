@@ -100,18 +100,27 @@ def effective_cue_numbers(project: Project, lane_id: str) -> dict[str, float]:
     """Cue numbers used on export: explicit numbers kept, others filled in ascending.
 
     Temps don't get a cue each: every Temp in a lane fires the same cue (the lane's Temp
-    cue) with Temp On / Temp Off, so they share one number — the earliest Temp's fixed
-    number, else the next whole number after the lane's normal cues (the song's first cue
-    number in a Temp-only lane).
+    cue) with Temp On / Temp Off, so they share one number. In a per-song lane that is the
+    earliest Temp's fixed number, else the next whole number after the lane's normal cues
+    (1 in a Temp-only lane). In a lane shared by every song it is one cue for the whole
+    setlist (shared_temp_number); that lane's normal cues skip it.
 
     Normal cues inserted before an explicitly numbered one share out the gap as point
     numbers (5.1, 5.2 …) so numbers stay in time order and numbers already on the console
     never shift. If a gap is too small even for 1/1000 steps, the leftovers continue past
     the fixed cue (cue_number_clashes reports it)."""
+    from .model import lane_per_song
     cues = project.cues_in_lane(lane_id)
     plain = [c for c in cues if not c.duration]
     temps = [c for c in cues if c.duration]
     start = first_cue_number(project, lane_id)
+    lane = project.lane(lane_id)
+    if temps and lane is not None and not lane_per_song(lane):
+        shared = shared_temp_number(project, lane_id)
+        result = _number_plain(start, plain, taken={shared})
+        for c in temps:
+            result[c.id] = shared
+        return result
     result = _number_plain(start, plain)
     if temps:
         shared = next((c.number for c in temps if c.number is not None), None)
@@ -130,6 +139,17 @@ def temp_cue_label(project: Project, lane_id: str) -> str:
                 lane.name if lane else "")
 
 
+def shared_temp_number(project: Project, lane_id: str) -> float:
+    """The one Temp cue a shared lane fires in every song: the number fixed on a Temp in that
+    lane (earliest song in the setlist first), else cue 1."""
+    for song in project.songs:
+        temps = sorted((c for c in song.cues if c.lane_id == lane_id and c.duration), key=lambda c: c.time)
+        fixed = next((c.number for c in temps if c.number is not None), None)
+        if fixed is not None:
+            return float(fixed)
+    return 1.0
+
+
 def first_cue_number(project: Project, lane_id: str) -> float:
     """Where automatic cue numbers start: 1 in a per-song lane (the song has the sequence to
     itself), the song's own range (101, 201 …) in a lane shared by every song."""
@@ -145,10 +165,10 @@ def sequence_number(project: Project, lane) -> int:
     return lane.ma3_sequence + (project.song.seq_offset if lane_per_song(lane) else 0)
 
 
-def _number_plain(start: float, cues: list) -> dict[str, float]:
+def _number_plain(start: float, cues: list, taken: set[float] | None = None) -> dict[str, float]:
     result: dict[str, float] = {}
     last = start - 1
-    used = {c.number for c in cues if c.number is not None}
+    used = {c.number for c in cues if c.number is not None} | set(taken or ())
     i = 0
     while i < len(cues):
         c = cues[i]

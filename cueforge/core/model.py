@@ -486,6 +486,7 @@ class Project:
             "console": self.console,
             "snap_div": self.snap_div,
             "per_song_seqs": True,
+            "shared_temps": True,
         }
 
     @classmethod
@@ -541,5 +542,19 @@ class Project:
                     shared = s.cue_start if top is None else float(int(top) + 1)
                     for c in temps:
                         if c.number == shared:
+                            c.number = None
+        if not d.get("shared_temps"):
+            # from before shared lanes had one Temp cue for the whole setlist: Temp numbers the
+            # link fixed under the old per-song scheme (101 in song 2 …) are released again
+            from .editing import _number_plain
+            pinned = p.console.get("cues", {})
+            for s in p.songs:
+                for lane in (l for l in p.lanes if not lane_per_song(l)):
+                    cues = sorted((c for c in s.cues if c.lane_id == lane.id), key=lambda c: c.time)
+                    auto = _number_plain(s.cue_start, [c for c in cues if not c.duration])
+                    top = max(auto.values(), default=None)
+                    old = float(s.cue_start) if top is None else float(int(top) + 1)
+                    for c in cues:
+                        if c.duration and c.number == old and c.id in pinned:
                             c.number = None
         return p

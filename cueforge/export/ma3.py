@@ -14,7 +14,7 @@ from contextlib import contextmanager
 from xml.sax.saxutils import quoteattr
 
 from ..core.editing import effective_cue_numbers, temp_cue_label
-from ..core.model import Project, Song
+from ..core.model import Project, Song, lane_per_song
 
 MA3_TICKS_PER_SECOND = 16777216  # MA3's internal 1/2^24 s (read by the importer; XML uses seconds)
 
@@ -447,7 +447,10 @@ def cue_number_clashes(project: Project) -> list[str]:
         with in_song(project, song):
             for lane in export_lanes(project):
                 seq = seq_number(project, lane)
-                for num in effective_cue_numbers(project, lane.id).values():
+                temps = {c.id for c in project.cues_in_lane(lane.id) if c.duration}
+                for cid, num in effective_cue_numbers(project, lane.id).items():
+                    if cid in temps and not lane_per_song(lane):
+                        continue                        # a shared lane's Temp cue is shared on purpose
                     other = seen.get((seq, num))
                     if other and other != song.name:
                         clashes.append(f"Sequence {seq} cue {num:g}: '{other}' and '{song.name}'")

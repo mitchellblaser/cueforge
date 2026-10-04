@@ -130,6 +130,10 @@ Rename, recolour, add or remove lanes in the **Lanes** panel. Each lane has:
   plus the song's offset: Main Cues on Seq 1 becomes Seq 1, 101, 201…) and its cues start at
   1. Unticked: one sequence shared by every song, each song in its own cue range (1…, 101…,
   201…). New projects tick it for Main Cues, Colour and FX, and leave Hits and Strobe shared.
+
+Temps don't create a cue each: all Temps in a lane fire **one** cue with Temp On / Off. In a
+shared lane that is one cue for the whole setlist (cue 1 unless you type another number on
+any Temp in that lane — it changes for every song).
 - **Export** – untick to keep a lane in CueForge only (handy for notes or ideas).
 
 Drag a lane by its **≡** handle in the panel, or by its header on the timeline, to reorder.
@@ -538,7 +542,7 @@ Open **File › grandMA3 live link…** (Ctrl+L):
 | **Keep cue lists in sync** | Creates and labels cues on the console as you program, about half a second after each edit. Names sequences after their lanes. Sends cue fades too. |
 | **Also delete console cues…** | Off by default. Even when on, only deletes cues CueForge created and you deleted in CueForge. |
 | **Sync every song** | Otherwise only the open song is synced. |
-| **Push timecode shows automatically** | Sends each song's timecode show over the network and imports it into the song's Timecode slot, a few seconds after you stop editing. Works with onPC or a networked console; no files to copy and no folders to set. |
+| **Push timecode shows automatically** | Sends each song's timecode show over the network and imports it into the song's Timecode slot, a few seconds after you stop editing — never while playing, and only songs that changed. Works with onPC or a networked console; no files to copy and no folders to set. |
 | **Fix cue numbers once they exist on the console** | On by default. Cues already on the console keep their numbers; a new cue between 5 and 6 becomes 5.1. |
 
 Buttons: **Push all cues now** (recreate everything, e.g. for a fresh show file) and **Push

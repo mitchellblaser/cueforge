@@ -15,7 +15,8 @@ from ..analysis.tuning import learn_thresholds
 from ..audio.engine import AudioEngine, db_to_gain
 from ..audio.loader import AudioData, load_audio
 from ..core import editing
-from ..core.model import (BeatGrid, Lane, LANE_COLORS, Project, Suggestion, TRACK_COLORS, Track)
+from ..core.model import (BeatGrid, Lane, LANE_COLORS, Project, Suggestion, TRACK_COLORS, Track,
+                          lane_per_song)
 from ..core.project_io import analysis_cache_dir, load_project, save_project
 from ..core.settings import UserSettings
 from ..core.timecode import snap_to_frame
@@ -778,9 +779,12 @@ class Session(QObject):
             for k, v in fields.items():
                 setattr(c, k, v)
             if "number" in fields and c.duration:      # Temps share the lane's Temp cue number
-                for o in self.project.cues:
-                    if o.lane_id == c.lane_id and o.duration:
-                        o.number = c.number
+                lane = self.project.lane(c.lane_id)
+                every_song = lane is not None and not lane_per_song(lane)   # shared lane: one cue for the setlist
+                for song in (self.project.songs if every_song else [self.project.song]):
+                    for o in song.cues:
+                        if o.lane_id == c.lane_id and o.duration:
+                            o.number = c.number
             if "time" in fields:
                 c.time = editing.snap_time(self.project, c.time, False)
             if c.duration is not None and c.duration <= 0:

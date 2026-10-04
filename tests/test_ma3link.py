@@ -255,8 +255,9 @@ def test_all_songs_sync(link):
     seq1, seq2 = main.ma3_sequence, main.ma3_sequence + song2.seq_offset
     assert f"Store Sequence {seq2} Cue 1 /Merge /NoConfirm" in stores    # song 2's own Main Cues, from 1
     assert f"Store Sequence {seq1} Cue 1 /Merge /NoConfirm" in stores    # song 1's
-    # Hits is shared: song 2's cues go into the same sequence, in its own range
-    assert f"Store Sequence {hits.ma3_sequence} Cue {song2.cue_start:g} /Merge /NoConfirm" in stores
+    # Hits is shared: song 2's Temp fires the one shared Temp cue of that sequence
+    assert f"Store Sequence {hits.ma3_sequence} Cue 1 /Merge /NoConfirm" in stores
+    assert not any(f"Sequence {hits.ma3_sequence} Cue {song2.cue_start:g} " in c for c in stores)
     assert f'Label Sequence {seq2} "Second {main.name}"' in cmds
     assert f'Label Sequence {hits.ma3_sequence} "{hits.name}"' in cmds
 
@@ -455,3 +456,79 @@ def test_old_project_moves_to_per_song_sequences(link):
     q.select_song(q.songs[1].id)
     assert q.songs[1].seq_offset == 100
     assert sorted(effective_cue_numbers(q, main.id).values()) == [1, 2, 150]
+
+
+def test_shared_lane_temps_fire_one_cue_in_every_song(link):
+    from cueforge.core.model import Project
+    from cueforge.export.ma3 import cue_number_clashes
+    s = link.s
+    s._sync_engine = lambda: None
+    p = s.project
+    strobe = next(l for l in p.lanes if l.name == "Strobe")
+    p.cues += [Cue(lane_id=strobe.id, time=t, duration=0.3) for t in (5.0, 9.0)]
+    s2 = p.add_song("Second")
+    p.select_song(s2.id)
+    p.cues += [Cue(lane_id=strobe.id, time=t, duration=0.3) for t in (2.0, 4.0)]
+    p.cues.append(Cue(lane_id=strobe.id, time=6.0))                     # a normal cue skips the Temp cue
+    nums2 = effective_cue_numbers(p, strobe.id)
+    assert sorted(set(nums2.values())) == [1.0, 101.0]                   # Temps: 1; normal cue: 101
+    p.select_song(p.songs[0].id)
+    assert set(effective_cue_numbers(p, strobe.id).values()) == {1.0}
+    assert not cue_number_clashes(p)                                     # the shared Temp cue is fine
+    # typing a number on any Temp moves the one cue for the whole setlist
+    s.update_cue(p.cues_in_lane(strobe.id)[0].id, number=50.0)
+    p.select_song(s2.id)
+    assert {n for cid, n in effective_cue_numbers(p, strobe.id).items()
+            if p.cue(cid).duration} == {50.0}
+    # an older project: song 2's Temps pinned at the old per-song number come back to the shared cue
+    # (old scheme: the normal cue was 101, the Temp cue the next whole number, 102)
+    for c in s2.cues:
+        if c.lane_id == strobe.id:
+            c.number = 102.0 if c.duration else 101.0
+            p.console.setdefault("cues", {})[c.id] = [strobe.ma3_sequence, c.number, ""]
+    for c in p.songs[0].cues:
+        if c.lane_id == strobe.id:
+            c.number = None
+    d = p.to_dict()
+    d.pop("shared_temps")
+    q = Project.from_dict(d)
+    q.select_song(q.songs[1].id)
+    assert {n for cid, n in effective_cue_numbers(q, strobe.id).items() if q.cue(cid).duration} == {1.0}
+
+
+def test_sender_runs_in_the_background_and_live_goes_first():
+    import threading
+    from cueforge.control.ma3link import OscSender
+    order, gate = [], threading.Event()
+
+    class Client:
+        def send_message(self, addr, cmd):
+            if cmd == "bulk0":
+                gate.wait(2)                       # the first bulk send stalls the network
+            order.append(cmd)
+    sender = OscSender()
+    c = Client()
+    import time as _t
+    t0 = _t.perf_counter()
+    for k in range(5):
+        sender.put(c, "/cmd", f"bulk{k}", bulk=True)
+    assert _t.perf_counter() - t0 < 0.05            # queuing never waits on the network
+    sender.put(c, "/cmd", "live", bulk=False)
+    gate.set()
+    assert sender.wait_idle(3)
+    assert order.index("live") < order.index("bulk2")                  # live jumps the queue
+    assert [x for x in order if x.startswith("bulk")] == [f"bulk{k}" for k in range(5)]   # bulk keeps order
+
+
+def test_auto_timecode_push_waits_for_stop_and_skips_unchanged(link):
+    link.cfg.push_timecode = True
+    link.s.engine.playing = True
+    link._maybe_push_timecode()
+    assert not any(c.startswith('Lua "CF_P') for c in link.log)          # nothing while playing
+    link.s.engine.playing = False
+    link._maybe_push_timecode()
+    n = len(link.log)
+    assert n and any(c.startswith('Lua "CF_P') for c in link.log)
+    link._maybe_push_timecode()
+    assert len(link.log) == n                                            # unchanged: not pushed again
+    assert link.push_timecode()                                          # the button always pushes
