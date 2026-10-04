@@ -54,6 +54,7 @@ class LinkSettings:
     cmd_label: str = 'Label Sequence {seq} Cue {cue} "{label}"'
     cmd_delete: str = "Delete Sequence {seq} Cue {cue} /NoConfirm"
     cmd_label_seq: str = 'Label Sequence {seq} "{label}"'
+    cmd_fade: str = "Sequence {seq} Cue {cue} CueFade {fade}"
 
 
 def fixer_script(xml_path: str, slot: int, fix_src: str) -> str:
@@ -123,8 +124,8 @@ class MA3Link(QObject):
         session.project_replaced.connect(self._project_replaced)
 
     # ------------------------------------------------------------------ setup
-    def cmd(self, name: str, seq: int, cue: float | None = None, label: str = "") -> str:
-        args = dict(seq=seq, cue="" if cue is None else _num(cue), label=_q(label))
+    def cmd(self, name: str, seq: int, cue: float | None = None, label: str = "", fade: float = 0.0) -> str:
+        args = dict(seq=seq, cue="" if cue is None else _num(cue), label=_q(label), fade=_num(round(fade, 3)))
         try:
             return (getattr(self.cfg, "cmd_" + name) or "").format(**args) or \
                 getattr(LinkSettings, "cmd_" + name).format(**args)
@@ -305,6 +306,7 @@ class MA3Link(QObject):
         rec = self.record
         unpin = set(self.s.project.console.get("unpin", []))   # numbered automatically on purpose
         want: dict[str, tuple[int, float, str]] = {}
+        self.want_fade: dict[str, float | None] = {}   # cue id -> fade (None: no fade set)
         for song in self._scope():
             with in_song(p, song):
                 for lane, seq, nums, cues in self._lane_cues(p):
@@ -314,8 +316,10 @@ class MA3Link(QObject):
                             c.number = float(rec[c.id][1])       # undo removed a pinned number
                             nums = effective_cue_numbers(p, lane.id)
                     tlabel = temp_cue_label(p, lane.id) if any(c.duration for c in cues) else ""
+                    tfade = next((c.fade for c in cues if c.duration and c.fade), None)
                     for c in cues:                         # all Temps share the lane's Temp cue
                         want[c.id] = (seq, float(nums[c.id]), tlabel if c.duration else (c.label or ""))
+                        self.want_fade[c.id] = tfade if c.duration else (c.fade or None)
         return want
 
     def desired_cues(self) -> dict[tuple[int, float], str]:
@@ -346,9 +350,11 @@ class MA3Link(QObject):
         on_console = {(int(v[0]), float(v[1])) for v in rec.values()}
         cmds: list[str] = []
         labelled = {(int(v[0]), float(v[1])): v[2] for v in rec.values()}   # what each console cue is called
+        faded = {(int(v[0]), float(v[1])): (v[3] if len(v) > 3 else None) for v in rec.values()}
         for cid, (seq, num, label) in sorted(want.items(), key=lambda kv: (kv[1][0], kv[1][1])):
             old = rec.get(cid)
-            if old is not None and (int(old[0]), float(old[1])) == (seq, num):
+            same = old is not None and (int(old[0]), float(old[1])) == (seq, num)
+            if same:
                 if label and label != old[2] and labelled.get((seq, num)) != label:
                     cmds.append(self.cmd("label", seq, num, label))
                     labelled[(seq, num)] = label
@@ -361,7 +367,14 @@ class MA3Link(QObject):
                     labelled[(seq, num)] = label
                 if old is not None and self.cfg.allow_delete and (int(old[0]), float(old[1])) not in taken:
                     cmds.append(self.cmd("delete", int(old[0]), float(old[1])))   # renumbered
-            rec[cid] = [seq, num, label or (old[2] if old and (int(old[0]), float(old[1])) == (seq, num) else "")]
+            fade = self.want_fade.get(cid)
+            sent = faded.get((seq, num))
+            if fade is not None and sent != fade:          # new or changed fade
+                cmds.append(self.cmd("fade", seq, num, fade=fade))
+            elif fade is None and sent:                     # fade removed: back to 0
+                cmds.append(self.cmd("fade", seq, num, fade=0.0))
+            faded[(seq, num)] = fade
+            rec[cid] = [seq, num, label or (old[2] if old and (int(old[0]), float(old[1])) == (seq, num) else ""), fade]
             if cid in p.console.get("unpin", []):
                 p.console["unpin"].remove(cid)            # the console now has the new number
         existing = {c.id for song in p.songs for c in song.cues}

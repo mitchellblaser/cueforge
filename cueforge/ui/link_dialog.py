@@ -71,13 +71,14 @@ class LinkDialog(QDialog):
         f2.addRow("onPC timecode library", row)
         lay.addWidget(g2)
 
-        g3 = QGroupBox("Command syntax ({seq}, {cue}, {label})")
+        g3 = QGroupBox("Command syntax ({seq}, {cue}, {label}, {fade})")
         g3.setCheckable(True)
         g3.setChecked(False)
         f3 = QFormLayout(g3)
         self.tpl = {}
         for key, name in (("goto", "Goto"), ("go", "Go+"), ("temp", "Temp"), ("temp_off", "Temp release"),
-                          ("store", "Create cue"), ("label", "Label cue"), ("delete", "Delete cue"),
+                          ("store", "Create cue"), ("label", "Label cue"), ("fade", "Cue fade ({fade})"),
+                          ("delete", "Delete cue"),
                           ("label_seq", "Name sequence")):
             e = QLineEdit(getattr(c, "cmd_" + key))
             self.tpl[key] = e

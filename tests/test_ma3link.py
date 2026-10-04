@@ -369,3 +369,22 @@ def test_console_fixer_fills_addresses_then_imports(tmp_path):
     assert "cue 9 not found" in out
     assert out.index("CMD Import Timecode 3") > out.index("ERR")         # import after the fix
     assert "3 sequence/cue addresses filled in" in out
+
+
+def test_fades_sync_to_console(link):
+    from cueforge.export.ma3 import build_ma3_macro_commands
+    p = link.s.project
+    main = p.lanes[0]
+    intro = p.cues_in_lane(main.id)[0]
+    intro.fade = 2.5
+    seq = main.ma3_sequence + p.song.seq_offset
+    cmds = link.sync_cues()
+    assert f"Sequence {seq} Cue 1 CueFade 2.5" in cmds
+    assert not any("CueFade" in c and "Cue 2 " in c for c in cmds)       # no fade: left alone
+    assert not any("CueFade" in c for c in link.sync_cues())              # nothing changed
+    intro.fade = 1.0
+    assert link.sync_cues() == [f"Sequence {seq} Cue 1 CueFade 1"]
+    intro.fade = None
+    assert link.sync_cues() == [f"Sequence {seq} Cue 1 CueFade 0"]       # removed: back to 0
+    intro.fade = 3.0
+    assert f"Sequence {seq} Cue 1 CueFade 3" in build_ma3_macro_commands(p)

@@ -228,8 +228,14 @@ def _song_lua(project: Project, tc_number: int) -> str:
         nums = effective_cue_numbers(project, lane.id)
         toks = cue_tokens(project, lane.id)
         tlabel = temp_cue_label(project, lane.id)
+        tfade = next((c.fade for c in project.cues_in_lane(lane.id) if c.duration and c.fade), None)
+
+        def fade_of(c):
+            f = tfade if c.duration else c.fade
+            return f", fade={f:g}" if f else ""
         evs = ",\n".join(
             f"        {{t={c.time:.6f}, cue={nums[c.id]:g}, label={_lua_str((tlabel if c.duration else c.label) or '')}"
+            + fade_of(c)
             + (f", off={c.time + c.duration:.6f}" if c.duration else f", tok={_lua_str(toks[c.id])}") + "}"
             for c in project.cues_in_lane(lane.id))
         lanes_lua.append(f"      {{name={_lua_str(lane.name)}, seq={seq_number(project, lane)}, events={{\n{evs}\n      }}}}")
@@ -280,6 +286,7 @@ local function create_cues(song)
         made[addr] = true
         Cmd("Store " .. addr .. " /Merge /NoConfirm")
         if ev.label ~= "" then Cmd("Label " .. addr .. ' "' .. q(ev.label) .. '"') end
+        if ev.fade then Cmd(addr .. " CueFade " .. ev.fade) end
       end
     end
   end
@@ -410,6 +417,7 @@ def build_ma3_macro_commands(project: Project, all_songs: bool = False) -> list[
             for lane in export_lanes(project):
                 nums = effective_cue_numbers(project, lane.id)
                 tlabel = temp_cue_label(project, lane.id)
+                tfade = next((c.fade for c in project.cues_in_lane(lane.id) if c.duration and c.fade), None)
                 made = set()
                 for c in project.cues_in_lane(lane.id):
                     addr = f"Sequence {seq_number(project, lane)} Cue {nums[c.id]:g}"
@@ -420,6 +428,9 @@ def build_ma3_macro_commands(project: Project, all_songs: bool = False) -> list[
                     label = tlabel if c.duration else c.label
                     if label:
                         cmds.append(f'Label {addr} "{label.replace(chr(34), chr(39))}"')
+                    fade = tfade if c.duration else c.fade
+                    if fade:
+                        cmds.append(f"{addr} CueFade {fade:g}")
     return cmds
 
 
