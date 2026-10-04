@@ -129,6 +129,7 @@ Rename, recolour, add or remove lanes in the **Lanes** panel. Each lane has:
   "*Song Lane*" (e.g. "Opener Main Cues"), and its cues start at 1. Unticked: one sequence
   shared by every song, named after the lane, each song in its own cue range (1…, 101…,
   201…). New projects tick it for Main Cues, Colour and FX, and leave Hits and Strobe shared.
+- **Export** – untick to keep a lane in CueForge only (handy for notes or ideas).
 
 CueForge finds sequences on the console **by name**, not by number, so you can move them
 around in the pool. Renaming a song or lane renames its sequence on the console. New ones are
@@ -139,7 +140,6 @@ first free number from there.
 Temps don't create a cue each: all Temps in a lane fire **one** cue with Temp On / Off. In a
 shared lane that is one cue for the whole setlist (cue 1 unless you type another number on
 any Temp in that lane — it changes for every song).
-- **Export** – untick to keep a lane in CueForge only (handy for notes or ideas).
 
 Drag a lane by its **≡** handle in the panel, or by its header on the timeline, to reorder.
 Tap keys follow the order: the top lane is key 1.
@@ -285,10 +285,12 @@ Tips:
   land where you heard them even if the screen is busy.
 - You can hold one key and tap another at the same time (e.g. hold 3 for a strobe and tap
   2 for hits).
-- A quick tap on a Temp key gets the standard length from the **Hold** box, so short
-  strobes come out even. Longer holds keep their own length.
-- With **Snap** on, new cues and Temp ends land on the grid. Set the snap resolution
-  (1 beat, ½ or ¼ beat) next to *Snap* in the toolbar.
+- A quick tap on a Temp key (or MIDI Temp pad) gets exactly the length in the **Hold** box,
+  so short strobes come out even. If that length ends just off a grid line (e.g. 0.98 s
+  against a 1.00 s beat), it lands on it. Longer holds keep their own length. How long you
+  held is measured from when you pressed, even if the start snapped back to the beat.
+- With **Snap** on, new cues and the ends of longer holds land on the grid. Set the snap
+  resolution (1 beat, ½ or ¼ beat) next to *Snap* in the toolbar.
 
 ### Selecting
 
@@ -300,7 +302,9 @@ Click a cue, drag a box around several, or Ctrl/Shift-click to add to the select
 - **Drag** cues to move them, or into another lane. Hold **Alt** to stop snapping.
 - **← / →** nudges by one frame; **Shift+← / →** by one beat.
 - **G** snaps the selection to the nearest grid point.
-- Drag the **end of a Temp's hold bar** to change its length.
+- Drag the **end of a Temp's hold bar** to change its length, or the **top end of a fade
+  ramp** to change the fade. Both snap to the grid (Alt = free), and change every selected
+  cue by the same amount.
 - **P** plays from 2 seconds before the selected cue, to check it.
 
 ### Editing details
@@ -331,8 +335,11 @@ in a shared lane. Automatic numbers are shown dimmed.
 
 - Type a number on a cue to fix it. A cue added between two fixed numbers gets a point
   number such as 5.1.
-- **Lanes panel › Numbering ▾** clears fixed numbers, renumbers a lane, or gives the lanes
-  sequences 1, 2, 3… in order. A warning shows if two lanes share a sequence.
+- **Lanes panel › Numbering ▾** clears fixed numbers or renumbers a lane. A warning shows if
+  two lanes have the same name (they would share a sequence).
+- All Temps in a lane fire **one** cue (Temp On / Temp Off) instead of a cue each. In a
+  shared lane it is one cue for the whole setlist: cue 1, or the number you type on any Temp
+  in that lane (it changes for every song).
 
 ### Deleting and undoing
 
@@ -443,7 +450,9 @@ drifted, and they're cut off if a repeat is shorter.
 A project can hold a whole show. The **Setlist** sidebar lists the songs.
 
 - Each song has its own audio, mixer, cues, suggestions, beat grid and start timecode.
-- **Lanes are shared** across the whole show, so lane 3 is always Strobe.
+- **Lanes are the same** across the whole show, so lane 3 is always Strobe. Each lane is
+  either *Per song* (every song gets its own grandMA3 sequence) or shared (one sequence for
+  the whole setlist), see [Lanes](#lanes).
 - Click a song to open it. **Ctrl+PgUp / Ctrl+PgDn** for previous / next.
 
 ### Adding songs
@@ -487,14 +496,17 @@ Open **File › Export › grandMA3…** (Ctrl+E).
 
 | Setting | What it means |
 |---|---|
-| **Format** | **Plugin** (recommended): one file that does everything. **Timecode XML**: one file per song, you import them yourself. **Command list**: just creates and labels the cues. |
+| **Format** | **Plugin** (recommended): one file that does everything. **Timecode XML**: one file per song, you import them yourself (set each show's *Offset TC Slot* to the song's start by hand). **Command list**: just creates and labels the cues, in sequences that already exist (addressed by name). |
 | **Normal cues fire** | **Go+** steps to the next cue (smooth, phasers keep running). **Goto** jumps to the exact cue (safest if you'll be scrubbing timecode). |
 | **First cue of each lane is a Goto** | Makes sure each sequence is on the right cue whenever the song starts. Leave on. |
 | **Songs** | Current song or the whole setlist. |
+| **Sequence start** | CueForge's sequences are created from this number up: shared lanes first, then each song's own sequences in setlist order. On the console they are found by name afterwards, so you can move them. Same setting as in the live link. |
 | **XML DataVersion** | Set to your console's software version, e.g. 2.1.1.5. |
 | **Plugin: create missing cues** | The plugin creates empty, labelled cues in the sequences if they don't exist yet. |
 
-Temps always fire *Temp* at the cue and release when the hold ends.
+Temps always fire *Temp* at the cue and release when the hold ends. Cue fades are sent as
+each cue's fade time. Timecode shows start at 0; the song's start timecode becomes the
+show's **Offset TC Slot**, so you can nudge a whole song on the console.
 
 The dialog warns you about problems before you export, such as two songs writing the same
 cue number into the same sequence, cue numbers that don't rise with time when using Go+, or
@@ -508,24 +520,29 @@ a lane that mixes Temps with Go+ cues. Keep Temps in their own lane (like Strobe
 3. On the console, import the plugin into a slot in the **Plugin** pool.
 4. Run it once.
 
-The plugin creates and labels the cues, then builds every song's timecode show in its
-Timecode slot. It prints what it did in the command-line feedback.
+The plugin creates the sequences it needs (found by name, created from *Sequence start*),
+creates and labels the cues with their fades, then builds every song's timecode show in its
+Timecode slot and sets its Offset TC Slot. It prints what it did in the command-line feedback.
 
 > **Before a show, test the import in grandMA3 onPC.** MA doesn't publish its timecode file
-> format, so CueForge follows what grandMA3 itself exports (v1.9–2.x).
+> format, so CueForge follows what grandMA3 itself exports (v1.4–2.x).
 
 ---
 
 ## 12. The grandMA3 live link
 
 The live link lets CueForge drive a grandMA3 console or onPC directly over the network
-while you program. Nothing needs to be installed on the console.
+while you program, and brings edits made on the console back. Nothing needs to be installed
+on the console. Switch the link off when you don't want it (e.g. during a show); nothing
+else limits it.
 
 ![Live link](screenshot_live.png)
 
 ### Console setup (once)
 
-On the console / onPC: **Menu › In & Out › OSC**, add a line:
+On the console / onPC: **Menu › In & Out › OSC**, add two lines.
+
+**Line 1 – CueForge → console** (commands):
 
 - **Destination IP:** the CueForge computer (`127.0.0.1` if onPC is on the same computer).
 - **Port:** 8000 (or whatever you set in CueForge).
@@ -533,28 +550,45 @@ On the console / onPC: **Menu › In & Out › OSC**, add a line:
 - **Receive** = Yes and **Receive Command** = Yes.
 - **Prefix:** leave empty.
 
-Then enable the line and turn on **Enable Input**.
+**Line 2 – console → CueForge** (bringing console edits back):
+
+- **Destination IP:** the CueForge computer.
+- **Port:** 8001 (CueForge's *Reply port*).
+- **Mode:** UDP.
+- **Send** = Yes and **Send Command** = Yes (both are needed).
+
+Enable both lines, and turn on **Enable Input** and **Enable Output** at the top of the OSC
+window. If the console is a separate machine, one line can do both: give it Send and Send
+Command too, and set CueForge's *Reply port* to the same port and *Console OSC line* to 1.
 
 ### CueForge setup
 
 Open **File › grandMA3 live link…** (Ctrl+L):
 
 1. Tick **Link to grandMA3**, and enter the console's IP and port.
-2. Click **Send test**. The console's command-line feedback should print
-   "CueForge link OK".
-3. Choose what to send:
+2. Set **Reply port** (8001) and **Console OSC line**: the position of line 2 in the console's
+   OSC list (1 = first line).
+3. Click **Send test**. The console's command-line feedback should print
+   "CueForge link OK". Click **Test reply**: the status bar should say the console's reply
+   arrived.
+4. Set **Sequence start** (also in the export settings): where CueForge's sequences are
+   created.
+5. Choose what to send:
 
 | Option | What it does |
 |---|---|
 | **Live preview** | Fires cues on the console as CueForge plays. When you start or jump, every lane is put on its current cue. Stopping releases running Temps. |
-| **Keep cue lists in sync** | Creates and labels cues on the console as you program, about half a second after each edit. Names sequences after their lanes. Sends cue fades too. |
+| **Keep cue lists in sync** | Creates and labels cues on the console as you program, about half a second after each edit, with their fades. Sequences are found by name ("*Song Lane*" per song, the lane name when shared); missing ones are created in the first free number from *Sequence start*. Renaming a song or lane renames its sequence. |
 | **Also delete console cues…** | Off by default. Even when on, only deletes cues CueForge created and you deleted in CueForge. |
 | **Sync every song** | Otherwise only the open song is synced. |
 | **Push timecode shows automatically** | Sends each song's timecode show over the network and imports it into the song's Timecode slot, a few seconds after you stop editing — never while playing, and only songs that changed. Works with onPC or a networked console; no files to copy and no folders to set. |
 | **Fix cue numbers once they exist on the console** | On by default. Cues already on the console keep their numbers; a new cue between 5 and 6 becomes 5.1. |
+| **Bring timecode edits made on the console back** | On by default. See below. |
 
-Buttons: **Push all cues now** (recreate everything, e.g. for a fresh show file), **Push
-timecode now** and **Pull from console**. *Last commands sent* shows exactly what went out.
+Buttons: **Send test**, **Push all cues now** (recreate everything, e.g. for a fresh show
+file), **Push timecode now**, **Pull from console** and **Test reply**. *Last commands sent*
+shows exactly what went out. All of it goes out in the background, so the link never slows
+tapping down; live preview commands go first.
 
 ### Edits made on the console come back
 
@@ -571,10 +605,8 @@ their labels, fades and notes.
 - If both the console and CueForge changed since the last push, CueForge keeps its own and
   says so in the status bar. **Pull from console** takes the console's version anyway.
 
-For this the console needs a second OSC line that sends back: Destination IP = this
-computer, Port = the *Reply port* (8001), **Send** = Yes, **Enable Output** on. Put that line's
-number in *Console OSC line* (1 = the first line). If nothing answers, CueForge stops checking
-and says so.
+This needs line 2 from the console setup (with **Send** and **Send Command**). If nothing
+answers, CueForge stops checking and says so; **Test reply** checks the line.
 
 > ⚠ **Keep the programmer clear** while the link creates cues. Cues are created with
 > `Store … /Merge`, so anything in the programmer goes into the new cue.
@@ -644,9 +676,10 @@ back lane names, colours, the active lane, the song name, and timecode while pla
 
 ### Imports (File menu)
 
-- **Import grandMA3 timecode XML…** – bring timecode shows back from the console, e.g. after
-  cues were moved on the desk. Each file goes to the song with the same name. Choose
-  **Replace** (the console is right) or **Merge**.
+- **Import grandMA3 timecode XML…** – bring timecode shows exported from the console back in
+  (with the live link this happens by itself). Each file goes to the song with the same name;
+  tracks are matched to lanes by sequence name. A file's Offset TC Slot becomes the song's
+  start timecode. Choose **Replace** (the console is right) or **Merge**.
 - **Import CuePoints CSV / spreadsheet…** – move over from CuePoints or another cue
   spreadsheet. Columns are matched by name and can be reassigned, with a preview. Each
   CuePoints *Track* becomes a song and each *Type* becomes a lane. Set the project frame
@@ -682,6 +715,10 @@ back lane names, colours, the active lane, the song name, and timecode while pla
 | Two lanes share a sequence | Lanes are matched to sequences by name: give the lanes different names. |
 | Live link: nothing happens on the console | Click *Send test*. On the console check *Receive Command* = Yes, the line and *Enable Input* are on, and the Prefix is empty (CueForge sends to `/cmd`). The System Monitor shows every OSC message received. |
 | Live link: cues come out with unexpected values | Clear the programmer before syncing. |
+| Live link: "Illegal Property" on `SendOSC` | The reply line needs **Send** *and* **Send Command** = Yes, and *Console OSC line* must be its position in the OSC list. Try *Test reply*. |
+| Live link: "no reply from the console" | Set up line 2 (console → CueForge) and check the *Reply port*; *Test reply* checks it. |
+| Live link: "unfinished string" | Lower *Longest push command* under *Command syntax*. |
+| Live link: "lost data, push again" | A network packet went missing; push again. |
 | Timecode import fails on the console | Use the Plugin export; set *XML DataVersion* to your software version; test on onPC first. |
 | macOS won't open the app | Right-click › Open the first time. |
 
@@ -773,7 +810,10 @@ Press **F1** in the app for this list.
 - **Cue** – a moment where the lighting changes. Fires once and stays.
 - **Go+ / Goto** – how grandMA3 is told to fire a cue: step to the next one, or jump to a
   specific one.
-- **Lane** – a row of cues on the timeline; exports to one grandMA3 sequence.
+- **Lane** – a row of cues on the timeline; exports to a grandMA3 sequence (its own one per
+  song, or one shared by the whole setlist).
+- **Offset TC Slot** – grandMA3's start time for a timecode show; CueForge sets it to the
+  song's start timecode.
 - **LTC** – timecode sent as audio, for locking a console to playback.
 - **Section** – a named part of the song (Verse, Chorus…) shown in the section band.
 - **Setlist** – the list of songs in a project.
@@ -781,4 +821,5 @@ Press **F1** in the app for this list.
 - **Stem** – a separate audio file for one part of the song (drums, vocals…).
 - **Suggestion** – a cue the AI proposes. Ghosted until you accept it.
 - **Temp** – a cue with a hold time: it fires, holds, then releases. Used for strobes and bumps.
+- **Sequence start** – the number CueForge's grandMA3 sequences are created from.
 - **Timecode slot** – the grandMA3 Timecode pool object a song is imported into.

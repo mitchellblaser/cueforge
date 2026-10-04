@@ -18,7 +18,7 @@ address matches the Prefix: empty Prefix → <code>/cmd</code>; Prefix <code>gma
 <code>/gma3/cmd</code>. <i>Send test</i> prints "CueForge link OK" in the console's command line
 feedback.<br>
 <b>Console edits back to CueForge</b>: add a second OSC line: Destination IP = this computer, Port =
-the reply port below, <b>Send</b> = Yes, enabled, and <b>Enable Output</b> on. Put that line's number
+the reply port below, <b>Send</b> = Yes <b>and Send Command</b> = Yes, enabled, and <b>Enable Output</b> on. Put that line's number
 (1 = first line) in <i>Console OSC line</i>. CueForge then checks the open song's timecode every 10 s
 while stopped and brings edits made on the console back (moved, added, deleted events).<br>
 <span style='color:#ffb74d'>Creating cues uses <code>Store … /Merge</code>: keep the programmer

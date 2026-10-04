@@ -373,7 +373,8 @@ class MA3Link(QObject):
         if self._pull_unanswered >= 5:
             self._pull_timer.stop()
             self.status.emit(f"MA3 link: no reply from the console — set up an OSC line that sends to this "
-                             f"computer, port {self.cfg.reply_port} (see the live link settings)")
+                             f"computer, port {self.cfg.reply_port}, with Send and Send Command = Yes "
+                             "(see the live link settings)")
             return
         self._pull_unanswered += 1
         for c in self._pull_cmds(False, [self.s.project.song.ma3_timecode]):
