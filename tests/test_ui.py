@@ -598,6 +598,64 @@ def test_temp_release_drag_and_undo(app, win):
     assert abs(s.project.cue(cue.id).duration - 0.5) < 1e-6
 
 
+def test_fade_end_drag_and_undo(app, win):
+    s = win.s
+    s.snap = False
+    c = win.canvas
+    c.set_view(t0=0, pps=100)
+    pump(app)
+    lane = s.project.lanes[2]
+    cue = s.add_cue(lane.id, 3.0)
+    s.update_cue(cue.id, fade=1.0)
+    pump(app)
+    idx = [l.id for l in s.project.lanes].index(lane.id)
+    y = lane_y(win, idx) + 12
+    xe = int(c.x_of(4.0))
+    assert c.hit_end(QPoint(xe, y)) == (cue.id, "fade")
+    assert c.hit_temp_end(QPoint(xe, y)) is None
+    QTest.mousePress(c, Qt.LeftButton, Qt.NoModifier, QPoint(xe, y))
+    QTest.mouseMove(c, QPoint(xe + 60, y))
+    QTest.mouseMove(c, QPoint(xe + 100, y))
+    QTest.mouseRelease(c, Qt.LeftButton, Qt.NoModifier, QPoint(xe + 100, y))
+    pump(app)
+    got = s.project.cue(cue.id)
+    assert abs(got.fade - 2.0) < 0.02 and abs(got.time - 3.0) < 1e-6 and not got.duration
+    win._undo()
+    assert abs(s.project.cue(cue.id).fade - 1.0) < 1e-6
+
+
+def test_quick_hold_near_a_beat_lands_on_it(app, win):
+    from cueforge.core.model import BeatGrid
+    s = win.s
+    s.set_grid(BeatGrid.from_tempo(60, 0.0, 60.0, 4))        # beat = 1.00 s
+    s.snap = True
+    s.set_temp_hold(0.98)
+    assert s.temp_length(4.0) == pytest.approx(1.0)          # just off the grid: snapped
+    s.set_temp_hold(0.6)
+    assert s.temp_length(4.0) == pytest.approx(0.6)          # clearly between beats: kept
+    s.snap = False
+    s.set_temp_hold(0.98)
+    assert s.temp_length(4.0) == pytest.approx(0.98)
+
+
+def test_cue_list_paints_fast(app, win):
+    import random
+    from cueforge.core.model import Cue
+    s = win.s
+    random.seed(3)
+    for _ in range(600):
+        s.project.cues.append(Cue(lane_id=random.choice(s.project.lanes).id, time=random.uniform(0, 200)))
+    s.project.sort_cues()
+    t = win.cue_table
+    t.rebuild_now()
+    t.table.resize(700, 900)
+    t.table.viewport().grab()
+    t0 = time.perf_counter()
+    for _ in range(10):
+        t.table.viewport().grab()
+    assert (time.perf_counter() - t0) / 10 < 0.04          # was ~65 ms per repaint
+
+
 def test_cue_list_follows_playhead(app, win):
     s = win.s
     a, b = s.project.lanes[0], s.project.lanes[1]

@@ -17,6 +17,12 @@ from .session import RESERVED_KEYS, Session
 
 
 # ============================================================== cue list
+_DISPLAYROLE, _EDITROLE = int(Qt.DisplayRole.value), int(Qt.EditRole.value)
+_BACKGROUNDROLE, _FOREGROUNDROLE = int(Qt.BackgroundRole.value), int(Qt.ForegroundRole.value)
+_FONTROLE, _USERROLE, _TOOLTIPROLE = int(Qt.FontRole.value), int(Qt.UserRole.value), int(Qt.ToolTipRole.value)
+_ROLES = frozenset((_DISPLAYROLE, _EDITROLE, _BACKGROUNDROLE, _FOREGROUNDROLE, _FONTROLE, _USERROLE, _TOOLTIPROLE))
+
+
 class CueModel(QAbstractTableModel):
     """The cue list as a lazy model: Qt only asks for the rows on screen, so a rebuild is
     a cheap reset instead of thousands of table items (adding a cue mid-song stays smooth)."""
@@ -29,12 +35,46 @@ class CueModel(QAbstractTableModel):
         self.nums: dict[str, float] = {}
         self.lit: dict[str, str] = {}
         self.on_edit = None
+        self._rowcache: dict[int, tuple] = {}     # row -> (texts, lane colour, auto number?)
+        self._bold = QFont()
+        self._bold.setBold(True)
+        self._italic = QFont()
+        self._italic.setItalic(True)
+        self._bold_italic = QFont(self._bold)
+        self._bold_italic.setItalic(True)
+        self._dim = QColor(theme.FG_DIM)
+        self._ai = QColor("#ffd54f")
 
     def reload(self, cues: list, nums: dict[str, float]) -> None:
         self.beginResetModel()
         self.cues, self.nums = cues, nums
         self.lit = {}
+        self._rowcache = {}
         self.endResetModel()
+
+    def _row(self, r: int) -> tuple:
+        """Everything a row shows, worked out once (painting asks for every cell and role
+        many times a second while the list follows playback)."""
+        hit = self._rowcache.get(r)
+        if hit is not None:
+            return hit
+        c = self.cues[r]
+        p = self.s.project
+        lane = p.lane(c.lane_id)
+        num = self.nums.get(c.id)
+        texts = (seconds_to_tc(c.time, p.frame_rate, p.tc_offset), lane.name if lane else "?",
+                 "" if num is None else f"{num:g}", c.label, "" if c.fade is None else f"{c.fade:g}",
+                 "" if not c.duration else f"{c.duration:.2f}", c.notes,
+                 "AI" if c.source == "ai-accepted" else "")
+        hit = (texts, QColor(lane.color) if lane else None, c.number is None, lane, num)
+        self._rowcache[r] = hit
+        return hit
+
+    def refresh_rows(self) -> None:
+        """Cue values changed in place (no rows added or removed): forget the cached text."""
+        self._rowcache = {}
+        if self.cues:
+            self.dataChanged.emit(self.index(0, 0), self.index(len(self.cues) - 1, len(self.COLS) - 1))
 
     def rowCount(self, parent=QModelIndex()) -> int:
         return 0 if parent.isValid() else len(self.cues)
@@ -47,65 +87,53 @@ class CueModel(QAbstractTableModel):
             return self.COLS[section]
         return None
 
+    _EDITABLE = Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsEditable
+    _FIXED = Qt.ItemIsEnabled | Qt.ItemIsSelectable
+
     def flags(self, index):
-        f = Qt.ItemIsEnabled | Qt.ItemIsSelectable
-        if index.column() not in (1, 7):
-            f |= Qt.ItemIsEditable
-        return f
+        return self._FIXED if index.column() in (1, 7) else self._EDITABLE
 
     def data(self, index, role=Qt.DisplayRole):
-        if not index.isValid() or index.row() >= len(self.cues):
+        role = int(role) if not isinstance(role, int) else role
+        if role not in _ROLES:                     # plain ints: PySide enum compares are slow here
             return None
-        c = self.cues[index.row()]
+        r = index.row()
+        if r >= len(self.cues) or r < 0:
+            return None
         col = index.column()
-        p = self.s.project
-        if role == Qt.UserRole:
-            return c.id
-        lane = p.lane(c.lane_id)
-        num = self.nums.get(c.id)
-        if role in (Qt.DisplayRole, Qt.EditRole):
-            if col == 0:
-                return seconds_to_tc(c.time, p.frame_rate, p.tc_offset)
+        if role == _USERROLE:
+            return self.cues[r].id
+        texts, lane_col, auto, lane, num = self._row(r)
+        if role == _DISPLAYROLE or role == _EDITROLE:
+            return texts[col]
+        if role == _FOREGROUNDROLE:
             if col == 1:
-                return lane.name if lane else "?"
-            if col == 2:
-                return "" if num is None else f"{num:g}"
-            if col == 3:
-                return c.label
-            if col == 4:
-                return "" if c.fade is None else f"{c.fade:g}"
-            if col == 5:
-                return "" if not c.duration else f"{c.duration:.2f}"
-            if col == 6:
-                return c.notes
-            return "AI" if c.source == "ai-accepted" else ""
-        mode = self.lit.get(c.id)
-        if role == Qt.BackgroundRole and mode:
-            bg = QColor(lane.color if lane else theme.ACCENT)
+                return lane_col
+            if col == 2 and auto:
+                return self._dim
+            return self._ai if col == 7 else None
+        mode = self.lit.get(self.cues[r].id) if self.lit else None
+        if role == _BACKGROUNDROLE:
+            if not mode:
+                return None
+            bg = QColor(lane_col or theme.ACCENT)
             bg.setAlpha(150 if mode == "fired" else 60)
             return QBrush(bg)
-        if role == Qt.ForegroundRole:
-            if col == 1 and lane:
-                return QColor(lane.color)
-            if col == 2 and c.number is None:
-                return QColor(theme.FG_DIM)
-            if col == 7:
-                return QColor("#ffd54f")
-        if role == Qt.FontRole and (mode == "fired" or (col == 2 and c.number is None)):
-            f = QFont()
-            f.setBold(mode == "fired")
-            f.setItalic(col == 2 and c.number is None)
-            return f
-        if role == Qt.ToolTipRole:
-            seq = (lane.ma3_sequence + p.song.seq_offset) if lane else 0
-            if col == 1 and lane:
-                return f"grandMA3 Sequence {seq}"
-            if col == 2 and num is not None:
-                return (f"Automatic: Sequence {seq} Cue {num:g} (in time order from the song's first cue number). "
-                        "Type a number to fix it.") if c.number is None else \
-                    f"Fixed: Sequence {seq} Cue {num:g}. Clear it to number automatically."
-            if col == 6 and c.notes:
-                return c.notes
+        if role == _FONTROLE:
+            fired = mode == "fired"
+            it = col == 2 and auto
+            return (self._bold_italic if it else self._bold) if fired else (self._italic if it else None)
+        # tooltip
+        p = self.s.project
+        seq = (lane.ma3_sequence + p.song.seq_offset) if lane else 0
+        if col == 1 and lane:
+            return f"grandMA3 Sequence {seq}"
+        if col == 2 and num is not None:
+            return (f"Automatic: Sequence {seq} Cue {num:g} (in time order from the song's first cue number). "
+                    "Type a number to fix it.") if auto else \
+                f"Fixed: Sequence {seq} Cue {num:g}. Clear it to number automatically."
+        if col == 6 and texts[6]:
+            return texts[6]
         return None
 
     def setData(self, index, value, role=Qt.EditRole):
@@ -159,6 +187,13 @@ class CueTable(QWidget):
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.table.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed)
+        self.table.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)   # smooth wheel / follow
+        self.table.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
+        self.table.setWordWrap(False)
+        from PySide6.QtCore import QEasingCurve, QPropertyAnimation
+        self._glide = QPropertyAnimation(self.table.verticalScrollBar(), b"value", self)
+        self._glide.setDuration(220)
+        self._glide.setEasingCurve(QEasingCurve.OutCubic)
         hh = self.table.horizontalHeader()
         hh.setSectionResizeMode(QHeaderView.Interactive)
         hh.setStretchLastSection(False)
@@ -177,7 +212,7 @@ class CueTable(QWidget):
         self.table.verticalScrollBar().sliderPressed.connect(self._scrolled_by_user)
         self.table.viewport().installEventFilter(self)
         self._tick = QTimer(self)
-        self._tick.setInterval(60)
+        self._tick.setInterval(33)
         self._tick.timeout.connect(self._light)
         self._tick.start()
         self._pending = QTimer(self)                 # several changes in one edit -> one rebuild
@@ -283,7 +318,24 @@ class CueTable(QWidget):
         self._lit = state
         if playing and latest in self._rows and latest in state and state[latest] == "fired" \
                 and time.monotonic() - self._user_scrolled > 3.0:
-            self.table.scrollTo(self.model.index(self._rows[latest], 0), QAbstractItemView.PositionAtCenter)
+            self._glide_to(self._rows[latest])
+
+    def _glide_to(self, row: int) -> None:
+        """Scroll so `row` sits in the middle, gliding instead of jumping."""
+        sb = self.table.verticalScrollBar()
+        h = self.table.rowHeight(row) or 22
+        y = self.table.rowViewportPosition(row) + sb.value()
+        target = max(sb.minimum(), min(sb.maximum(), int(y + h / 2 - self.table.viewport().height() / 2)))
+        if abs(target - sb.value()) < 2:
+            return
+        if abs(target - sb.value()) > self.table.viewport().height() * 3:
+            self._glide.stop()
+            sb.setValue(target)                     # far away (a seek): no long slide
+            return
+        self._glide.stop()
+        self._glide.setStartValue(sb.value())
+        self._glide.setEndValue(target)
+        self._glide.start()
 
     def _sel_from_session(self) -> None:
         from PySide6.QtCore import QItemSelection, QItemSelectionModel

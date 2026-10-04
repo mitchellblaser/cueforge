@@ -491,14 +491,19 @@ class Session(QObject):
         return frame
 
     def temp_length(self, start: float, end: float | None = None, pressed: float | None = None) -> float:
-        """The hold a Temp gets. A quick hit (a short press, or none: ＋Temp / W) gets exactly
-        the Hold box time, so quick hits look even; a longer hold keeps its own length, and with
+        """The hold a Temp gets. A quick hit (a short press, or none: ＋Temp / W) gets the Hold
+        box time, so quick hits look even (with Snap on, nudged onto the grid when it is within
+        a quarter grid step / 60 ms of it); a longer hold keeps its own length, and with
         Snap on its end lands on the grid (at least one grid step after the start). How long
         the press was is measured from `pressed` (the real press time; the start may have
         snapped back to an earlier beat)."""
         std = self.temp_hold if self.temp_hold > 0 else 0.5
         if end is None or end - (start if pressed is None else pressed) < std:
             length = std
+            if self.snap and self.project.beat_grid.beats:   # a Hold just off the grid (0.98 for a
+                e = editing.grid_point(self.project, start + length)  # 1.00 beat) lands on it
+                if e is not None and e > start and abs(e - start - length) <= min(0.25 * self.grid_step(), 0.06):
+                    length = e - start
         else:
             length = end - start
             if self.snap and self.project.beat_grid.beats:

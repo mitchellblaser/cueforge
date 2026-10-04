@@ -808,17 +808,30 @@ class TimelineCanvas(QWidget):
 
     def hit_temp_end(self, pos) -> str | None:
         """A Temp whose end (hold release) is under the pointer, unless its start is closer."""
+        hit = self.hit_end(pos)
+        return hit[0] if hit and hit[1] == "duration" else None
+
+    def hit_end(self, pos) -> tuple[str, str] | None:
+        """(cue id, "duration" | "fade"): the end of a Temp's hold or of a fade under the
+        pointer, unless the cue's start is closer. Where both ends meet, the fade (drawn in
+        the lower half of the row) wins in the lower half."""
         r = self.row_at(pos.y())
         if not r or r.kind != "lane" or pos.x() < HEADER_W:
             return None
+        rr = self.row_rect(r)
+        lower = pos.y() > rr.center().y()
         best, bd = None, HIT_PX + 1
         for c in self.s.project.cues_in_lane(r.id):
-            if not c.duration:
-                continue
-            de = abs(self.x_of(c.time + c.duration) - pos.x())
-            ds = abs(self.x_of(c.time) - pos.x())
-            if de < bd and (de < ds or pos.x() > self.x_of(c.time + c.duration) - 1):
-                best, bd = c.id, de
+            xs = self.x_of(c.time)
+            for attr in ("duration", "fade"):
+                v = getattr(c, attr)
+                if not v:
+                    continue
+                xe = self.x_of(c.time + v) if attr == "duration" else xs + max(3.0, v * self.pps)
+                de = abs(xe - pos.x()) - (0.5 if (attr == "fade") == lower else 0.0)
+                ds = abs(xs - pos.x())
+                if de < bd and (de < ds or pos.x() > xe - 1):
+                    best, bd = (c.id, attr), de
         return best
 
     def hit_suggestion(self, pos) -> str | None:
@@ -888,14 +901,15 @@ class TimelineCanvas(QWidget):
             self._drag = {"mode": "scrub"}
             self.update()
             return
-        eid = self.hit_temp_end(pos)
-        if eid:
+        hit = self.hit_end(pos)
+        if hit:
+            eid, attr = hit
             if eid not in self.s.sel_cues:
                 self.s.select(cues={eid}, add=add)
             p = self.s.project
-            temps = [c for c in p.cues if c.id in self.s.sel_cues and c.duration] or [p.cue(eid)]
-            self._drag = {"mode": "hold", "anchor": eid, "press_x": pos.x(), "moved": False,
-                          "orig": {c.id: c.duration for c in temps}}
+            same = [c for c in p.cues if c.id in self.s.sel_cues and getattr(c, attr)] or [p.cue(eid)]
+            self._drag = {"mode": "hold", "attr": attr, "anchor": eid, "press_x": pos.x(), "moved": False,
+                          "orig": {c.id: getattr(c, attr) for c in same}}
             return
         cid = self.hit_cue(pos)
         if cid:
@@ -958,6 +972,7 @@ class TimelineCanvas(QWidget):
                 return
             if abs(pos.x() - d["press_x"]) > 2:
                 d["moved"] = True
+            attr = d.get("attr", "duration")
             end = d["orig"][anchor.id] + anchor.time + (pos.x() - d["press_x"]) / self.pps
             if self.s.snap and not (e.modifiers() & Qt.AltModifier):
                 from ..core.editing import grid_point
@@ -969,8 +984,9 @@ class TimelineCanvas(QWidget):
             for cid, dur in d["orig"].items():
                 c = p.cue(cid)
                 if c:
-                    c.duration = round(max(frame, dur + delta), 3)   # live; committed on release
-            QToolTip.showText(e.globalPosition().toPoint(), f"Hold {anchor.duration:.2f} s", self)
+                    setattr(c, attr, round(max(frame, dur + delta), 3))   # live; committed on release
+            QToolTip.showText(e.globalPosition().toPoint(),
+                              f"{'Hold' if attr == 'duration' else 'Fade'} {getattr(anchor, attr):.2f} s", self)
             self.invalidate()
         elif d["mode"] == "lane":                 # drag a lane header to reorder lanes
             if abs(pos.y() - d["y0"]) > 6:
@@ -1037,14 +1053,15 @@ class TimelineCanvas(QWidget):
             return
         if d["mode"] == "hold":
             p = self.s.project
-            new = {cid: p.cue(cid).duration for cid in d["orig"] if p.cue(cid)}
+            attr = d.get("attr", "duration")
+            new = {cid: getattr(p.cue(cid), attr) for cid in d["orig"] if p.cue(cid)}
             for cid, dur in d["orig"].items():        # restore, then change through undo
                 if p.cue(cid):
-                    p.cue(cid).duration = dur
+                    setattr(p.cue(cid), attr, dur)
             if d["moved"] and new != d["orig"]:
-                with self.s.edit("Change hold time"):
+                with self.s.edit("Change hold time" if attr == "duration" else "Change fade time"):
                     for cid, dur in new.items():
-                        p.cue(cid).duration = dur
+                        setattr(p.cue(cid), attr, dur)
             self.invalidate()
             return
         if d["mode"] == "move":
@@ -1137,12 +1154,15 @@ class TimelineCanvas(QWidget):
                                                            "Drag to move · double-click to rename · right-click for more"),
                                   self)
                 return
-        eid = self.hit_temp_end(pos)
-        if eid:
-            c = self.s.project.cue(eid)
-            QToolTip.showText(e.globalPosition().toPoint(),
-                              f"<b>Temp release</b><br>Held {c.duration:.2f}s — drag to change the hold "
-                              "(snaps to half beats; Alt = free)", self)
+        hit = self.hit_end(pos)
+        if hit:
+            c = self.s.project.cue(hit[0])
+            if hit[1] == "fade":
+                tip = f"<b>Fade end</b><br>Fade {c.fade:.2f}s — drag to change the fade (snaps to the grid; Alt = free)"
+            else:
+                tip = (f"<b>Temp release</b><br>Held {c.duration:.2f}s — drag to change the hold "
+                       "(snaps to the grid; Alt = free)")
+            QToolTip.showText(e.globalPosition().toPoint(), tip, self)
             self.setCursor(Qt.SplitHCursor)
             return
         cid = self.hit_cue(pos)
