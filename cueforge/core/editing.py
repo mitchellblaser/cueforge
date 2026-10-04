@@ -86,21 +86,52 @@ def move_cues_to_lane(project: Project, cue_ids: set[str], lane_id: str) -> None
 
 def renumber_lane(project: Project, lane_id: str, start: float = 1.0, step: float = 1.0) -> None:
     n = start
-    for c in project.cues_in_lane(lane_id):
+    cues = project.cues_in_lane(lane_id)
+    for c in cues:
+        if not c.duration:
+            c.number = round(n, 3)
+            n += step
+    temps = [c for c in cues if c.duration]       # all Temps fire one cue
+    for c in temps:
         c.number = round(n, 3)
-        n += step
 
 
 def effective_cue_numbers(project: Project, lane_id: str) -> dict[str, float]:
     """Cue numbers used on export: explicit numbers kept, others filled in ascending.
 
-    Cues inserted before an explicitly numbered one share out the gap as point numbers
-    (5.1, 5.2 …) so numbers stay in time order and numbers already on the console never
-    shift. If a gap is too small even for 1/1000 steps, the leftovers continue past the
-    fixed cue (cue_number_clashes reports it)."""
+    Temps don't get a cue each: every Temp in a lane fires the same cue (the lane's Temp
+    cue) with Temp On / Temp Off, so they share one number — the earliest Temp's fixed
+    number, else the next whole number after the lane's normal cues (the song's first cue
+    number in a Temp-only lane).
+
+    Normal cues inserted before an explicitly numbered one share out the gap as point
+    numbers (5.1, 5.2 …) so numbers stay in time order and numbers already on the console
+    never shift. If a gap is too small even for 1/1000 steps, the leftovers continue past
+    the fixed cue (cue_number_clashes reports it)."""
+    cues = project.cues_in_lane(lane_id)
+    plain = [c for c in cues if not c.duration]
+    temps = [c for c in cues if c.duration]
+    result = _number_plain(project, plain)
+    if temps:
+        shared = next((c.number for c in temps if c.number is not None), None)
+        if shared is None:
+            top = max(result.values(), default=None)
+            shared = float(project.song.cue_start) if top is None else float(int(top) + 1)
+        for c in temps:
+            result[c.id] = shared
+    return result
+
+
+def temp_cue_label(project: Project, lane_id: str) -> str:
+    """The label of a lane's shared Temp cue: the first Temp label, else the lane name."""
+    lane = project.lane(lane_id)
+    return next((c.label for c in project.cues_in_lane(lane_id) if c.duration and c.label),
+                lane.name if lane else "")
+
+
+def _number_plain(project: Project, cues: list) -> dict[str, float]:
     result: dict[str, float] = {}
     last = project.song.cue_start - 1
-    cues = project.cues_in_lane(lane_id)
     used = {c.number for c in cues if c.number is not None}
     i = 0
     while i < len(cues):

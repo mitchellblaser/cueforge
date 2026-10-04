@@ -20,7 +20,7 @@ from dataclasses import asdict, dataclass
 
 from PySide6.QtCore import QObject, QTimer, Signal
 
-from ..core.editing import effective_cue_numbers
+from ..core.editing import effective_cue_numbers, temp_cue_label
 
 
 def default_timecode_dir() -> str:
@@ -280,8 +280,9 @@ class MA3Link(QObject):
                                 and int(rec[c.id][0]) == seq and c.id not in unpin:
                             c.number = float(rec[c.id][1])       # undo removed a pinned number
                             nums = effective_cue_numbers(p, lane.id)
-                    for c in cues:
-                        want[c.id] = (seq, float(nums[c.id]), c.label or "")
+                    tlabel = temp_cue_label(p, lane.id) if any(c.duration for c in cues) else ""
+                    for c in cues:                         # all Temps share the lane's Temp cue
+                        want[c.id] = (seq, float(nums[c.id]), tlabel if c.duration else (c.label or ""))
         return want
 
     def desired_cues(self) -> dict[tuple[int, float], str]:
@@ -311,17 +312,20 @@ class MA3Link(QObject):
         taken = {(seq, num) for seq, num, _ in want.values()}
         on_console = {(int(v[0]), float(v[1])) for v in rec.values()}
         cmds: list[str] = []
+        labelled = {(int(v[0]), float(v[1])): v[2] for v in rec.values()}   # what each console cue is called
         for cid, (seq, num, label) in sorted(want.items(), key=lambda kv: (kv[1][0], kv[1][1])):
             old = rec.get(cid)
             if old is not None and (int(old[0]), float(old[1])) == (seq, num):
-                if label and label != old[2]:
+                if label and label != old[2] and labelled.get((seq, num)) != label:
                     cmds.append(self.cmd("label", seq, num, label))
+                    labelled[(seq, num)] = label
             else:
-                if (seq, num) not in on_console:
+                if (seq, num) not in on_console:            # Temps sharing a cue store it once
                     cmds.append(self.cmd("store", seq, num))
                     on_console.add((seq, num))
-                if label:
+                if label and labelled.get((seq, num)) != label:
                     cmds.append(self.cmd("label", seq, num, label))
+                    labelled[(seq, num)] = label
                 if old is not None and self.cfg.allow_delete and (int(old[0]), float(old[1])) not in taken:
                     cmds.append(self.cmd("delete", int(old[0]), float(old[1])))   # renumbered
             rec[cid] = [seq, num, label or (old[2] if old and (int(old[0]), float(old[1])) == (seq, num) else "")]

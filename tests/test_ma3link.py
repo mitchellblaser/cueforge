@@ -286,3 +286,36 @@ def test_import_keeps_tiny_times():
     p.cues.append(Cue(lane_id=p.lanes[0].id, time=0.04))
     p.cues.append(Cue(lane_id=p.lanes[0].id, time=12.0))
     assert [round(c.time, 3) for _, _, c in show_to_cues(parse_timecode_xml(build_ma3_xml(p)))] == [0.04, 12.0]
+
+
+def test_temps_share_one_cue(link):
+    from cueforge.export.ma3 import build_ma3_macro_commands, build_ma3_xml
+    s = link.s
+    p = s.project
+    strobe = p.lanes[1]
+    p.cues += [Cue(lane_id=strobe.id, time=t, duration=0.25, label="Strobe") for t in (6.0, 9.0, 12.0)]
+    p.cues.append(Cue(lane_id=strobe.id, time=7.0, number=7.0, duration=0.3))   # an old per-Temp number
+    p.sort_cues()
+    nums = effective_cue_numbers(p, strobe.id)
+    temps = [c for c in p.cues_in_lane(strobe.id)]
+    assert len({nums[c.id] for c in temps}) == 1                                 # one Temp cue
+    cmds = link.sync_cues()
+    stores = [c for c in cmds if c.startswith("Store Sequence %d " % strobe.ma3_sequence)]
+    assert len(stores) == 1
+    assert sum(1 for c in cmds if c.startswith("Label Sequence %d Cue" % strobe.ma3_sequence)) == 1
+    macro = [c for c in build_ma3_macro_commands(p) if c.startswith("Store Sequence %d " % strobe.ma3_sequence)]
+    assert len(macro) == 1
+    # the timecode track fires Temp On / Off on that one cue every time
+    xml = build_ma3_xml(p)
+    root = ET.fromstring(xml)
+    temps_ev = [e for e in root.iter("RealtimeCmd") if e.get("Token") == "Temp"]
+    assert len(temps_ev) == 2 * len(temps) and len({e.get("Cue") for e in temps_ev}) == 1
+    # editing a Temp's number moves the shared cue
+    s._sync_engine = lambda: None                                               # no audio here
+    s.update_cue(temps[-1].id, number=20.0)
+    assert set(effective_cue_numbers(p, strobe.id).values()) == {20.0}
+
+
+def test_link_test_command():
+    from cueforge.ui.link_dialog import TEST_CMD
+    assert TEST_CMD.startswith("Lua ") and "Printf" in TEST_CMD

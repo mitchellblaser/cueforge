@@ -11,8 +11,16 @@ HELP = """<b>On the console / onPC</b>: Menu ▸ In &amp; Out ▸ OSC ▸ add a 
 computer, Port = the port below, Mode = UDP, <b>Receive</b> and <b>Receive Command</b> ticked, Prefix
 <code>gma3</code>. Then enable the OSC line. CueForge sends command-line text to
 <code>/gma3/cmd</code>.<br>
+<b>Seen in the System Monitor but nothing happens?</b> The console logs every OSC message it
+receives, also the ones it ignores. Check, on the OSC line: <b>Receive Command</b> = Yes (not just
+Receive), the line is enabled and <b>Enable Input</b> at the top of the OSC window is on, and the
+line's <b>Prefix</b> is <code>gma3</code> (with an empty Prefix use the address <code>/cmd</code>).
+<i>Send test</i> prints "CueForge link OK" in the console's command line feedback.<br>
 <span style='color:#ffb74d'>Creating cues uses <code>Store … /Merge</code>: keep the programmer
 clear while the link creates cues, or your programmer values go into the new cue.</span>"""
+
+
+TEST_CMD = 'Lua "Printf(\'CueForge link OK\')"'   # harmless: only prints on the console
 
 
 class LinkDialog(QDialog):
@@ -82,7 +90,8 @@ class LinkDialog(QDialog):
         lay.addWidget(g3)
 
         btns = QHBoxLayout()
-        for txt, fn in (("Push all cues now", self._push_cues), ("Push timecode now", self._push_tc)):
+        for txt, fn in (("Send test", self._test), ("Push all cues now", self._push_cues),
+                        ("Push timecode now", self._push_tc)):
             b = QPushButton(txt)
             b.clicked.connect(fn)
             btns.addWidget(b)
@@ -128,6 +137,10 @@ class LinkDialog(QDialog):
             setattr(c, "cmd_" + k, e.text().strip() or getattr(LinkSettings, "cmd_" + k))
         self.link.save()
         self.link.apply()
+
+    def _test(self) -> None:
+        self._store()
+        self.link.send(TEST_CMD)
 
     def _push_cues(self) -> None:
         self._store()

@@ -775,6 +775,10 @@ class Session(QObject):
         with self.edit("Edit cue"):
             for k, v in fields.items():
                 setattr(c, k, v)
+            if "number" in fields and c.duration:      # Temps share the lane's Temp cue number
+                for o in self.project.cues:
+                    if o.lane_id == c.lane_id and o.duration:
+                        o.number = c.number
             if "time" in fields:
                 c.time = editing.snap_time(self.project, c.time, False)
             if c.duration is not None and c.duration <= 0:

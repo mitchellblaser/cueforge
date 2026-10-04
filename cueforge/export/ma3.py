@@ -14,7 +14,7 @@ import uuid
 from contextlib import contextmanager
 from xml.sax.saxutils import quoteattr
 
-from ..core.editing import effective_cue_numbers
+from ..core.editing import effective_cue_numbers, temp_cue_label
 from ..core.model import Project, Song
 
 MA3_TICKS_PER_SECOND = 16777216  # MA3 stores times as 1/2^24 s
@@ -182,8 +182,9 @@ def _song_lua(project: Project, tc_number: int) -> str:
     for lane in export_lanes(project):
         nums = effective_cue_numbers(project, lane.id)
         toks = cue_tokens(project, lane.id)
+        tlabel = temp_cue_label(project, lane.id)
         evs = ",\n".join(
-            f"        {{t={c.time:.6f}, cue={nums[c.id]:g}, label={_lua_str(c.label or '')}"
+            f"        {{t={c.time:.6f}, cue={nums[c.id]:g}, label={_lua_str((tlabel if c.duration else c.label) or '')}"
             + (f", off={c.time + c.duration:.6f}" if c.duration else f", tok={_lua_str(toks[c.id])}") + "}"
             for c in project.cues_in_lane(lane.id))
         lanes_lua.append(f"      {{name={_lua_str(lane.name)}, seq={seq_number(project, lane)}, events={{\n{evs}\n      }}}}")
@@ -227,10 +228,14 @@ local function q(s) return (s:gsub('"', "'")) end
 
 local function create_cues(song)
   for _, lane in ipairs(song.lanes) do
+    local made = {{}}                       -- Temps all fire one cue: store it once
     for _, ev in ipairs(lane.events) do
       local addr = "Sequence " .. lane.seq .. " Cue " .. ev.cue
-      Cmd("Store " .. addr .. " /Merge /NoConfirm")
-      if ev.label ~= "" then Cmd("Label " .. addr .. ' "' .. q(ev.label) .. '"') end
+      if not made[addr] then
+        made[addr] = true
+        Cmd("Store " .. addr .. " /Merge /NoConfirm")
+        if ev.label ~= "" then Cmd("Label " .. addr .. ' "' .. q(ev.label) .. '"') end
+      end
     end
   end
 end
@@ -357,11 +362,17 @@ def build_ma3_macro_commands(project: Project, all_songs: bool = False) -> list[
         with in_song(project, song):
             for lane in export_lanes(project):
                 nums = effective_cue_numbers(project, lane.id)
+                tlabel = temp_cue_label(project, lane.id)
+                made = set()
                 for c in project.cues_in_lane(lane.id):
                     addr = f"Sequence {seq_number(project, lane)} Cue {nums[c.id]:g}"
+                    if addr in made:                   # Temps share one cue
+                        continue
+                    made.add(addr)
                     cmds.append(f"Store {addr} /Merge /NoConfirm")
-                    if c.label:
-                        cmds.append(f'Label {addr} "{c.label.replace(chr(34), chr(39))}"')
+                    label = tlabel if c.duration else c.label
+                    if label:
+                        cmds.append(f'Label {addr} "{label.replace(chr(34), chr(39))}"')
     return cmds
 
 
