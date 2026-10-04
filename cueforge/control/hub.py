@@ -331,7 +331,8 @@ class ControlHub(QObject):
             return shown
         notes = sorted({m.number for m in self.cfg.mappings() if m.kind == "note"})
         if not notes:
-            self.test_error = "No pads are mapped (the mapping table has no notes)."
+            self.test_error = ("No pads are mapped (the mapping table has no notes). Press 'Reset to defaults' "
+                               "for the 16-pad layout (notes 36-51), or map pads with Learn.")
             return shown
         ch = next((self.feedback_channel(m) for m in self.cfg.mappings() if m.kind == "note"), 0)
         for i, n in enumerate(notes):

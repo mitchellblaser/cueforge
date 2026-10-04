@@ -90,6 +90,8 @@ class ControlSettings:
     osc_feedback_port: int = 9000
 
     def mappings(self) -> list[MidiMapping]:
+        if not self.midi_map:                      # nothing mapped is never useful: the default pads
+            self.midi_map = [asdict(m) for m in default_midi_map()]
         bare = [{k: v for k, v in m.items() if k != "led"} for m in self.midi_map]
         if bare == _old_default_map():            # settings saved before "any channel" existed
             self.midi_map = [asdict(m) for m in default_midi_map()]

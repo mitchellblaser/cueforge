@@ -1105,3 +1105,10 @@ def test_pad_lights_explain_why_not(app, win, monkeypatch):
     assert "MIDIOUT2 (Midi Fighter Spectra)" in hub.midi_error and "one program at a time" in hub.midi_error
     hub.cfg.midi_in = ""
     hub.apply()
+
+
+def test_empty_mapping_falls_back_to_default_pads(app, win):
+    from cueforge.control.actions import ControlSettings
+    cfg = ControlSettings(midi_map=[])
+    maps = cfg.mappings()
+    assert len(maps) == 16 and {m.number for m in maps} == set(range(36, 52))
