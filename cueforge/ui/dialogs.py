@@ -9,7 +9,6 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, 
                                QSpinBox, QVBoxLayout, QWidget)
 
 from ..analysis.pipeline import AnalysisOptions
-from ..analysis.stems import demucs_available
 from ..audio.engine import list_output_devices
 from ..core.timecode import FRAME_RATES, parse_tc, seconds_to_tc
 from . import theme
@@ -24,26 +23,51 @@ def _buttons(dlg: QDialog, ok_text: str = "OK") -> QDialogButtonBox:
 
 
 def _deep_available() -> tuple[bool, bool]:
+    """(Beat This!, All-In-One) installed — looked up without importing PyTorch into the UI."""
+    import importlib.util
+    from .. import addons
+    st = addons.status()
     try:
-        import beat_this  # noqa: F401
-        bt = True
-    except Exception:
-        bt = False
-    try:
-        import allin1  # noqa: F401
-        a1 = True
-    except Exception:
+        a1 = importlib.util.find_spec("allin1") is not None
+    except (ImportError, ValueError):
         a1 = False
-    return bt, a1
+    return st.get("beat_this", False), a1
+
+
+def _demucs_installed() -> bool:
+    from .. import addons
+    return addons.status().get("demucs", False)
 
 
 class AnalysisDialog(QDialog):
-    def __init__(self, session, parent=None) -> None:
+    def __init__(self, session, parent=None, scope: str = "this", song_ids: list[str] | None = None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Analyse audio")
         self.s = session
         lay = QVBoxLayout(self)
         p = session.project
+        songs = [x for x in p.songs if session.analysable(x)]
+        fresh = [x for x in songs if not x.analysed]
+        self._picked = [sid for sid in (song_ids or []) if p.song_by_id(sid)]
+        self.scope = QComboBox()
+        self.scope.addItem(f"This song ({p.song.name})", "this")
+        if len(songs) > 1:
+            self.scope.addItem(f"All songs in the setlist ({len(songs)})", "all")
+            if fresh and len(fresh) != len(songs):
+                self.scope.addItem(f"Songs not analysed yet ({len(fresh)})", "fresh")
+        if self._picked:
+            self.scope.addItem(f"The {len(self._picked)} song(s) just added", "picked")
+            scope = "picked"
+        self.scope.setCurrentIndex(max(0, self.scope.findData(scope)))
+        srow = QHBoxLayout()
+        srow.addWidget(QLabel("<b>Analyse:</b>"))
+        srow.addWidget(self.scope, 1)
+        lay.addLayout(srow)
+        bulk = QLabel("Songs are analysed one after another in the background: keep working, or leave it "
+                      "running. Results land in each song as suggestions.")
+        bulk.setWordWrap(True)
+        bulk.setStyleSheet(f"color: {theme.FG_DIM}; font-size: 10px;")
+        lay.addWidget(bulk)
         tracks = [t for t in p.tracks if t.analyse and t.role in ("Track", "Stem")]
         clicks = [t for t in p.tracks if t.role == "Click"]
         src = ", ".join(t.name for t in tracks) or "<none — set a track's role to Track or Stem>"
@@ -92,11 +116,16 @@ class AnalysisDialog(QDialog):
         form.addRow(self.deep)
         self.demucs = QCheckBox("Separate stems with Demucs when no stems are imported (slow)")
         has_stems = any(t.role == "Stem" for t in tracks)
-        self.demucs.setEnabled(demucs_available() and not has_stems)
+        self.demucs.setEnabled(_demucs_installed() and not has_stems)
         self.demucs.setChecked(prev.get("use_demucs", False) and self.demucs.isEnabled())
-        if not demucs_available():
-            self.demucs.setToolTip("Install with: pip install demucs")
+        if not _demucs_installed():
+            self.demucs.setToolTip("Not installed — use Install AI models… below")
         form.addRow(self.demucs)
+        if not (bt and _demucs_installed()):
+            inst = QPushButton("Install AI models…")
+            inst.setToolTip("Beat This! and Demucs: one-time download, installed by CueForge itself")
+            inst.clicked.connect(self._install_ai)
+            form.addRow(inst)
         self.bpb = QSpinBox()
         self.bpb.setRange(0, 12)
         self.bpb.setSpecialValueText("Auto (3 or 4)")
@@ -110,6 +139,14 @@ class AnalysisDialog(QDialog):
         lay.addWidget(note)
         lay.addWidget(_buttons(self, "Analyse"))
 
+    def _install_ai(self) -> None:
+        from .ai_models_dialog import AIModelsDialog
+        AIModelsDialog(self.s.settings, self).exec()
+        bt, _ = _deep_available()
+        self.deep.setToolTip("Installed: " + ("Beat This!" if bt else "none (baseline analysis is used)"))
+        has_stems = any(t.role == "Stem" for t in self.s.project.tracks)
+        self.demucs.setEnabled(_demucs_installed() and not has_stems)
+
     def options(self) -> AnalysisOptions:
         o = AnalysisOptions(grid=self.grid.isChecked(), hits=self.hits.isChecked(), fills=self.fills.isChecked(),
                             sections=self.sections.isChecked(), energy=self.energy.isChecked(),
@@ -119,6 +156,15 @@ class AnalysisDialog(QDialog):
                             beats_per_bar=self.bpb.value())
         self.s.settings.set("analysis_options", dict(o.__dict__))
         return o
+
+    def song_ids(self) -> list[str]:
+        p = self.s.project
+        scope = self.scope.currentData()
+        if scope == "picked":
+            return list(self._picked)
+        if scope in ("all", "fresh"):
+            return [x.id for x in p.songs if self.s.analysable(x) and (scope == "all" or not x.analysed)]
+        return [p.song.id]
 
 
 class TempoDialog(QDialog):
@@ -575,7 +621,10 @@ SHORTCUTS = [
                  ("Ctrl+Shift+C", "Copy this section's cues to all its repeats"),
                  ("Ctrl+P", "Pattern fill (loop region, section or selection)"),
                  ("Section band", "Drag a marker's edge to move it, double-click to rename, right-click for more")]),
-    ("Grid (live music)", [("Grid ▸ Tap-along grid, then T", "Tap every beat while playing; taps snap to the drums"),
+    ("Grid (live music)", [("D", "Set bar 1 at the playhead (tap it on the 'one' while playing)"),
+                           ("Ctrl+Alt+← / →", "Move bar 1 one beat earlier / later"),
+                           ("Drag the end of a Temp", "Change its hold time"),
+                           ("Grid ▸ Tap-along grid, then T", "Tap every beat while playing; taps snap to the drums"),
                            ("Grid ▸ Halve / Double tempo", "Fix a grid locked to 8th or half notes")]),
     ("AI suggestions", [("Tab / Shift+Tab", "Jump to next / previous suggestion"),
                         ("A", "Accept selected suggestion(s)"), ("X", "Reject selected suggestion(s)"),

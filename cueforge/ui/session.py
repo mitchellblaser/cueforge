@@ -23,7 +23,7 @@ from .workers import Job, start_job
 
 
 # single-key shortcuts that lanes may not use as tap keys
-RESERVED_KEYS = set("axsgiolcbfzptqwm")
+RESERVED_KEYS = set("axsgiolcbfzptqwmd")
 
 
 def guess_role(filename: str, is_first: bool) -> str:
@@ -53,6 +53,7 @@ class Session(QObject):
     busy = Signal(str)            # message while a job runs ("" when idle)
     progress = Signal(float, str)
     analysis_done = Signal(object)
+    grid_rephased = Signal()      # bar 1 / downbeats changed by hand (offer re-analysis)
 
     def __init__(self, settings: UserSettings | None = None) -> None:
         super().__init__()
@@ -130,6 +131,63 @@ class Session(QObject):
         self.songs_changed.emit()
         return song.id
 
+    def add_songs(self, groups: list[tuple[str, list[str]]]) -> list[str]:
+        """Bulk import: one new song per (name, audio files). Audio loads when a song is
+        opened (or is read by the analysis), so a whole setlist imports instantly. An empty
+        "Song 1" in a fresh project is reused for the first song."""
+        p = self.project
+        ids = []
+        for gi, (name, paths) in enumerate(groups):
+            if not paths:
+                continue
+            reuse = gi == 0 and len(p.songs) == 1 and not p.song.tracks and not p.song.cues
+            song = p.song if reuse else p.add_song(name)
+            if reuse:
+                song.name = name
+            ordered = sorted(paths, key=lambda x: os.path.basename(x).lower())
+            roles = ["Track" if len(ordered) == 1 else guess_role(x, False) for x in ordered]
+            if "Track" not in roles and "Other" in roles:
+                roles[roles.index("Other")] = "Track"        # first plain file of a folder = the mix
+            for path, role in zip(ordered, roles):
+                song.tracks.append(Track(name=os.path.splitext(os.path.basename(path))[0], path=path, role=role,
+                                         analyse=role in ("Track", "Stem"),
+                                         color=TRACK_COLORS[len(song.tracks) % len(TRACK_COLORS)],
+                                         gain_db=-6.0 if role == "Click" else 0.0))
+            if reuse:
+                self._load_current_song()
+            ids.append(song.id)
+        self._touch()
+        self.songs_changed.emit()
+        self.tracks_changed.emit()
+        return ids
+
+    def import_cuepoints(self, items, opts) -> dict:
+        """Import CuePoints / spreadsheet rows; each song's part is its own undo step."""
+        from ..export.cuepoints_import import add_rows, group_by_song, target_song
+        p = self.project
+        current = p.song.id
+        total = {"cues": 0, "songs_created": [], "lanes_created": [], "skipped": 0}
+        try:
+            for name, group in group_by_song(items, opts).items():
+                p.select_song(current)      # rows without a Track go to the song that was open
+                song, created = target_song(p, name, group, opts)
+                if created:
+                    total["songs_created"].append(song.name)
+                p.select_song(song.id)
+                with self.edit(f"Import CuePoints ({song.name})"):
+                    r = add_rows(p, group, opts)
+                for k in ("cues", "skipped"):
+                    total[k] += r[k]
+                total["lanes_created"] += r["lanes_created"]
+        finally:
+            p.select_song(current)
+            self._sync_engine()
+            self._touch()
+            self.lanes_changed.emit()
+            self.songs_changed.emit()
+            self.cues_changed.emit()
+        return total
+
     def remove_song(self, sid: str) -> None:
         song = self.project.song_by_id(sid)
         if not song:
@@ -192,12 +250,16 @@ class Session(QObject):
         return max(d, 10.0)
 
     def _replace_project(self, p: Project) -> None:
+        self.cancel_analysis()                 # its results belong to the old project
         self.engine.pause()
         for tid in list(self.engine.tracks):
             self.engine.remove_track(tid)
         self.audio.clear()
         self.load_errors.clear()
         self.project = p
+        clashes = [l for l in p.lanes if l.tap_key and l.tap_key.strip().lower() in RESERVED_KEYS]
+        for l in clashes:                      # e.g. "D" is now Set bar 1
+            l.tap_key = ""
         self.undo = UndoStack(p)
         self.undo.on_change = self._on_undo_change
         self.sel_cues.clear()
@@ -208,6 +270,9 @@ class Session(QObject):
         self._emit_dirty()
         self._load_current_song()
         self.songs_changed.emit()
+        if clashes:
+            self.status.emit("Tap key cleared on " + ", ".join(l.name for l in clashes)
+                             + ": that key is now a CueForge shortcut (pick another in Lanes)")
 
     def new_project(self) -> None:
         self._replace_project(Project())
@@ -780,18 +845,34 @@ class Session(QObject):
     def grid_from_tempo(self, bpm: float, first_downbeat: float, bpb: int) -> None:
         self.set_grid(BeatGrid.from_tempo(bpm, first_downbeat, self.duration + 5, bpb), "Set tempo")
 
-    def set_downbeat_at(self, t: float) -> None:
-        """Re-phase the grid so the beat nearest t becomes beat 1."""
+    def set_downbeat_at(self, t: float, drop_before: bool = False) -> None:
+        """Make the beat nearest t the downbeat of bar 1 (bars re-phased and numbered
+        from it). The grid counts as confirmed afterwards, so re-analysis keeps it."""
+        from ..core.grid_tools import set_bar_one
         g = self.project.beat_grid
         if not g.beats:
             return
-        import numpy as np
-        b = np.asarray(g.beats)
-        j = int(np.argmin(np.abs(b - t)))
-        bpb = g.beats_per_bar
-        downs = [float(x) for k, x in enumerate(b) if (k - j) % bpb == 0]
-        with self.edit("Set downbeat"):
-            self.project.beat_grid = BeatGrid(list(g.beats), downs, bpb, g.source, g.confirmed, g.confidence)
+        with self.edit("Set bar 1"):
+            self.project.beat_grid = set_bar_one(g, t, drop_before)
+        self.grid_rephased.emit()
+
+    def move_bar_one(self, beats: int) -> None:
+        from ..core.grid_tools import move_bar_one
+        g = self.project.beat_grid
+        if not g.beats:
+            return
+        with self.edit("Move bar 1"):
+            self.project.beat_grid = move_bar_one(g, beats)
+        self.grid_rephased.emit()
+
+    def drop_beats_before_bar_one(self) -> None:
+        from ..core.grid_tools import drop_beats_before_bar_one
+        g = self.project.beat_grid
+        if not g.downbeats:
+            return
+        with self.edit("Remove beats before bar 1"):
+            self.project.beat_grid = drop_beats_before_bar_one(g)
+        self.grid_rephased.emit()
 
     def shift_grid(self, delta: float) -> None:
         g = self.project.beat_grid
@@ -872,9 +953,196 @@ class Session(QObject):
 
     # ------------------------------------------------------------------ analysis
     def analysis_running(self) -> bool:
-        return self._analysis_relay is not None
+        return self._analysis_relay is not None or bool(getattr(self, "_queue_active", False))
 
-    def run_analysis(self, opts: AnalysisOptions) -> bool:
+    def song_minutes(self, song) -> float:
+        """Length of a song's analysed audio in minutes (from loaded audio or file headers)."""
+        best = 0.0
+        for t in song.tracks:
+            if not (t.analyse and t.role in ("Track", "Stem")):
+                continue
+            a = self.audio.get(t.id)
+            dur = a.duration if a is not None else 0.0
+            if not dur:
+                try:
+                    import soundfile as sf
+                    dur = float(sf.info(t.path).duration)
+                except Exception:
+                    dur = 0.0
+            best = max(best, dur + t.offset)
+        return best / 60.0
+
+    def analysable(self, song) -> bool:
+        return any(t.analyse and t.role in ("Track", "Stem") and t.path for t in song.tracks)
+
+    def run_analysis(self, opts: AnalysisOptions, song_ids: list[str] | None = None) -> bool:
+        """Analyse the current song, or every song in `song_ids` one after another, each in
+        a background process (the UI stays responsive; set it going and leave it)."""
+        if self.analysis_running():
+            return False
+        ids = [sid for sid in (song_ids or [self.project.song.id]) if self.project.song_by_id(sid)]
+        ids = [sid for sid in ids if self.analysable(self.project.song_by_id(sid))]
+        if not ids:
+            self.status.emit("Import audio first (a track with role Track or Stem)")
+            return False
+        self._queue = list(ids)
+        self._queue_total = len(ids)
+        self._queue_opts = opts
+        self._queue_log: list[str] = []
+        self._queue_errors: list[str] = []
+        self._queue_last = None
+        self._queue_ok = 0
+        self._queue_active = True
+        self.busy.emit("Analysing…")
+        self._start_next()
+        return True
+
+    def _start_next(self) -> None:
+        if not self._queue:
+            self._queue_active = False
+            self._runner = None
+            self.busy.emit("")
+            n = self._queue_total
+            if n == 1 and self._queue_last is not None:
+                self.analysis_done.emit(self._queue_last)
+            elif n == 1 and self._queue_errors:
+                self.analysis_done.emit(self._queue_errors[0])
+            elif n > 1:
+                res = AnalysisResult(log=self._queue_log + [f"Analysed {self._queue_ok} of {n} songs"])
+                if self._queue_errors:
+                    res.log.append(f"{len(self._queue_errors)} failed — see the log above")
+                self.analysis_done.emit(res)
+            return
+        sid = self._queue.pop(0)
+        self._analysis_song = sid
+        song = self.project.song_by_id(sid)
+        if song is None:
+            self._start_next()
+            return
+        import tempfile
+        from ..analysis.worker import write_job
+        from ..addons import status as ai_status
+        from .analysis_runner import AnalysisRunner, ProgressModel
+        opts = self._queue_opts
+        cache = None
+        try:
+            cache = analysis_cache_dir(self.project)
+        except OSError:
+            pass
+        try:
+            folder = tempfile.mkdtemp(prefix="cueforge-analysis-")
+            write_job(folder, self.project, sid, opts, cache)
+        except Exception as exc:
+            self._job_failed(sid, f"Could not prepare the analysis: {exc}")
+            return
+        st = ai_status()
+        has_stems = any(t.role == "Stem" for t in song.tracks)
+        demucs = bool(opts.use_demucs and not has_stems and st.get("demucs"))
+        melodic = any(t.role == "Stem" and not any(w in t.name.lower() for w in ("drum", "kick", "snare", "perc", "bass"))
+                      for t in song.tracks)
+        skip = {p for p, on in ((0.08, opts.grid and not song.beat_grid.confirmed), (0.25, opts.fills),
+                                (0.35, opts.hits), (0.45, opts.harmony),
+                                (0.55, opts.melody and (melodic or demucs or opts.melody_from_mix)),
+                                (0.60, opts.sections), (0.80, opts.energy)) if not on}
+        model = ProgressModel(self.song_minutes(song), bool(opts.use_deep_models and st.get("beat_this")),
+                              demucs, self.settings.get("analysis_timing", {}), skip)
+        runner = AnalysisRunner(folder, model, self)
+        k = self._queue_total - len(self._queue)
+        n = self._queue_total
+        prefix = f"Song {k}/{n} · {song.name}: " if n > 1 else ""
+
+        def prog(frac: float, msg: str) -> None:
+            self.progress.emit(((k - 1) + frac) / n, prefix + msg)
+
+        runner.progress.connect(prog)
+        runner.finished.connect(lambda res, sid=sid, r=runner: self._job_finished(sid, res, r))
+        runner.failed.connect(lambda err, sid=sid: self._job_failed(sid, err))
+        self._runner = runner
+        self._analysis_relay = None
+        try:
+            runner.start()
+        except Exception as exc:
+            self._job_failed(sid, f"Could not start the analysis: {exc}")
+
+    def cancel_analysis(self) -> None:
+        if self._analysis_relay is not None:
+            self._analysis_relay.job.cancel_requested = True
+        if getattr(self, "_queue_active", False):
+            self._queue = []
+            r = getattr(self, "_runner", None)
+            self._runner = None
+            self._queue_active = False
+            if r is not None:
+                r.cancel()                     # kills the worker and removes its folder now
+                r.deleteLater()
+            self.busy.emit("")
+            self.status.emit("Analysis cancelled")
+
+    def _job_finished(self, sid: str, res: AnalysisResult, runner) -> None:
+        if getattr(self, "drag_active", False):
+            # don't snapshot undo in the middle of a drag on the timeline: try again shortly
+            from PySide6.QtCore import QTimer
+            QTimer.singleShot(250, lambda: self._job_finished(sid, res, runner))
+            return
+        runner.deleteLater()
+        self.settings.set("analysis_timing", runner.model.learn())
+        song = self.project.song_by_id(sid)
+        if song is None:
+            self._job_failed(sid, "The song was removed while it was being analysed", runner=None)
+            return
+        try:
+            self._apply_to_song(sid, res)
+        except Exception:
+            import traceback
+            self._job_failed(sid, "Could not apply the results:\n" + traceback.format_exc(), runner=None)
+            return
+        self._queue_ok += 1
+        if self._queue_total > 1:
+            added = next((l for l in reversed(res.log) if "new suggestion" in l), res.log[-1] if res.log else "done")
+            self._queue_log.append(f"{song.name}: {added}")
+        self._queue_last = res
+        self._start_next()
+
+    def _job_failed(self, sid: str, err: str, runner="current") -> None:
+        if runner == "current" and getattr(self, "_runner", None) is not None:
+            self._runner.deleteLater()
+        song = self.project.song_by_id(sid)
+        err = (err or "").strip() or "The analysis stopped without a message"
+        if err == "Cancelled":
+            self._queue = []
+            self._queue_active = False
+            self._runner = None
+            self.busy.emit("")
+            self.status.emit("Analysis cancelled")
+            return
+        self._queue_errors.append(err)
+        if self._queue_total > 1:
+            self._queue_log.append(f"{song.name if song else '?'}: FAILED — {err.splitlines()[-1][:200]}")
+        self._start_next()
+
+    def _apply_to_song(self, origin: str, res: AnalysisResult) -> None:
+        if not self.project.song_by_id(origin):
+            self.status.emit("Analysis finished, but its song was removed")
+            return
+        current = self.project.song.id
+        self.project.select_song(origin)   # apply results to the song that was analysed
+        try:
+            self._apply_analysis(res)
+            from datetime import datetime
+            self.project.song.analysed = datetime.now().isoformat(timespec="seconds")
+        finally:
+            self.project.select_song(current)
+            self._sync_engine()
+            self.cues_changed.emit()
+        if origin != current:
+            name = self.project.song_by_id(origin).name
+            res.log.append(f"(results added to '{name}')")
+        self.lanes_changed.emit()
+        self.songs_changed.emit()
+        self.status.emit(res.log[-1] if res.log else "Analysis done")
+
+    def run_analysis_in_thread(self, opts: AnalysisOptions) -> bool:
+        """The old in-process path (kept for scripting and as a fallback)."""
         if self._analysis_relay is not None or self._loading:
             return False
         ids = {t.id for t in self.project.tracks}
@@ -899,31 +1167,10 @@ class Session(QObject):
         self._analysis_relay = relay
         return True
 
-    def cancel_analysis(self) -> None:
-        if self._analysis_relay is not None:
-            self._analysis_relay.job.cancel_requested = True
-
     def _analysis_finished(self, res: AnalysisResult) -> None:
         self._analysis_relay = None
         self.busy.emit("")
-        origin = getattr(self, "_analysis_song", self.project.song.id)
-        if not self.project.song_by_id(origin):
-            self.status.emit("Analysis finished, but its song was removed")
-            return
-        current = self.project.song.id
-        self.project.select_song(origin)   # apply results to the song that was analysed
-        try:
-            self._apply_analysis(res)
-        finally:
-            self.project.select_song(current)
-            self._sync_engine()
-            self.cues_changed.emit()
-        if origin != current:
-            name = self.project.song_by_id(origin).name
-            res.log.append(f"(results added to '{name}')")
-        self.lanes_changed.emit()
-        self.songs_changed.emit()
-        self.status.emit(res.log[-1] if res.log else "Analysis done")
+        self._apply_to_song(getattr(self, "_analysis_song", self.project.song.id), res)
         self.analysis_done.emit(res)
 
     def _apply_analysis(self, res: AnalysisResult) -> None:

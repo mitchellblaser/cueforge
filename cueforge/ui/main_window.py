@@ -83,6 +83,10 @@ class MainWindow(QMainWindow):
         self.tabifyDockWidget(self.dock_sugs, self.dock_cues)
         self.tabifyDockWidget(self.dock_cues, self.dock_lanes)
         self.dock_sugs.raise_()
+        for d in (self.dock_sugs, self.dock_cues, self.dock_lanes):
+            # an Inspector panel that is docked again rejoins the others as a tab
+            d.topLevelChanged.connect(lambda floating: floating or QTimer.singleShot(0, self.retab_inspector))
+            d.dockLocationChanged.connect(lambda _a: QTimer.singleShot(0, self.retab_inspector))
 
         self.setlist = SongList(self.s)
         self.setlist.open_settings.connect(self.song_settings)
@@ -131,6 +135,7 @@ class MainWindow(QMainWindow):
         s.status.connect(lambda m: self.statusBar().showMessage(m, 6000))
         s.busy.connect(self._busy)
         s.progress.connect(self._progress)
+        s.grid_rephased.connect(self._grid_rephased)
         s.analysis_done.connect(self._analysis_done)
         s.cues_changed.connect(self._refresh_actions)
         s.selection_changed.connect(self._refresh_actions)
@@ -176,6 +181,38 @@ class MainWindow(QMainWindow):
 
     def _docks(self) -> list[QDockWidget]:
         return [self.dock_setlist, self.dock_sugs, self.dock_cues, self.dock_lanes, self.dock_mixer]
+
+    def retab_inspector(self) -> None:
+        """Keep the docked Inspector panels (AI Suggestions, Cue list, Lanes) as tabs of one
+        group in whichever window holds them; floating panels are left alone."""
+        if getattr(self, "_retabbing", False):
+            return
+        self._retabbing = True
+        try:
+            docks = [d for d in (self.dock_sugs, self.dock_cues, self.dock_lanes)
+                     if not d.isFloating() and not d.isHidden()]
+            by_win: dict[int, list[QDockWidget]] = {}
+            for d in docks:
+                win = d.parentWidget()
+                if isinstance(win, QMainWindow):
+                    by_win.setdefault(id(win), []).append(d)
+            for group in by_win.values():
+                if len(group) < 2:
+                    continue
+                win = group[0].parentWidget()
+                anchor = max(group, key=lambda d: len(win.tabifiedDockWidgets(d)))
+                current = next((d for d in group if not d.visibleRegion().isEmpty()), anchor)
+                joined = set(win.tabifiedDockWidgets(anchor)) | {anchor}
+                moved = False
+                for d in group:
+                    if d not in joined:
+                        win.tabifyDockWidget(anchor, d)
+                        joined.add(d)
+                        moved = True
+                if moved:
+                    current.raise_()
+        finally:
+            self._retabbing = False
 
     def pop_out(self, dock: QDockWidget) -> None:
         dock.show()
@@ -458,11 +495,14 @@ class MainWindow(QMainWindow):
         f.addAction(self._act("Import audio into this song…", self.import_audio, "Ctrl+I"))
         f.addSeparator()
         f.addAction(self._act("Add song to setlist…", self.add_song, "Ctrl+Shift+N"))
+        f.addAction(self._act("Add songs from files (one song per file)…", self.add_songs_files))
+        f.addAction(self._act("Add songs from a folder (one song per sub-folder)…", self.add_songs_folder))
         f.addAction(self._act("Song settings…", lambda: self.song_settings(self.s.project.song.id)))
         f.addAction(self._act("Previous song", lambda: self._step_song(-1), "Ctrl+PgUp"))
         f.addAction(self._act("Next song", lambda: self._step_song(1), "Ctrl+PgDown"))
         f.addSeparator()
         f.addAction(self._act("Import grandMA3 timecode XML…", self.import_ma3))
+        f.addAction(self._act("Import CuePoints CSV / spreadsheet…", self.import_cuepoints))
         ex = f.addMenu("Export")
         ex.addAction(self._act("grandMA3…", self.export_ma3, "Ctrl+E"))
         ex.addAction(self._act("CSV cue list…", self.export_csv))
@@ -514,6 +554,9 @@ class MainWindow(QMainWindow):
 
         a = mb.addMenu("&AI")
         a.addAction(self._act("Analyse audio…", self.analyse, "Ctrl+R"))
+        a.addAction(self._act("Analyse all songs in the setlist…", lambda: self.analyse(all_songs=True),
+                              "Ctrl+Shift+R"))
+        a.addAction(self._act("AI models (install / remove)…", self.ai_models))
         a.addAction(self._act("Cancel analysis", self.s.cancel_analysis))
         a.addSeparator()
         # Tab / Shift+Tab are handled in eventFilter so focus navigation never eats them
@@ -533,7 +576,13 @@ class MainWindow(QMainWindow):
         g = mb.addMenu("&Grid")
         g.addAction(self._act("Set tempo / tap tempo…", self.set_tempo, "Ctrl+T"))
         g.addAction(self._act("Accept detected grid", self.s.accept_grid))
-        g.addAction(self._act("Make beat at playhead bar 1", lambda: self.s.set_downbeat_at(self.s.engine.position())))
+        g.addSeparator()
+        g.addAction(self._act("Set bar 1 here (beat at playhead; tap D on the 'one' while playing)",
+                              lambda: self.s.set_downbeat_at(self.s.engine.position()), "D"))
+        g.addAction(self._act("Move bar 1 one beat earlier", lambda: self.s.move_bar_one(-1), "Ctrl+Alt+Left"))
+        g.addAction(self._act("Move bar 1 one beat later", lambda: self.s.move_bar_one(1), "Ctrl+Alt+Right"))
+        g.addAction(self._act("Remove beats before bar 1 (gap / count-in)", self.s.drop_beats_before_bar_one))
+        g.addSeparator()
         g.addAction(self._act("Shift grid 1 frame earlier", lambda: self.s.shift_grid(-1 / self.s.project.frame_rate.fps)))
         g.addAction(self._act("Shift grid 1 frame later", lambda: self.s.shift_grid(1 / self.s.project.frame_rate.fps)))
         g.addSeparator()
@@ -602,6 +651,12 @@ class MainWindow(QMainWindow):
         sb.addPermanentWidget(self.prog)
         sb.addPermanentWidget(self.cancel_btn)
         sb.addPermanentWidget(self.audio_label)
+        self.reanalyse_btn = QPushButton("↻ Re-analyse with the new bars")
+        self.reanalyse_btn.setToolTip("Bar 1 moved: sections, fills and chord changes were found with the old "
+                                      "bar lines. Re-run the analysis on your grid (your cues are not touched).")
+        self.reanalyse_btn.setVisible(False)
+        self.reanalyse_btn.clicked.connect(self.reanalyse)
+        sb.addPermanentWidget(self.reanalyse_btn)
         self.link_label = QLabel("")
         self.link_label.setStyleSheet("color: #66bb6a; padding-left: 8px;")
         sb.addPermanentWidget(self.link_label)
@@ -635,6 +690,37 @@ class MainWindow(QMainWindow):
         if paths:
             self.s.settings.set("last_dir", os.path.dirname(paths[0]))
             self.s.add_song(paths)
+
+    def add_songs_files(self) -> None:
+        from ..core.bulk import song_groups_from_files
+        exts = " ".join(f"*{e}" for e in AUDIO_EXTENSIONS)
+        paths, _ = QFileDialog.getOpenFileNames(self, "Audio files — each becomes a song", self._dir(),
+                                                f"Audio ({exts})")
+        if paths:
+            self.s.settings.set("last_dir", os.path.dirname(paths[0]))
+            self._bulk_added(self.s.add_songs(song_groups_from_files(paths)))
+
+    def add_songs_folder(self) -> None:
+        from ..core.bulk import song_groups_from_folder
+        d = QFileDialog.getExistingDirectory(self, "Folder of songs (each sub-folder = a song with its stems)",
+                                             self._dir())
+        if not d:
+            return
+        self.s.settings.set("last_dir", d)
+        groups = song_groups_from_folder(d)
+        if not groups:
+            QMessageBox.information(self, "Add songs", "No audio files found in that folder.")
+            return
+        self._bulk_added(self.s.add_songs(groups))
+
+    def _bulk_added(self, ids: list[str]) -> None:
+        if not ids:
+            return
+        n = len(ids)
+        if QMessageBox.question(self, "Songs added",
+                                f"Added {n} song(s) to the setlist.\n\nAnalyse them all now? It runs in the "
+                                "background — you can keep working, or leave it running.") == QMessageBox.Yes:
+            self.analyse(all_songs=True, song_ids=ids)
 
     def song_settings(self, sid: str) -> None:
         if sid and self.s.project.song_by_id(sid):
@@ -686,7 +772,7 @@ class MainWindow(QMainWindow):
         if g.downbeats and pos >= g.downbeats[0] - 1e-6:
             bar = bisect.bisect_right(g.downbeats, pos + 1e-6) - 1
             beat = bisect.bisect_right(g.beats, pos + 1e-6) - bisect.bisect_left(g.beats, g.downbeats[bar] - 1e-6)
-            self.bar_label.setText(f"Bar {bar + 1} · {beat}")
+            self.bar_label.setText(f"Bar {g.bar_number(bar)} · {beat}")
         else:
             self.bar_label.setText("")
         playing = eng.playing
@@ -864,28 +950,95 @@ class MainWindow(QMainWindow):
             self.s.clear_pending()
 
     # ================================================================ analysis
-    def analyse(self) -> None:
+    def analyse(self, all_songs: bool = False, song_ids: list[str] | None = None) -> None:
         if self.s.analysis_running():
+            self.statusBar().showMessage("An analysis is already running (Cancel in the status bar)", 5000)
             return
-        if not self.s.audio:
+        if not any(self.s.analysable(song) for song in self.s.project.songs):
             QMessageBox.information(self, "Analyse", "Import some audio first (File ▸ Import audio).")
             return
-        dlg = AnalysisDialog(self.s, self)
+        dlg = AnalysisDialog(self.s, self, scope="all" if all_songs else "this", song_ids=song_ids)
         if dlg.exec():
-            if not self.s.run_analysis(dlg.options()):
-                QMessageBox.information(self, "Analyse", "Audio is still loading — try again in a moment.")
+            if not self.s.run_analysis(dlg.options(), dlg.song_ids()):
+                QMessageBox.information(self, "Analyse", "Nothing to analyse: the selected song(s) have no "
+                                        "track with role Track or Stem.")
+
+    def import_cuepoints(self) -> None:
+        from .cuepoints_dialog import CuePointsImportDialog
+        path, _ = QFileDialog.getOpenFileName(self, "Import CuePoints CSV / TAB", self._dir(),
+                                              "Cue lists (*.csv *.tsv *.txt *.tab);;All files (*)")
+        if not path:
+            return
+        self.s.settings.set("last_dir", os.path.dirname(path))
+        try:
+            dlg = CuePointsImportDialog(self.s, path, self)
+        except (OSError, UnicodeError) as exc:
+            QMessageBox.warning(self, "Import CuePoints", f"Could not read the file:\n{exc}")
+            return
+        if not dlg.exec():
+            return
+        items, problems = dlg.items()
+        r = self.s.import_cuepoints(items, dlg.options())
+        msg = f"Imported {r['cues']} cue(s)."
+        if r["songs_created"]:
+            msg += f"\nNew songs: {', '.join(r['songs_created'])} (add their audio from the setlist)."
+        if r["lanes_created"]:
+            msg += f"\nNew lanes: {', '.join(r['lanes_created'])} (set their MA3 sequence in Lanes)."
+        if r["skipped"] or problems:
+            msg += f"\nSkipped {r['skipped'] + len(problems)} row(s) (duplicates, before the song start or no time)."
+        self._notice("Import CuePoints", msg)
+
+    def ai_models(self) -> None:
+        from .ai_models_dialog import AIModelsDialog
+        AIModelsDialog(self.s.settings, self).exec()
+
+    def reanalyse(self) -> None:
+        """Run the analysis again with the last options (no dialog), on the song whose bar 1
+        was changed."""
+        self.reanalyse_btn.setVisible(False)
+        sid = getattr(self, "_rephased_song", None) or self.s.project.song.id
+        if self.s.analysis_running() or not self.s.project.song_by_id(sid):
+            return
+        from ..analysis.pipeline import AnalysisOptions
+        prev = self.s.settings.get("analysis_options", {}) or {}
+        opts = AnalysisOptions(**{k: v for k, v in prev.items() if k in AnalysisOptions.__dataclass_fields__})
+        self.s.run_analysis(opts, [sid])
+
+    def _grid_rephased(self) -> None:
+        p = self.s.project
+        if p.suggestions and self.s.analysable(p.song):
+            self._rephased_song = p.song.id
+            self.reanalyse_btn.setText(f"↻ Re-analyse '{p.song.name}' with the new bars")
+            self.reanalyse_btn.setVisible(True)
+        g = p.beat_grid
+        if g.downbeats:
+            self.statusBar().showMessage(
+                f"Bar 1 at {seconds_to_tc(g.downbeats[g.bar_one_index()], p.frame_rate, p.tc_offset)}"
+                " — grid confirmed (re-analysis keeps it)", 6000)
 
     def _analysis_done(self, res) -> None:
+        # non-modal: analysis may finish while you're busy programming, or after a long bulk run
         if isinstance(res, str):
-            QMessageBox.warning(self, "Analysis failed", res[:2000])
+            self._notice("Analysis failed", res[:2000], warn=True)
             return
         self._show_panel(self.dock_sugs)
         n = len(self.s.project.visible_suggestions())
-        msg = "\n".join(res.log[-6:])
-        self.statusBar().showMessage(f"Analysis done — {n} suggestions visible. Tab to review.", 10000)
+        msg = "\n".join(res.log[-12:])
+        self.statusBar().showMessage(f"Analysis done — {n} suggestions visible in this song. Tab to review.", 10000)
         if res.grid and not self.s.project.beat_grid.confirmed:
-            msg += "\n\nThe detected beat grid is shown dashed until you accept it (AI Suggestions ▸ Accept grid)."
-        QMessageBox.information(self, "Analysis done", msg)
+            msg += ("\n\nThe detected beat grid is dashed until you accept it (AI Suggestions ▸ Accept grid). "
+                    "Wrong bar 1? Press D on the 'one' while playing, or Grid ▸ Move bar 1.")
+        self._notice("Analysis done", msg)
+
+    def _notice(self, title: str, text: str, warn: bool = False) -> None:
+        box = QMessageBox(QMessageBox.Warning if warn else QMessageBox.Information, title, text,
+                          QMessageBox.Ok, self)
+        box.setWindowModality(Qt.NonModal)
+        box.setAttribute(Qt.WA_DeleteOnClose)
+        box.setAttribute(Qt.WA_ShowWithoutActivating)    # keep the keyboard on the timeline
+        box.show()
+        self.activateWindow()
+        self._last_notice = box
 
     def _tap_grid_mode(self, on: bool) -> None:
         if on:
@@ -1189,6 +1342,7 @@ class MainWindow(QMainWindow):
         if not self._confirm_discard():
             e.ignore()
             return
+        self.s.cancel_analysis()               # stop the background worker (and clean its folder)
         self.s.engine.close()
         self.control.close()
         from PySide6.QtWidgets import QApplication
@@ -1229,3 +1383,4 @@ class MainWindow(QMainWindow):
         from PySide6.QtGui import QGuiApplication
         if self.s.settings.get("dual_monitor") and len(QGuiApplication.screens()) > 1:
             QTimer.singleShot(300, lambda: self.dual_monitor(True))
+        QTimer.singleShot(0, self.retab_inspector)     # layouts saved by older versions

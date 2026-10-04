@@ -17,11 +17,12 @@ def halve_tempo(g: BeatGrid) -> BeatGrid:
     if len(g.beats) < 4:
         return g
     b = np.asarray(g.beats)
-    first = g.downbeats[0] if g.downbeats else b[0]
+    first = g.downbeats[g.bar_one_index()] if g.downbeats else b[0]     # bar 1 stays a beat
     k = int(np.argmin(np.abs(b - first)))
     keep = b[k % 2::2]
     return BeatGrid([float(x) for x in keep], _rebar(keep, first, g.beats_per_bar), g.beats_per_bar,
-                    g.source + " (halved)", g.confirmed, g.confidence)
+                    g.source + " (halved)", g.confirmed, g.confidence,
+                    float(b[k]) if g.bar_one is not None else None)
 
 
 def double_tempo(g: BeatGrid) -> BeatGrid:
@@ -30,9 +31,9 @@ def double_tempo(g: BeatGrid) -> BeatGrid:
         return g
     b = np.asarray(g.beats)
     beats = np.sort(np.r_[b, (b[:-1] + b[1:]) / 2])
-    first = g.downbeats[0] if g.downbeats else b[0]
+    first = g.downbeats[g.bar_one_index()] if g.downbeats else b[0]
     return BeatGrid([float(x) for x in beats], _rebar(beats, first, g.beats_per_bar), g.beats_per_bar,
-                    g.source + " (doubled)", g.confirmed, g.confidence)
+                    g.source + " (doubled)", g.confirmed, g.confidence, g.bar_one)
 
 
 def grid_from_taps(taps: list[float], onsets: np.ndarray | None = None, beats_per_bar: int = 4,
@@ -68,7 +69,7 @@ def grid_from_taps(taps: list[float], onsets: np.ndarray | None = None, beats_pe
         beats.append(t[k])
     beats = [float(x) for x in beats]
     downs = beats[::beats_per_bar]
-    return BeatGrid(beats, downs, beats_per_bar, "tapped", confirmed=True, confidence=1.0)
+    return BeatGrid(beats, downs, beats_per_bar, "tapped", confirmed=True, confidence=1.0, bar_one=beats[0])
 
 
 def merge_grid(base: BeatGrid, patch: BeatGrid) -> BeatGrid:
@@ -83,4 +84,40 @@ def merge_grid(base: BeatGrid, patch: BeatGrid) -> BeatGrid:
     beats = [b for b in base.beats if b < lo or b > hi] + list(patch.beats)
     downs = [d for d in base.downbeats if d < lo or d > hi] + list(patch.downbeats)
     return BeatGrid(sorted(beats), sorted(downs), patch.beats_per_bar, f"{base.source} + tapped",
-                    True, min(base.confidence or 1.0, 1.0))
+                    True, min(base.confidence or 1.0, 1.0), base.bar_one)
+
+
+# ------------------------------------------------------------------ bar 1
+def set_bar_one(g: BeatGrid, t: float, drop_before: bool = False) -> BeatGrid:
+    """Make the beat nearest `t` the downbeat of bar 1: bars are re-phased from it in both
+    directions and numbered from it. With `drop_before`, beats before it are removed (a
+    silent or noisy intro the tracker filled with beats). The result is confirmed: the
+    programmer decided."""
+    if not g.beats:
+        return g
+    b = np.asarray(g.beats, float)
+    j = int(np.argmin(np.abs(b - t)))
+    if drop_before:
+        b = b[j:]
+        j = 0
+    bpb = g.beats_per_bar
+    downs = [float(x) for k, x in enumerate(b) if (k - j) % bpb == 0]
+    return BeatGrid([float(x) for x in b], downs, bpb, g.source, True, g.confidence, float(b[j]))
+
+
+def move_bar_one(g: BeatGrid, beats: int) -> BeatGrid:
+    """Move bar 1 (and every bar line) by whole beats: -1 = one beat earlier."""
+    if not g.beats:
+        return g
+    b = np.asarray(g.beats, float)
+    first = g.downbeats[g.bar_one_index()] if g.downbeats else b[0]
+    j = int(np.argmin(np.abs(b - first))) + beats
+    j = max(0, min(len(b) - 1, j))
+    return set_bar_one(g, float(b[j]))
+
+
+def drop_beats_before_bar_one(g: BeatGrid) -> BeatGrid:
+    if not g.downbeats:
+        return g
+    return set_bar_one(g, g.downbeats[g.bar_one_index()], drop_before=True)
+

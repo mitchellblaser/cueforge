@@ -1,8 +1,10 @@
 """Side panels: cue list, AI suggestion review, lane setup."""
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QColor
+import time
+
+from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QColorDialog, QComboBox, QGridLayout, QGroupBox,
                                QHBoxLayout, QHeaderView, QInputDialog, QLabel, QMenu, QMessageBox, QPushButton,
                                QScrollArea, QSlider, QSpinBox, QSplitter, QTableWidget, QTableWidgetItem, QTreeWidget, QTreeWidgetItem, QListWidget, QListWidgetItem,
@@ -33,6 +35,12 @@ class CueTable(QWidget):
         self.count = QLabel()
         self.count.setStyleSheet(f"color: {theme.FG_DIM};")
         top.addWidget(self.count)
+        self.follow = QCheckBox("Follow")
+        self.follow.setToolTip("While playing, highlight the cue each lane is on and scroll to the cue "
+                               "that just fired")
+        self.follow.setChecked(bool(session.settings.get("cue_list_follow", True)))
+        self.follow.toggled.connect(lambda v: (session.settings.set("cue_list_follow", v), self._light(force=True)))
+        top.addWidget(self.follow)
         lay.addLayout(top)
         self.table = QTableWidget(0, len(self.COLS))
         self.table.setHorizontalHeaderLabels(self.COLS)
@@ -52,6 +60,16 @@ class CueTable(QWidget):
         self.table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self._menu)
         lay.addWidget(self.table)
+        self._rows: dict[str, int] = {}
+        self._lit: dict[str, str] = {}          # cue id -> "on" | "fired"
+        self._user_scrolled = 0.0
+        self._last_pos = -1.0
+        self.table.verticalScrollBar().sliderPressed.connect(self._scrolled_by_user)
+        self.table.viewport().installEventFilter(self)
+        self._tick = QTimer(self)
+        self._tick.setInterval(60)
+        self._tick.timeout.connect(self._light)
+        self._tick.start()
         hint = QLabel("Double-click a cell to edit · right-click for more")
         hint.setStyleSheet(f"color: {theme.FG_DIM}; font-size: 10px;")
         lay.addWidget(hint)
@@ -99,8 +117,86 @@ class CueTable(QWidget):
                     it.setToolTip(c.notes)
                 self.table.setItem(r, col, it)
         self.count.setText(f"{len(cues)} cues")
+        self._rows = {c.id: r for r, c in enumerate(cues)}
+        self._lit = {}
         self._syncing = False
         self._sel_from_session()
+        self._light(force=True)
+
+    # -- follow the playhead ------------------------------------------------
+    def eventFilter(self, obj, ev) -> bool:
+        from PySide6.QtCore import QEvent
+        if ev.type() == QEvent.Wheel:
+            self._scrolled_by_user()
+        return False
+
+    def _scrolled_by_user(self) -> None:
+        self._user_scrolled = time.monotonic()
+
+    def active_cues(self, t: float) -> tuple[dict[str, str], str | None]:
+        """{cue id: "fired" | "on"} at time t, and the cue that fired last. "on" is the cue
+        each lane is sitting on (and Temps still holding); "fired" is a cue that went in the
+        last 0.4 s."""
+        p = self.s.project
+        state: dict[str, str] = {}
+        latest = None
+        for lane in p.lanes:
+            cues = p.cues_in_lane(lane.id)
+            before = [c for c in cues if c.time <= t + 1e-6]
+            plain = [c for c in before if not c.duration]
+            if plain:
+                state[plain[-1].id] = "on"
+            for c in before:
+                if c.duration and c.time + c.duration > t:
+                    state[c.id] = "on"
+            for c in before[-3:]:
+                if t - c.time < 0.4:
+                    state[c.id] = "fired"
+            if before and (latest is None or before[-1].time > latest.time):
+                latest = before[-1]
+        return state, latest.id if latest else None
+
+    def _light(self, force: bool = False) -> None:
+        eng = self.s.engine
+        playing = bool(getattr(eng, "playing", False))
+        if not self.follow.isChecked() or not self._rows or self.table.state() == QAbstractItemView.EditingState:
+            state, latest = {}, None
+        elif not playing and not force and (not self._lit or eng.position() == self._last_pos):
+            return                              # stopped and nothing moved: nothing to do
+        else:
+            state, latest = self.active_cues(eng.position())
+        self._last_pos = eng.position()
+        state = {k: v for k, v in state.items() if k in self._rows}
+        if state == self._lit and not force:
+            return
+        p = self.s.project
+        was, self._syncing = self._syncing, True      # styling emits itemChanged: not an edit
+        for cid in set(self._lit) | set(state):
+            r = self._rows.get(cid)
+            if r is None:
+                continue
+            c = p.cue(cid)
+            lane = p.lane(c.lane_id) if c else None
+            mode = state.get(cid)
+            if mode:
+                col = QColor(lane.color if lane else theme.ACCENT)
+                col.setAlpha(150 if mode == "fired" else 60)
+                brush = QBrush(col)
+            else:
+                brush = QBrush()
+            for k in range(self.table.columnCount()):
+                it = self.table.item(r, k)
+                if it is None:
+                    continue
+                it.setBackground(brush)
+                f = it.font()
+                f.setBold(mode == "fired")
+                it.setFont(f)
+        self._syncing = was
+        self._lit = state
+        if playing and latest in self._rows and latest in state and state[latest] == "fired" \
+                and time.monotonic() - self._user_scrolled > 3.0:
+            self.table.scrollToItem(self.table.item(self._rows[latest], 0), QAbstractItemView.PositionAtCenter)
 
     def _sel_from_session(self) -> None:
         self._syncing = True
@@ -295,8 +391,13 @@ class SuggestionPanel(QWidget):
         gl.addLayout(gb)
         lay.addWidget(grid_box)
 
-        kinds_box = QGroupBox("Suggestion filters")
+        kinds_box = QGroupBox("Show suggestions (filters)")
         kl = QVBoxLayout(kinds_box)
+        fnote = QLabel("Unticking a type or raising its threshold only <b>hides</b> suggestions. To get rid of "
+                       "them, press <b>✗ all</b> or <b>Reject hidden</b> below.")
+        fnote.setWordWrap(True)
+        fnote.setStyleSheet(f"color: {theme.FG_DIM}; font-size: 10px;")
+        kl.addWidget(fnote)
         rows_w = QWidget()
         rows_l = QVBoxLayout(rows_w)
         rows_l.setContentsMargins(0, 0, 0, 0)
@@ -315,7 +416,14 @@ class SuggestionPanel(QWidget):
         self.apply_learned = QPushButton("Apply learned thresholds")
         self.apply_learned.clicked.connect(self._apply_learned)
         kl.addWidget(self.learned)
-        kl.addWidget(self.apply_learned)
+        brow = QHBoxLayout()
+        brow.addWidget(self.apply_learned)
+        self.reject_hidden = QPushButton("Reject hidden")
+        self.reject_hidden.setToolTip("Reject every pending suggestion the filters hide in this song, so they "
+                                      "stop counting as 'to review' (undo brings them back)")
+        self.reject_hidden.clicked.connect(self._reject_hidden)
+        brow.addWidget(self.reject_hidden)
+        kl.addLayout(brow)
         lay.addWidget(kinds_box)
 
         self.tree = QTreeWidget()
@@ -403,6 +511,18 @@ class SuggestionPanel(QWidget):
             m.addAction(f"Accept as chase steps ({len(sg.steps)} cues)", lambda: self.s.accept_as_steps(sid))
         m.addAction("Reject", lambda: self.s.reject([sid]))
         m.exec(self.tree.viewport().mapToGlobal(pos))
+
+    def _hidden_ids(self) -> list[str]:
+        p = self.s.project
+        vis = {x.id for x in p.visible_suggestions()}
+        return [x.id for x in p.suggestions if x.status == "pending" and x.id not in vis]
+
+    def _reject_hidden(self) -> None:
+        ids = self._hidden_ids()
+        if ids and QMessageBox.question(self, "Reject hidden suggestions",
+                                        f"Reject the {len(ids)} suggestion(s) the filters hide in this song?") \
+                == QMessageBox.Yes:
+            self.s.reject(ids)
 
     def _apply_learned(self) -> None:
         for k, v in self.s.learned_thresholds().items():
@@ -625,19 +745,24 @@ class SongList(QWidget):
         self.list.clear()
         for i, song in enumerate(p.songs, 1):
             n_cues = len(song.cues)
-            pend = sum(1 for x in song.suggestions if x.status == "pending")
+            a = p.analysis
+            allp = [x for x in song.suggestions if x.status == "pending"]
+            pend = sum(1 for x in allp if a.visible.get(x.kind, True) and x.confidence >= a.thresholds.get(x.kind, 0.0))
+            hidden = len(allp) - pend
             dur = max((self.s.audio[t.id].duration + t.offset for t in song.tracks if t.id in self.s.audio),
                       default=0.0)
             sub = f"{seconds_to_tc(0, p.frame_rate, song.tc_offset)}   TC {song.ma3_timecode}"
             if dur:
                 sub += f"   {format_seconds(dur).split('.')[0]}"
-            sub2 = f"{n_cues} cue{'s' if n_cues != 1 else ''}" + (f" · {pend} AI pending" if pend else "")
+            sub2 = f"{n_cues} cue{'s' if n_cues != 1 else ''}" + (f" · {pend} AI to review" if pend else "")
             it = QListWidgetItem(f"{i}.  {song.name}\n{sub}\n{sub2}")
             it.setData(Qt.UserRole, song.id)
             it.setToolTip(f"{song.name}\nStarts at {seconds_to_tc(0, p.frame_rate, song.tc_offset)}\n"
                           f"grandMA3 Timecode {song.ma3_timecode}, cues from {song.cue_start:g}"
                           + (f", sequences +{song.seq_offset}" if song.seq_offset else "")
-                          + (f"\n{song.notes}" if song.notes else ""))
+                          + (f"\n{song.notes}" if song.notes else "")
+                          + (f"\n{hidden} more suggestion(s) hidden by the Suggestion filters "
+                             "(not rejected)" if hidden else ""))
             if song.id == p.song.id:
                 f = it.font()
                 f.setBold(True)

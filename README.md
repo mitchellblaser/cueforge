@@ -53,25 +53,27 @@ python -m cueforge               # optionally: python -m cueforge song.wav click
 Each build runs the test suite and then `CueForge --self-test` inside the packaged app.
 The macOS app isn't code-signed, so open it the first time with right-click › Open.
 
-### Optional: deep-learning models
+### Optional: advanced AI models
 
 The built-in analysis (librosa) needs no extra downloads. For stronger beat tracking and
-stem separation:
+stem separation, CueForge can install two deep-learning models itself. No command line is
+needed:
 
-```bash
-pip install -r requirements-ai.txt     # PyTorch, Demucs, Beat This!
-```
-
-- **Beat This!** is used automatically for beat and downbeat tracking when installed. Its
-  weights download on first use.
-- **Demucs** separates the mix into drums, vocals and other stems, so hits can be detected
-  per stem. Enable it in the *Analyse* dialog. It's slow on CPU, and results are cached
+- On first start CueForge offers to install them. You can also use **AI › AI models…** at any
+  time, or the *Install AI models…* button in the Analyse dialog. It downloads about 600 MB
+  once: PyTorch plus the models. There's an option for the NVIDIA GPU build on Windows.
+  - The packaged app installs into its own folder (`%LOCALAPPDATA%\CueForge` or
+    `~/Library/Application Support/CueForge`), using only ready-made packages.
+  - From source, they go into CueForge's own Python environment.
+- **Beat This!** is then used automatically for beats and downbeats.
+- **Demucs** separates the mix into drums / bass / vocals / other, so hits and fills are
+  found per stem. Tick it in the *Analyse* dialog. It's slow on CPU, and results are cached
   next to the project.
-- **All-In-One** (`pip install allin1`, optional) labels sections (verse, chorus, …) when
-  installed.
+- *Remove AI models* in the same dialog deletes the packages and the downloaded weights.
+- From the command line instead: `pip install -r requirements-ai.txt`. **All-In-One**
+  (`pip install allin1`, optional) labels sections when installed.
 
-If a model fails to load (for example, no internet on first use), CueForge falls back to
-the built-in analysis.
+If a model fails to load, CueForge falls back to the built-in analysis.
 
 ---
 
@@ -84,6 +86,10 @@ on the timeline.
 - **Lanes** (MA3 sequences) are shared by the whole show.
 - **＋** or dropping audio files on the list adds a song. Drag to reorder.
   **Ctrl+PgUp / PgDn** goes to the previous / next song.
+- **Bulk import.** *File › Add songs from a folder* makes one song per sub-folder; the mix,
+  stems and click inside are recognised from their names, including sub-folders such as
+  `Stems/`. Loose audio files become a song each. *Add songs from files* makes one song per
+  file. Afterwards CueForge offers to analyse them all.
 - **⚙ / double-click → Song settings**: name, start timecode, grandMA3 *Timecode slot*, first
   cue number, and an optional sequence offset (if each song uses its own block of sequences).
 - New songs default to the next hour (song 2 at 02:00:00:00…), the next Timecode slot and
@@ -95,8 +101,13 @@ on the timeline.
   - Command list: all songs.
   The export dialog warns if two songs would write the same cue number into the same sequence.
 - **CSV** export can include the whole setlist, with a Song column.
-- Analysis runs on the current song. If you switch songs while it runs, the results still go
-  to the song that was analysed.
+- **Analyse all songs** (*AI › Analyse all songs…*, Ctrl+Shift+R, or the *Analyse:* choice in
+  the Analyse dialog: this song, all songs, or songs not analysed yet). Songs are analysed
+  one after another, and each song's suggestions land in that song.
+- Analysis runs in a separate background process, so the app stays responsive however heavy
+  the AI models are. Keep programming, switch songs, or leave it running; *Cancel* stops it.
+  The progress bar moves steadily and shows the time left. It learns how fast this computer
+  is, so the estimate improves after the first run.
 - Undo jumps back to the song where the change happened.
 
 ## Workflow
@@ -145,6 +156,20 @@ on the timeline.
      the grid. Use it for rubato passages, or to fix a section the tracker got wrong. It
      only replaces the part you tapped.
    - **Grid › Halve / Double tempo** fixes a grid locked onto 8th or half notes.
+   - **Bar 1.** If a song starts with a gap, the tracker no longer fills the silence with
+     beats, so bar 1 is the band's first bar.
+     - If bar 1 is still wrong, press **D** on the "one" while the song plays (or with the
+       playhead on it). You can also use *Grid › Move bar 1 one beat earlier / later*
+       (**Ctrl+Alt+← / →**), or right-click a beat › *Make the nearest beat bar 1*.
+     - Bars before it are numbered 0, −1… (count-in). *Remove beats before bar 1* deletes them.
+     - Setting bar 1 confirms the grid. A **↻ Re-analyse with the new bars** button appears,
+       so sections, fills and chord changes line up with your bars. Re-analysis always keeps
+       a confirmed grid.
+   - **Pauses.** When the band stops mid-song and comes back in, the bar count is checked
+     again after the pause:
+     - A stop of a whole number of beats keeps counting.
+     - After a free-time pause, the music after it decides where bar 1 is (usually the band
+       comes back on the one).
    - Tap *cues* live with the lane keys as usual. Taps compensate for audio output latency.
 
 5. **Review**
@@ -153,6 +178,8 @@ on the timeline.
    - **P** plays from 2 s before the selected suggestion or cue.
    - The *AI Suggestions* tab has a **confidence threshold** per type, the target lane per
      type, and **Accept all** / **Reject all**.
+   - The *Show suggestions* filters only **hide** suggestions. The setlist's "AI to review"
+     count follows the filters. To get rid of hidden ones for good, press **Reject hidden**.
    - Accepted and rejected decisions persist. Re-analysing never brings back something you
      rejected and never duplicates a cue.
    - Over time CueForge learns thresholds from your decisions (*Apply learned
@@ -168,7 +195,9 @@ on the timeline.
      box (default 0.5 s, or *= 1 beat*).
    - Both work while playing (at the heard position, latency-compensated) or stopped, and
      snap to the grid when Snap is on.
-   - Selecting a Temp shows its hold in the Hold box; change it there to edit it.
+   - Selecting a Temp shows its hold in the Hold box; change it there to edit it. You can
+     also **drag the end of a Temp's hold bar** on the timeline. It snaps to half beats;
+     hold Alt for free movement. With several Temps selected, they all change together.
      **Shift+W / Shift+Q** turn selected cues into Temps / normal cues.
    - Press a lane's **tap key** (1, 2, 3, …) during playback to drop a cue at the playhead.
    - Double-click a lane to add a cue. Drag cues to move them (they snap to beats when
@@ -299,6 +328,24 @@ What the link does:
 > could not be tried on a console here. Try it on onPC first and adjust the templates if a
 > command is rejected. The console's command-line feedback shows any errors.
 
+## Cue list follows the playhead
+
+While playing, the **Cue list** highlights the cue each lane is currently on, in the lane's
+colour, plus any Temp that is still holding. Cues that just fired flash bold, and the list
+scrolls to keep them in view. If you scroll by hand, following pauses for a few seconds.
+Untick *Follow* to stop it.
+
+## Migrating from CuePoints
+
+*File › Import CuePoints CSV / spreadsheet…* reads CuePoints' CSV / TAB cue exports (columns
+*Track, Type, Position, Cue No, Label, Fade*) and other cue spreadsheets.
+- Columns are recognised by name, and you can reassign them in the dialog, with a preview.
+- Each CuePoints **Track** becomes a song: matched by name, or created with its start
+  timecode taken from the first cue's hour (e.g. 07:00:00:00).
+- Each **Type** becomes a lane. Positions are converted to song time.
+- Times are read at the project frame rate, so set that first.
+- Each song's import is one undo step. Importing the same file twice doesn't duplicate cues.
+
 ## Round trip from the console
 
 *File › Import grandMA3 timecode XML…* reads timecode shows back in, for example after
@@ -340,6 +387,9 @@ and cue numbers and labels are kept. Choose **Replace** (console is master) or *
 | Ctrl+Shift+N | Add a song |
 | Ctrl+Z / Ctrl+Shift+Z | Undo / redo |
 | Ctrl+L | grandMA3 live link settings |
+| D | Set bar 1 at the playhead (tap it on the "one" while playing) |
+| Ctrl+Alt+← / → | Move bar 1 one beat earlier / later |
+| Ctrl+Shift+R | Analyse all songs |
 | Ctrl+Alt+S | Scrub audio on/off |
 
 ---

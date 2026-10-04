@@ -74,3 +74,23 @@ The thresholds and the threshold learning in the app are there to adapt to your 
 - **Hits in quiet, busy-cymbal passages** (ride / side-stick ballads, soft waltz) produce
   extra suggestions. Raise the Hits threshold or let the app learn it.
 - **Lead lines without stems** are rough. Import stems, or enable Demucs.
+
+## Gaps and pauses (downbeat F-measure)
+
+Each test song was run again with a gap inserted before it, or a pause in the middle. The
+scores are the downbeat F-measure in the music after the gap or pause (70 ms window).
+
+| Song | No gap | 3.7 s silent intro | 6 s noisy intro | 1.37 s pause | 2.5-beat pause | 2-bar stop |
+|---|---|---|---|---|---|---|
+| rock_live | 0.99 | 0.99 | 0.99 | 0.94 | 0.94 | 0.94 |
+| edm_club | 0.99 | 0.99 | 0.79 | 0.95 | 0.95 | 0.95 |
+| funk_live | 0.98 | 0.98 | 0.98 | 0.93 | 0.93 | 0.93 |
+| waltz_34 | 0.98 | 0.98 | 0.98 | 0.92 | 0.92 | 0.92 |
+| pop_halftime | 0.98 | 0.98 | 0.98 | 0.92 | 0.92 | 0.92 |
+| ballad_live | 0.66 | 0.66 | 0.56 | 0.16 | 0.16 | 0.17 |
+
+Before this change, a gap put bar 1 near 0 s instead of at the music. A pause that wasn't a
+whole number of bars gave 0.00 on one side of it.
+
+The ballad is tracked at double tempo, so its downbeats are only half right even without a
+pause. Fix it with *Grid › Halve tempo*, then press **D** on the one.

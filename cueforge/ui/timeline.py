@@ -376,6 +376,10 @@ class TimelineCanvas(QWidget):
                 bar = QColor(theme.SELECT if sel else lane.color)
                 bar.setAlpha(60)
                 p.fillRect(QRectF(x, rr.top() + 20, max(2.0, c.duration * self.pps), rr.height() - 24), bar)
+                xe = self.x_of(t + c.duration)          # end handle: drag to change the hold
+                hc = QColor(theme.SELECT if sel else lane.color)
+                hc.setAlpha(200)
+                p.fillRect(QRectF(xe - 2, rr.top() + 20, 3, rr.height() - 24), hc)
             p.setPen(QPen(QColor(theme.SELECT) if sel else col, 2))
             p.drawLine(QPointF(x, rr.top() + 2), QPointF(x, rr.bottom() - 2))
             label = c.label or (f"{c.number:g}" if c.number is not None else ("Temp" if c.duration else ""))
@@ -512,13 +516,26 @@ class TimelineCanvas(QWidget):
                 every *= 2
             i0 = max(0, bisect.bisect_left(g.downbeats, self.t0) - 1)
             i1 = bisect.bisect_right(g.downbeats, t1) + 1
-            p.setPen(QColor("#ffcc80") if not g.confirmed else QColor("#9ccc65"))
+            col = QColor("#ffcc80") if not g.confirmed else QColor("#9ccc65")
+            k1 = g.bar_one_index()
             for i in range(i0, min(i1, len(g.downbeats))):
-                if i % every:
+                n = g.bar_number(i)
+                if (n - 1) % every and n != 1:
                     continue
                 x = int(self.x_of(g.downbeats[i]))
-                if x >= HEADER_W:
-                    p.drawText(x + 3, RULER_H - 5, str(i + 1))
+                if x < HEADER_W:
+                    continue
+                if i == k1:                          # bar 1 flag
+                    f = p.font()
+                    f.setBold(True)
+                    p.setFont(f)
+                    p.setPen(QColor(theme.ACCENT))
+                    p.drawText(x + 3, RULER_H - 5, "1")
+                    f.setBold(False)
+                    p.setFont(f)
+                    continue
+                p.setPen(col if n > 0 else QColor(theme.FG_DIM))   # count-in bars: 0, -1 …
+                p.drawText(x + 3, RULER_H - 5, str(n))
         loop = self.s.engine.loop
         if loop:
             x0, x1 = self.x_of(loop[0]), self.x_of(loop[1])
@@ -601,6 +618,21 @@ class TimelineCanvas(QWidget):
                 best, bd = c.id, d
         return best
 
+    def hit_temp_end(self, pos) -> str | None:
+        """A Temp whose end (hold release) is under the pointer, unless its start is closer."""
+        r = self.row_at(pos.y())
+        if not r or r.kind != "lane" or pos.x() < HEADER_W:
+            return None
+        best, bd = None, HIT_PX + 1
+        for c in self.s.project.cues_in_lane(r.id):
+            if not c.duration:
+                continue
+            de = abs(self.x_of(c.time + c.duration) - pos.x())
+            ds = abs(self.x_of(c.time) - pos.x())
+            if de < bd and (de < ds or pos.x() > self.x_of(c.time + c.duration) - 1):
+                best, bd = c.id, de
+        return best
+
     def hit_suggestion(self, pos) -> str | None:
         r = self.row_at(pos.y())
         if not r or r.kind != "lane" or pos.x() < HEADER_W:
@@ -665,6 +697,15 @@ class TimelineCanvas(QWidget):
             self._drag = {"mode": "scrub"}
             self.update()
             return
+        eid = self.hit_temp_end(pos)
+        if eid:
+            if eid not in self.s.sel_cues:
+                self.s.select(cues={eid}, add=add)
+            p = self.s.project
+            temps = [c for c in p.cues if c.id in self.s.sel_cues and c.duration] or [p.cue(eid)]
+            self._drag = {"mode": "hold", "anchor": eid, "press_x": pos.x(), "moved": False,
+                          "orig": {c.id: c.duration for c in temps}}
+            return
         cid = self.hit_cue(pos)
         if cid:
             if add:
@@ -691,6 +732,7 @@ class TimelineCanvas(QWidget):
         if not d:
             self._hover_tip(e)
             return
+        self.s.drag_active = d["mode"] in ("hold", "move", "section")
         if d["mode"] == "scrub":
             t = max(0.0, self.t_of(pos.x()))
             self.s.engine.seek(t)
@@ -717,6 +759,30 @@ class TimelineCanvas(QWidget):
             r = self.row_at(pos.y())
             d["target_lane"] = r.id if r and r.kind == "lane" and r.id != d["lane"] else None
             self.invalidate()
+        elif d["mode"] == "hold":
+            p = self.s.project
+            anchor = p.cue(d["anchor"])
+            if anchor is None:
+                return
+            if abs(pos.x() - d["press_x"]) > 2:
+                d["moved"] = True
+            end = d["orig"][anchor.id] + anchor.time + (pos.x() - d["press_x"]) / self.pps
+            if self.s.snap and not (e.modifiers() & Qt.AltModifier):
+                g = p.beat_grid
+                if len(g.beats) > 1:              # snap the release to beats / half beats
+                    from ..core.arrange import beat_at, time_at
+                    b = beat_at(g, end)
+                    sb = time_at(g, round(b * 2) / 2)
+                    if sb is not None and abs(sb - end) * self.pps < 12:
+                        end = sb
+            frame = 1.0 / p.frame_rate.fps
+            delta = max(frame, end - anchor.time) - d["orig"][anchor.id]
+            for cid, dur in d["orig"].items():
+                c = p.cue(cid)
+                if c:
+                    c.duration = round(max(frame, dur + delta), 3)   # live; committed on release
+            QToolTip.showText(e.globalPosition().toPoint(), f"Hold {anchor.duration:.2f} s", self)
+            self.invalidate()
         elif d["mode"] == "band":
             d["cur"] = pos
             d["moved"] = True
@@ -736,6 +802,7 @@ class TimelineCanvas(QWidget):
     def mouseReleaseEvent(self, e) -> None:
         d = self._drag
         self._drag = None
+        self.s.drag_active = False
         if not d:
             return
         if d["mode"] == "section":
@@ -744,6 +811,18 @@ class TimelineCanvas(QWidget):
                 new_t = m.time
                 m.time = d["t"]                  # restore, then move through the undo stack
                 self.s.move_section(m.id, new_t)
+            return
+        if d["mode"] == "hold":
+            p = self.s.project
+            new = {cid: p.cue(cid).duration for cid in d["orig"] if p.cue(cid)}
+            for cid, dur in d["orig"].items():        # restore, then change through undo
+                if p.cue(cid):
+                    p.cue(cid).duration = dur
+            if d["moved"] and new != d["orig"]:
+                with self.s.edit("Change hold time"):
+                    for cid, dur in new.items():
+                        p.cue(cid).duration = dur
+            self.invalidate()
             return
         if d["mode"] == "move":
             if d["moved"] and d["preview"]:
@@ -825,6 +904,14 @@ class TimelineCanvas(QWidget):
 
     def _hover_tip(self, e) -> None:
         pos = e.position()
+        eid = self.hit_temp_end(pos)
+        if eid:
+            c = self.s.project.cue(eid)
+            QToolTip.showText(e.globalPosition().toPoint(),
+                              f"<b>Temp release</b><br>Held {c.duration:.2f}s — drag to change the hold "
+                              "(snaps to half beats; Alt = free)", self)
+            self.setCursor(Qt.SplitHCursor)
+            return
         cid = self.hit_cue(pos)
         proj = self.s.project
         if cid:
@@ -947,7 +1034,9 @@ class TimelineCanvas(QWidget):
         m.addSeparator()
         m.addAction("Move playhead here", lambda: s.engine.seek(t))
         if s.project.beat_grid.beats:
-            m.addAction("Make nearest beat a downbeat (bar 1)", lambda: s.set_downbeat_at(t))
+            m.addAction("Make the nearest beat bar 1", lambda: s.set_downbeat_at(t))
+            m.addAction("Make the nearest beat bar 1 and remove beats before it",
+                        lambda: s.set_downbeat_at(t, drop_before=True))
         m.exec(e.globalPosition().toPoint())
 
 

@@ -37,7 +37,8 @@ Demucs (advanced AI) · PyInstaller (packaging).
 | 6 | Setlist: multiple songs per project with own timecode / MA3 slot / cue range; fast-fill strobe detection | Done |
 | 7 | Arranging & control — sections, copy/paste, pattern fill, scrub, pop-out/dual monitor, MIDI/OSC tapping with feedback, MA3 round trip | Done |
 | 8 | grandMA3 live link — OSC command line: live preview, cue-list sync, number pinning, timecode push to onPC | Done (needs console verification) |
-| 9 | Later — live LTC/MTC output | Not started |
+| 9 | Workflow — in-app AI model installer, background-process analysis with learned progress, bulk song import + setlist analysis, bar 1 / gap / pause handling, Temp hold drag, cue list follow, CuePoints CSV import | Done |
+| 10 | Later — live LTC/MTC output | Not started |
 
 ## Known limitations / next steps
 - Live link command syntax (`/gma3/cmd`, `Temp`/`Off`, `Import Timecode … /File`) and the

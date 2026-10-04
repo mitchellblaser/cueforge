@@ -99,8 +99,11 @@ def run_analysis(project: Project, audio: dict[str, AudioData], opts: AnalysisOp
     y = _timeline_mix([(audio[t.id], t.offset) for t in mix_tracks], sr)
 
     # --- beat grid --------------------------------------------------------
-    grid = project.beat_grid if project.beat_grid.confirmed else None
-    if opts.grid and not (grid and grid.source == "manual"):
+    grid = project.beat_grid if project.beat_grid.confirmed and not project.beat_grid.empty else None
+    if grid is not None:
+        # the programmer's grid (confirmed, bar 1 set, tapped…) drives everything below
+        res.log.append(f"Using your confirmed beat grid ({grid.bpm():.1f} BPM)")
+    elif opts.grid:
         if clicks:
             step(0.08, f"Building grid from click track '{clicks[0].name}'")
             yc = _timeline_mix([(audio[clicks[0].id], clicks[0].offset)], sr)

@@ -22,6 +22,31 @@ for pkg in ("librosa", "soundfile", "sounddevice", "_soundfile_data", "_sounddev
         pass
 hiddenimports += ["sklearn.utils._typedefs", "sklearn.neighbors._partition_nodes", "mido.backends.rtmidi"]
 
+# pip inside the app installs the optional AI models (CueForge --pip …, AI ▸ AI models…)
+d, b, h = collect_all("pip")
+datas += d
+binaries += b
+hiddenimports += h
+
+# PyTorch & co. are installed later, outside the bundle, and use standard-library modules
+# CueForge itself never imports: ship the whole standard library.
+import importlib.util
+SKIP_STD = {"tkinter", "turtle", "turtledemo", "idlelib", "test", "lib2to3", "ensurepip", "venv", "pydoc_data",
+            "this", "antigravity", "xxsubtype", "xxlimited", "xxlimited_35", "_xxtestfuzz", "_testcapi"}
+for name in sorted(getattr(sys, "stdlib_module_names", ())):
+    if name in SKIP_STD or name.startswith("_"):
+        continue
+    try:
+        spec = importlib.util.find_spec(name)
+    except Exception:
+        spec = None
+    if spec is None:
+        continue
+    if spec.submodule_search_locations:
+        hiddenimports += [m for m in collect_submodules(name, filter=lambda n: ".test" not in n)]
+    else:
+        hiddenimports.append(name)
+
 # Optional deep-learning backends are large; include them only if requested
 if os.environ.get("CUEFORGE_BUNDLE_AI") == "1":
     for pkg in ("torch", "torchaudio", "demucs", "beat_this", "julius", "einops", "rotary_embedding_torch"):
@@ -35,7 +60,7 @@ if os.environ.get("CUEFORGE_BUNDLE_AI") == "1":
     excludes = []
 else:
     excludes = ["torch", "torchaudio", "demucs", "beat_this", "allin1", "tensorflow"]
-excludes += ["tkinter", "matplotlib", "IPython", "PyQt5", "PyQt6", "pytest"]
+excludes += ["tkinter", "matplotlib", "IPython", "PyQt5", "PyQt6", "pytest", "test", "idlelib", "lib2to3"]
 
 icon = None
 if sys.platform == "win32" and os.path.exists(os.path.join(SPECPATH, "icon.ico")):

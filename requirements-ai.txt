@@ -1,5 +1,6 @@
-# Optional deep-learning backends (large downloads; models fetch weights on first use)
+# Optional deep-learning backends. Easiest: Analysis > AI models... in the app installs these.
+# (large downloads; models fetch weights on first use)
 torch
 torchaudio
 demucs>=4.0
-beat_this @ git+https://github.com/CPJKU/beat_this.git
+beat_this>=1.0

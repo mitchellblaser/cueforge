@@ -92,10 +92,24 @@ class BeatGrid:
     source: str = ""             # "manual", "click track", "librosa", "beat_this" ...
     confirmed: bool = False      # detected grids are suggestions until confirmed
     confidence: float = 0.0
+    bar_one: float | None = None  # downbeat numbered bar 1 (earlier bars are 0, -1 … count-in)
 
     @property
     def empty(self) -> bool:
         return not self.beats
+
+    def bar_one_index(self) -> int:
+        """Index into `downbeats` of bar 1."""
+        if self.bar_one is None or not self.downbeats:
+            return 0
+        import bisect
+        i = bisect.bisect_left(self.downbeats, self.bar_one - 1e-3)
+        cands = [j for j in (i - 1, i) if 0 <= j < len(self.downbeats)]
+        return min(cands, key=lambda j: abs(self.downbeats[j] - self.bar_one))
+
+    def bar_number(self, downbeat_index: int) -> int:
+        """Musical bar number of downbeats[downbeat_index] (bar 1 = `bar_one`)."""
+        return downbeat_index - self.bar_one_index() + 1
 
     def bpm(self) -> float:
         if len(self.beats) < 2:
@@ -120,7 +134,8 @@ class BeatGrid:
                 downbeats.append(round(t, 6))
             t += period
             i += 1
-        return cls(beats, downbeats, beats_per_bar, source, confirmed=True, confidence=1.0)
+        return cls(beats, downbeats, beats_per_bar, source, confirmed=True, confidence=1.0,
+                   bar_one=round(first_downbeat, 6))
 
     def nearest_beat(self, t: float) -> float | None:
         if not self.beats:
@@ -143,7 +158,8 @@ class BeatGrid:
 
     def shifted(self, delta: float) -> "BeatGrid":
         return BeatGrid([b + delta for b in self.beats], [d + delta for d in self.downbeats],
-                        self.beats_per_bar, self.source, self.confirmed, self.confidence)
+                        self.beats_per_bar, self.source, self.confirmed, self.confidence,
+                        None if self.bar_one is None else self.bar_one + delta)
 
 
 @dataclass
@@ -215,6 +231,7 @@ class Song:
         self.cue_start = 1.0         # first auto cue number for this song
         self.notes = ""
         self.sections: list[SectionMarker] = []
+        self.analysed = ""           # when the AI analysis last ran (ISO time), "" = never
 
     def duration_hint(self) -> float:
         end = max((c.time + (c.duration or 0) for c in self.cues), default=0.0)
@@ -222,7 +239,7 @@ class Song:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "id": self.id, "name": self.name, "notes": self.notes,
+            "id": self.id, "name": self.name, "notes": self.notes, "analysed": self.analysed,
             "tracks": [asdict(t) for t in self.tracks],
             "cues": [asdict(c) for c in self.cues],
             "suggestions": [asdict(s) for s in self.suggestions],
@@ -240,6 +257,7 @@ class Song:
         s = cls(d.get("name", "Song"))
         s.id = d.get("id") or new_id()
         s.notes = d.get("notes", "")
+        s.analysed = d.get("analysed", "")
         s.tracks = [_from_dict(Track, t) for t in d.get("tracks", [])]
         s.restore_content(d)
         s.mixer = _from_dict(MixerState, d.get("mixer", {}))

@@ -58,8 +58,34 @@ def self_test() -> int:
     return 0 if ok else 1
 
 
+def _set_process_name() -> None:
+    """Run from source, the OS calls the app "Python" (macOS menu bar / Dock, Windows
+    taskbar). Name it CueForge instead. The packaged app is named by its bundle."""
+    if sys.platform == "darwin":
+        try:
+            from Foundation import NSBundle  # pyobjc-framework-Cocoa
+            bundle = NSBundle.mainBundle()
+            for info in (bundle.localizedInfoDictionary(), bundle.infoDictionary()):
+                if info is not None:
+                    info["CFBundleName"] = "CueForge"
+                    info["CFBundleDisplayName"] = "CueForge"
+        except Exception:
+            pass
+    elif sys.platform == "win32":
+        try:
+            import ctypes
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("CueForge.CueForge")
+        except Exception:
+            pass
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv if argv is None else argv
+    from .addons import activate, handle_cli
+    code = handle_cli(argv)          # --pip / --prefetch-models / --analysis-worker child modes
+    if code is not None:
+        return code
+    activate()                       # AI models installed from the app
     if "--self-test" in argv:
         if sys.stdout is None:  # windowed build on Windows has no console: log to a file
             sys.stdout = sys.stderr = open("cueforge-self-test.log", "w", encoding="utf-8")
@@ -68,9 +94,11 @@ def main(argv: list[str] | None = None) -> int:
     from PySide6.QtGui import QIcon
     from PySide6.QtWidgets import QApplication
 
+    _set_process_name()
     QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
     app = QApplication(argv)
     app.setApplicationName("CueForge")
+    app.setApplicationDisplayName("CueForge")
     app.setOrganizationName("CueForge")
     from .ui.theme import apply_theme
     apply_theme(app)
@@ -81,6 +109,9 @@ def main(argv: list[str] | None = None) -> int:
     win = MainWindow()
     win.restore_layout()
     win.show()
+    from PySide6.QtCore import QTimer
+    from .ui.ai_models_dialog import first_run_prompt
+    QTimer.singleShot(1200, lambda: first_run_prompt(win.s.settings, win))
     args = [a for a in argv[1:] if not a.startswith("-")]
     if args:
         if args[0].endswith(".cueproj"):

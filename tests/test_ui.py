@@ -570,3 +570,183 @@ def test_ma3_link_dialog(app, win):
     assert "MA3" in win.link_label.text()
     win.ma3link.cfg.enabled = False
     win.ma3link.apply()
+
+
+def test_temp_release_drag_and_undo(app, win):
+    s = win.s
+    s.snap = False
+    c = win.canvas
+    c.set_view(t0=0, pps=100)
+    pump(app)
+    lane = s.project.lanes[2]
+    cue = s.add_cue(lane.id, 3.0)
+    s.update_cue(cue.id, duration=0.5)
+    pump(app)
+    idx = [l.id for l in s.project.lanes].index(lane.id)
+    y = lane_y(win, idx) + 12                  # lower part of the lane, over the hold bar
+    xe = int(c.x_of(3.5))
+    assert c.hit_temp_end(QPoint(xe, y)) == cue.id
+    assert c.hit_temp_end(QPoint(int(c.x_of(3.0)), y)) is None      # the start is the cue, not the end
+    QTest.mousePress(c, Qt.LeftButton, Qt.NoModifier, QPoint(xe, y))
+    QTest.mouseMove(c, QPoint(xe + 60, y))
+    QTest.mouseMove(c, QPoint(xe + 100, y))
+    QTest.mouseRelease(c, Qt.LeftButton, Qt.NoModifier, QPoint(xe + 100, y))
+    pump(app)
+    got = s.project.cue(cue.id)
+    assert abs(got.duration - 1.5) < 0.02 and abs(got.time - 3.0) < 1e-6     # start didn't move
+    win._undo()
+    assert abs(s.project.cue(cue.id).duration - 0.5) < 1e-6
+
+
+def test_cue_list_follows_playhead(app, win):
+    s = win.s
+    a, b = s.project.lanes[0], s.project.lanes[1]
+    c1 = s.add_cue(a.id, 1.0)
+    c2 = s.add_cue(a.id, 4.0)
+    t1 = s.add_cue(b.id, 2.0)
+    s.update_cue(t1.id, duration=1.0)
+    table = win.cue_table
+    state, latest = table.active_cues(2.2)
+    assert state.get(c1.id) == "on" and state.get(t1.id) == "fired" and latest == t1.id
+    state, latest = table.active_cues(3.5)
+    assert state == {c1.id: "on"}                     # the Temp released at 3.0
+    state, _ = table.active_cues(4.1)
+    assert state.get(c2.id) == "fired" and c1.id not in state
+    s.engine.seek(4.1)
+    table._light(force=True)
+    row = table._rows[c2.id]
+    assert table.table.item(row, 0).background().color().alpha() > 0
+    n_undo = len(s.undo._undo) if hasattr(s.undo, "_undo") else None
+    table._light(force=True)                          # styling is not an edit
+    if n_undo is not None:
+        assert len(s.undo._undo) == n_undo
+
+
+def test_bar_one_key_and_filters_count(app, win):
+    s = win.s
+    from cueforge.core.model import BeatGrid, Suggestion
+    s.set_grid(BeatGrid.from_tempo(120, 0.0, 30.0, 4))
+    s.engine.seek(2.55)
+    _key_click(win, Qt.Key_D)
+    pump(app)
+    g = s.project.beat_grid
+    assert g.bar_one == 2.5 and g.confirmed and 2.5 in g.downbeats
+    # the setlist counts only suggestions the filters show
+    s.project.suggestions = [Suggestion(kind="hit", time=1.0, confidence=0.9, reason="t"),
+                             Suggestion(kind="fill", time=2.0, confidence=0.9, reason="t")]
+    s.set_filter("hit", visible=False)
+    pump(app)
+    text = win.setlist.list.item(0).text()
+    assert "1 AI to review" in text
+    assert "hidden by the Suggestion filters" in win.setlist.list.item(0).toolTip()
+    # Reject hidden rejects only what the filters hide
+    win.suggestions._reject_hidden()
+    assert [x.status for x in s.project.suggestions] == ["rejected", "pending"]
+
+
+def test_inspector_tabs_rejoin(app, win):
+    win.pop_out(win.dock_cues)
+    pump(app, 0.2)
+    win.dock_cues.setFloating(False)
+    pump(app, 0.3)
+    assert set(win.tabifiedDockWidgets(win.dock_sugs)) == {win.dock_cues, win.dock_lanes}
+
+
+def test_bulk_import_and_queue(app, win, monkeypatch):
+    s = win.s
+    import shutil
+    folder = win.tmp / "set"
+    (folder / "Two").mkdir(parents=True)
+    shutil.copy(win.tmp / "song.wav", folder / "One.wav")
+    shutil.copy(win.tmp / "song.wav", folder / "Two" / "Two mix.wav")
+    shutil.copy(win.tmp / "click.wav", folder / "Two" / "click.wav")
+    from cueforge.core.bulk import song_groups_from_folder
+    ids = s.add_songs(song_groups_from_folder(str(folder)))
+    assert [s.project.song_by_id(i).name for i in ids] == ["One", "Two"]
+    two = s.project.song_by_id(ids[1])
+    assert {t.name: t.role for t in two.tracks} == {"Two mix": "Track", "click": "Click"}
+    from cueforge.ui.dialogs import AnalysisDialog
+    dlg = AnalysisDialog(s, win, scope="all", song_ids=ids)
+    assert dlg.song_ids() == ids
+    dlg.scope.setCurrentIndex(dlg.scope.findData("all"))
+    assert len(dlg.song_ids()) == 3
+    from cueforge.analysis.pipeline import AnalysisOptions
+    done, prog = [], []
+    s.analysis_done.connect(done.append)
+    s.progress.connect(lambda f, m: prog.append(m))
+    assert s.run_analysis(AnalysisOptions(use_deep_models=False, hits=False, harmony=False, melody=False,
+                                          fills=False), ids)
+    assert not s.run_analysis(AnalysisOptions(), ids)          # one queue at a time
+    wait(app, lambda: done, 240)
+    assert not isinstance(done[0], str), done[0]
+    assert "Analysed 2 of 2 songs" in done[0].log[-1]
+    assert all(s.project.song_by_id(i).analysed for i in ids)
+    assert all(s.project.song_by_id(i).suggestions for i in ids)
+    assert any("Song 2/2" in m for m in prog)
+    assert two.beat_grid.source == "click track"
+
+
+def test_cancel_background_analysis(app, win):
+    s = win.s
+    from cueforge.analysis.pipeline import AnalysisOptions
+    done = []
+    s.analysis_done.connect(done.append)
+    assert s.run_analysis(AnalysisOptions(use_deep_models=False))
+    pump(app, 1.0)
+    s.cancel_analysis()
+    wait(app, lambda: not s.analysis_running(), 15)
+    assert not done and not s.project.suggestions
+
+
+def test_cuepoints_dialog_import_and_undo(app, win):
+    s = win.s
+    p = win.tmp / "cp.txt"
+    p.write_text("Track\tType\tPosition\tCue No\tLabel\tFade\n"
+                 "Song 1\tLighting\t00:00:01:00\t5\tIntro\t0\n"
+                 "Song 1\tLighting\t00:00:03:00\t6\tVerse\t0\n"
+                 "New Tune\tLighting\t02:00:00:00\t1\tGo\t0\n")
+    from cueforge.ui.cuepoints_dialog import CuePointsImportDialog
+    dlg = CuePointsImportDialog(s, str(p), win)
+    assert dlg.preview.rowCount() == 3 and "(new)" in dlg.preview.item(2, 0).text()
+    items, problems = dlg.items()
+    r = s.import_cuepoints(items, dlg.options())
+    assert r["cues"] == 3 and r["songs_created"] == ["New Tune"]
+    assert [round(c.time, 2) for c in s.project.cues] == [1.0, 3.0]
+    nt = next(x for x in s.project.songs if x.name == "New Tune")
+    assert nt.tc_offset == 7200.0 and len(nt.cues) == 1 and nt.cues[0].time == 0.0
+    win._undo()                                       # undo the last song's part: New Tune
+    assert not nt.cues
+    win._undo()
+    assert not s.project.cues
+
+
+def test_ai_models_dialog_and_first_run(app, win, monkeypatch):
+    from cueforge.ui import ai_models_dialog as amd
+    d = amd.AIModelsDialog(win.s.settings, win)
+    assert set(d.boxes) == {"beat_this", "demucs"} and d.keys() == ["beat_this", "demucs"]
+    d.close()
+    shown = []
+    monkeypatch.delenv("CUEFORGE_NO_FIRST_RUN", raising=False)
+    monkeypatch.setattr(amd.addons, "any_installed", lambda: False)
+    monkeypatch.setattr(QMessageBox, "exec", lambda self: shown.append(self.text()) or 0)
+    monkeypatch.setattr(QMessageBox, "clickedButton", lambda self: self.buttons()[-1])   # "Don't ask again"
+    amd.first_run_prompt(win.s.settings, win)
+    assert shown and win.s.settings.get("ai_prompt_done")
+    shown.clear()
+    amd.first_run_prompt(win.s.settings, win)        # not asked twice
+    assert not shown
+
+
+def test_new_project_cancels_analysis(app, win):
+    import glob
+    import tempfile
+    s = win.s
+    from cueforge.analysis.pipeline import AnalysisOptions
+    before = set(glob.glob(os.path.join(tempfile.gettempdir(), "cueforge-analysis-*")))
+    assert s.run_analysis(AnalysisOptions(use_deep_models=False))
+    pump(app, 0.8)
+    s.new_project()
+    assert not s.analysis_running()
+    pump(app, 0.5)
+    assert set(glob.glob(os.path.join(tempfile.gettempdir(), "cueforge-analysis-*"))) <= before
+    assert s.run_analysis(AnalysisOptions()) is False        # nothing to analyse in the new project
