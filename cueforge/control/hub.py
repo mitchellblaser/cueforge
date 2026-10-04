@@ -106,13 +106,16 @@ class ControlHub(QObject):
             return [], []
 
     def open_midi(self) -> None:
-        try:
-            import mido
-        except Exception:
-            return
-        ins, outs = self.midi_ports()
         self._in_name = self._out_name = ""
         self.midi_error = ""
+        try:
+            import mido
+        except Exception as exc:
+            self.midi_error = f"MIDI is not available: {exc}"
+            return
+        ins, outs = self.midi_ports()
+        if (self.cfg.midi_in or self.cfg.midi_out) and not ins and not outs:
+            self.midi_error = "No MIDI ports found: is the controller plugged in (and its driver installed)?"
         if self.cfg.midi_in:
             name = match_port(self.cfg.midi_in, ins) or self.cfg.midi_in
             try:
@@ -164,6 +167,12 @@ class ControlHub(QObject):
 
     def handle_midi(self, msg, t: float) -> None:
         """Map one MIDI message (thread-safe; also used by tests)."""
+        try:
+            self.last_msg = f"{msg.type} · ch {msg.channel + 1} · " + \
+                (f"note {msg.note} vel {msg.velocity}" if hasattr(msg, "note") else
+                 f"cc {msg.control} = {msg.value}" if hasattr(msg, "control") else "")
+        except Exception:
+            pass
         kind = {"note_on": "note", "note_off": "note", "control_change": "cc"}.get(msg.type)
         if kind is None:
             return
@@ -317,18 +326,37 @@ class ControlHub(QObject):
         number gives which colour on your controller. Returns [(note, velocity)]."""
         import mido
         shown = []
+        self.test_error = ""
         if self._out is None:
             return shown
         notes = sorted({m.number for m in self.cfg.mappings() if m.kind == "note"})
+        if not notes:
+            self.test_error = "No pads are mapped (the mapping table has no notes)."
+            return shown
         ch = next((self.feedback_channel(m) for m in self.cfg.mappings() if m.kind == "note"), 0)
         for i, n in enumerate(notes):
             v = min(127, i * step)
             try:
                 self._out.send(mido.Message("note_on", channel=ch, note=n, velocity=v))
-            except Exception:
+            except Exception as exc:
+                self.test_error = f"Sending to '{self._out_name}' failed: {exc}"
                 break
             shown.append((n, v))
+        self.test_channel = ch
         return shown
+
+    def connection_report(self) -> str:
+        """What is actually open, for the settings dialog."""
+        lines = []
+        lines.append(f"Input: {self._in_name} ✓" if self._in is not None else
+                     f"Input: {self.cfg.midi_in or '(none)'} — not open")
+        lines.append(f"Output (pad lights): {self._out_name} ✓" if self._out is not None else
+                     "Output (pad lights): not open")
+        last = getattr(self, "last_msg", "")
+        lines.append(f"Last received: {last}" if last else "Last received: nothing yet — press a pad")
+        if getattr(self, "midi_error", ""):
+            lines.append(f"⚠ {self.midi_error}")
+        return "\n".join(lines)
 
     def send_feedback(self) -> None:
         if self._out is not None:

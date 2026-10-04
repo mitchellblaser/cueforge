@@ -68,6 +68,16 @@ class ControlDialog(QDialog):
         self.hold = QCheckBox("Temp pads: hold time = how long the pad is held (otherwise the Hold box)")
         self.hold.setChecked(cfg.hold_from_press)
         mf.addRow(self.hold)
+        self.conn = QLabel("")
+        self.conn.setWordWrap(True)
+        self.conn.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.conn.setStyleSheet(f"color: {theme.FG_DIM}; font-family: monospace;")
+        mf.addRow(self.conn)
+        from PySide6.QtCore import QTimer
+        self._conn_timer = QTimer(self)
+        self._conn_timer.setInterval(300)
+        self._conn_timer.timeout.connect(lambda: self.conn.setText(self.hub.connection_report()))
+        self._conn_timer.start()
         if not ins and not outs:
             mf.addRow(QLabel(f"<span style='color:{theme.FG_DIM}'>No MIDI ports found. Connect a controller "
                              "and reopen this dialog.</span>"))
@@ -181,16 +191,21 @@ class ControlDialog(QDialog):
         cfg.midi_map = [asdict(m) for m in self.maps]
         self.hub.apply()
         shown = self.hub.test_lights()
+        self.conn.setText(self.hub.connection_report())
         if not shown:
-            why = getattr(self.hub, "midi_error", "") or ""
+            why = getattr(self.hub, "test_error", "") or getattr(self.hub, "midi_error", "") or ""
             if not why and not cfg.midi_in and not cfg.midi_out:
                 why = "Choose your controller as Input (and Output) first."
             elif not why:
-                why = "The output port didn't open. Choose your controller as Output (pad lights)."
+                why = ("No output port is open (see the connection lines above). Choose your controller as "
+                       "Output (pad lights).")
             self.learn_label.setText(f"<span style='color:#ffb74d'>No pad lights sent.</span> {why}")
             return
-        self.learn_label.setText("Pads lit with LED values: " + ", ".join(f"note {n} = {v}" for n, v in shown[:16])
-                                 + ". Note the colours you like and type them into Pad light.")
+        ch = getattr(self.hub, "test_channel", 0) + 1
+        self.learn_label.setText(f"Sent {len(shown)} pad lights to '{self.hub._out_name}' on MIDI channel {ch}: "
+                                 + ", ".join(f"note {n} = {v}" for n, v in shown[:16])
+                                 + ". If nothing lit up, the controller isn't listening on that channel — "
+                                 "check its MIDI settings (Midi Fighter Utility).")
 
     def _add(self) -> None:
         nxt = max((m.number for m in self.maps if m.kind == "note"), default=35) + 1
