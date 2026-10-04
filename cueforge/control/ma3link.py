@@ -56,15 +56,32 @@ class LinkSettings:
     cmd_label_seq: str = 'Label Sequence {seq} "{label}"'
 
 
-def fix_file_lua(path: str, fix_src: str) -> str:
-    """One `Lua "…"` command: on the console, fill each @SEQn@ in the timecode file with
-    that sequence's real address, before the file is imported."""
+def fixer_script(xml_path: str, slot: int, fix_src: str) -> str:
+    """Lua run on the console: fill the @SEQn@ / @CUEn:c@ markers in the timecode file with
+    the console's own addresses, then delete + import the timecode itself (so the import
+    can never run before the file is fixed). Prints what it did to the System Monitor."""
+    p = xml_path.replace("\\", "/")
+    fname = os.path.basename(xml_path)
+    return (fix_src + "\n" +
+            f"local p = [[{p}]]\n"
+            "local f = io.open(p, 'r')\n"
+            "if not f then ErrPrintf('CueForge: cannot read %s', p) return end\n"
+            "local x = f:read('*a') f:close()\n"
+            "local _, n = x:gsub('@[SC][EU][QE]%d', '')\n"
+            "x = cf_fix(x)\n"
+            "f = io.open(p, 'w') f:write(x) f:close()\n"
+            f"Cmd('Delete Timecode {slot} /NoConfirm')\n"
+            f"Cmd('Import Timecode {slot} /File \"{fname}\" /NoConfirm')\n"
+            f"Printf('CueForge: Timecode {slot} imported, %d sequence/cue addresses filled in', n)\n")
+
+
+def run_file_lua(path: str) -> str:
+    """A short `Lua "…"` command that runs a Lua file (no long code on the command line)."""
     p = path.replace("\\", "/")
-    body = (fix_src + f"local p = [[{p}]] local f = io.open(p, 'r') "
-            "if not f then ErrPrintf('CueForge: cannot read %s', p) return end "
-            "local x = f:read('*a') f:close() f = io.open(p, 'w') f:write(cf_fix(x)) f:close()")
-    assert '"' not in body
-    return f'Lua "{body}"'
+    return (f'Lua "local f = io.open([[{p}]]) if not f then ErrPrintf([[CueForge: cannot open {p}]]) return end '
+            "local s = f:read('*a') f:close() local fn, e = load(s) "
+            "if not fn then ErrPrintf('CueForge: %s', tostring(e)) return end "
+            "local ok, e2 = pcall(fn) if not ok then ErrPrintf('CueForge: %s', tostring(e2)) end\"")
 
 
 def _q(text: str) -> str:
@@ -432,10 +449,15 @@ class MA3Link(QObject):
                 except OSError as exc:
                     self.status.emit(f"Timecode push failed: {exc}")
                     return []
-                cmds += [fix_file_lua(path, SEQ_FIX_LUA),
-                         f"Delete Timecode {song.ma3_timecode} /NoConfirm",
-                         f'Import Timecode {song.ma3_timecode} /File "{fname}" /NoConfirm']
+                script = os.path.join(folder, f"CueForge_{song.ma3_timecode}_import.lua")
+                try:
+                    with open(script, "w", encoding="utf-8") as f:
+                        f.write(fixer_script(path, song.ma3_timecode, SEQ_FIX_LUA))
+                except OSError as exc:
+                    self.status.emit(f"Timecode push failed: {exc}")
+                    return []
+                cmds.append(run_file_lua(os.path.abspath(script)))   # fills addresses, then imports
         for c in cmds:
             self.send(c)
-        self.status.emit(f"Timecode pushed ({len(cmds) // 3} song(s))")
+        self.status.emit(f"Timecode pushed ({len(cmds)} song(s))")
         return cmds
