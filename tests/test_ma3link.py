@@ -226,11 +226,14 @@ def test_timecode_push_goes_over_the_network(link, tmp_path):
     cmds = link.push_timecode()
     assert len(cmds) >= 2 and all(c.startswith('Lua "') and c.endswith('"') for c in cmds)
     assert all(c.count('"') == 2 and "@" not in c and "%" not in c for c in cmds)   # command-line safe
-    assert "load(table.concat" in cmds[-1]
+    assert "load(CF_D(h))" in cmds[-1] and len(cmds[-1]) <= 200
     assert not (tmp_path / "nowhere").exists() and not (tmp_path / "timecodes").exists()
-    assert all(len(c) < 3000 for c in cmds)                   # fits a UDP packet easily
+    assert all(len(c) <= 200 for c in cmds)                   # MA cuts long command lines off
     msgs = received(link.rx)
     assert [m[1] for m in msgs][-len(cmds):] == cmds
+    link.cfg.max_cmd = 150                                    # adjustable for a stricter console
+    short = link.push_timecode()
+    assert max(len(c) for c in short[1:-2]) <= 150 and len(short) > len(cmds)
 
 
 def test_all_songs_sync(link):
@@ -362,18 +365,38 @@ def test_network_push_writes_on_console_and_imports(tmp_path):
     from cueforge.control.ma3link import import_script, push_commands
     from cueforge.export.ma3 import SEQ_FIX_LUA
     xml = '<a Object="@SEQ5@" V="@CUE5:2.5@" q="it\'s &quot;x&quot;"/><b V="@CUE5:9@"/>' + "<pad/>" * 400
-    cmds = push_commands(import_script(xml, 3, SEQ_FIX_LUA), "CueForge_push_3.hex")
-    assert len(cmds) > 3                                       # several chunks
+    cmds = push_commands(import_script(xml, 3, SEQ_FIX_LUA))
+    assert len(cmds) > 5                                       # several pieces
     out, tc = _console_run(tmp_path, cmds)
     got = (tc / "CueForge_3.xml").read_text()
     assert got.startswith('<a Object="S5" V="S5.2" q="it\'s &quot;x&quot;"/><b V=""/>')   # console's own addresses
     assert "cue 9 not found" in out
     assert out.index("CMD Import Timecode 3") > out.index("ERR")         # import after the fix
     assert "Timecode 3 imported, 3 sequence/cue addresses filled in" in out
-    assert not (tc / "CueForge_push_3.hex").exists()                     # cleaned up
     # a lost packet is caught instead of importing a broken file
-    out, tc = _console_run(tmp_path / "lost", cmds[:1] + cmds[2:])
-    assert "push incomplete" in out and "CMD Import" not in out
+    for lost in (2, len(cmds) - 3):                                      # one in the middle, the last piece
+        out, tc = _console_run(tmp_path / f"lost{lost}", cmds[:lost] + cmds[lost + 1:])
+        assert "lost data, push again" in out and "CMD Import" not in out
+
+
+def test_network_push_of_a_real_song_arrives_intact(link, tmp_path):
+    """The packed XML expands on the console to exactly what CueForge built."""
+    from cueforge.control.ma3link import import_script, push_commands
+    from cueforge.export.ma3 import SEQ_FIX_LUA, build_ma3_xml
+    p = link.s.project
+    for k in range(40):
+        p.cues.append(Cue(lane_id=p.lanes[k % 2].id, time=10 + k * 0.75, label=f'Hit "{k}"',
+                          duration=0.25 if k % 3 == 0 else None))
+    p.sort_cues()
+    xml = build_ma3_xml(p, placeholders=True)
+    cmds = push_commands(import_script(xml, 4, SEQ_FIX_LUA))
+    out, tc = _console_run(tmp_path, cmds)
+    got = (tc / "CueForge_4.xml").read_text()
+    import re
+    flat = "\n".join(line.lstrip("\t") for line in xml.split("\n"))          # indentation is dropped
+    no_addr = lambda s: re.sub(r'(Object|ValCueDestination)="[^"]*"', "", s)   # addresses get filled in
+    assert no_addr(got) == no_addr(flat) and "@SEQ" not in got
+    ET.fromstring(got)                                          # still valid XML
 
 
 def test_fades_sync_to_console(link):

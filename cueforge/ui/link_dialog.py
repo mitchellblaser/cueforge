@@ -26,9 +26,10 @@ TEST_CMD = 'Lua "Printf(\'CueForge link OK\')"'   # harmless: only prints on the
 
 def short_cmd(cmd: str) -> str:
     """Log text for a command: the timecode push's long Lua chunks shown as one short line."""
+    if cmd.startswith('Lua "CF_P=CF_P or {} CF_P['):
+        return "Lua … timecode piece " + cmd.split("[", 1)[1].split("]", 1)[0]
     if cmd.startswith('Lua "') and len(cmd) > 160:
-        what = "run pushed file" if "load(table.concat" in cmd else "send chunk"
-        return f"Lua … {what} ({len(cmd)} chars)"
+        return f"Lua … ({len(cmd)} chars)"
     return cmd
 
 
@@ -84,6 +85,12 @@ class LinkDialog(QDialog):
             e = QLineEdit(getattr(c, "cmd_" + key))
             self.tpl[key] = e
             f3.addRow(name, e)
+        self.max_cmd = QSpinBox()
+        self.max_cmd.setRange(120, 4000)
+        self.max_cmd.setValue(int(c.max_cmd or 200))
+        self.max_cmd.setToolTip("The timecode push splits its data into commands no longer than this. "
+                                "Lower it if the console reports 'unfinished string'.")
+        f3.addRow("Longest push command", self.max_cmd)
         reset = QPushButton("Defaults")
         reset.clicked.connect(lambda: [e.setText(getattr(LinkSettings, "cmd_" + k)) for k, e in self.tpl.items()])
         f3.addRow(reset)
@@ -132,6 +139,7 @@ class LinkDialog(QDialog):
         c.pin_numbers = self.pin.isChecked()
         for k, e in self.tpl.items():
             setattr(c, "cmd_" + k, e.text().strip() or getattr(LinkSettings, "cmd_" + k))
+        c.max_cmd = self.max_cmd.value()
         self.link.save()
         self.link.apply()
 

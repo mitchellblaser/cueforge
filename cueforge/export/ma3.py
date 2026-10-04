@@ -177,16 +177,20 @@ SEQ_FIX_LUA = (
 )
 
 
+# The same on every event (the network push sends it once and expands it on the console)
+RC_HEAD = '<RealtimeCmd Type="Key" Source="Original" UserProfile="0" User="1" '
+RC_FLAGS = ('IsRealtime="0" IsXFade="0" IgnoreFollow="0" IgnoreCommand="0" Assert="0" IgnoreNetwork="0" '
+            'FromTriggerNode="0" IgnoreExecTime="0" IssuedByTimecode="0" FromLocalHardwareFader="1" '
+            'IgnoreExecXFade="0" IsExecXFade="0" ')
+
+
 def _event(name: str, t: float, token: str, status: str, seq: int, cue: float,
            placeholders: bool = False) -> list[str]:
     obj = f"@SEQ{seq}@" if placeholders else _seq_handle(seq)
     dest = f"@CUE{seq}:{cue:g}@" if placeholders else f"{obj}.{int(round(cue * 1000))}"
     return [f'\t\t\t\t\t\t<CmdEvent Name={quoteattr(token)} Time="{_fmt_time(t)}" '
             f'CueDestination={quoteattr(name)}>',
-            f'\t\t\t\t\t\t\t<RealtimeCmd Type="Key" Source="Original" UserProfile="0" User="1" '
-            f'Status="{status}" IsRealtime="0" IsXFade="0" IgnoreFollow="0" IgnoreCommand="0" Assert="0" '
-            f'IgnoreNetwork="0" FromTriggerNode="0" IgnoreExecTime="0" IssuedByTimecode="0" '
-            f'FromLocalHardwareFader="1" IgnoreExecXFade="0" IsExecXFade="0" Object="{obj}" '
+            f'\t\t\t\t\t\t\t{RC_HEAD}Status="{status}" {RC_FLAGS}Object="{obj}" '
             f'ExecToken="{token}" ValCueDestination="{dest}"/>',
             '\t\t\t\t\t\t</CmdEvent>']
 
