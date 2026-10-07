@@ -5,6 +5,7 @@ import time
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout,
+                               QGroupBox,
                                QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPlainTextEdit, QPushButton,
                                QSpinBox, QVBoxLayout, QWidget)
 
@@ -637,27 +638,172 @@ class LTCDialog(QDialog):
 
 
 class AudioDeviceDialog(QDialog):
+    """Audio setup: playback device and channels, and live LTC timecode output."""
+
     def __init__(self, session, parent=None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Audio output")
+        self.setWindowTitle("Audio setup")
+        self.setMinimumWidth(560)
         self.s = session
-        form = QFormLayout(self)
-        self.dev = QComboBox()
-        self.dev.addItem("System default", None)
-        for idx, name in list_output_devices():
-            self.dev.addItem(name, idx)
-        self.dev.setCurrentIndex(max(0, self.dev.findData(session.engine.device)))
-        form.addRow("Output device", self.dev)
-        status = session.engine.backend
-        if session.engine.error:
-            status += f" — {session.engine.error}"
-        form.addRow("Status", QLabel(status))
-        form.addRow(_buttons(self))
+        g = session.settings.get
+        self.devices = list_output_devices()
+        lay = QVBoxLayout(self)
+
+        box = QGroupBox("Playback")
+        f = QFormLayout(box)
+        self.dev = self._device_combo(g("output_device"))
+        f.addRow("Output device", self.dev)
+        self.mix = QComboBox()
+        f.addRow("Mix on", self.mix)
+        lay.addWidget(box)
+
+        box2 = QGroupBox("Live timecode (LTC)")
+        f2 = QFormLayout(box2)
+        self.ltc_mode = QComboBox()
+        for key, text in (("off", "Off"), ("same", "On a channel of the playback device"),
+                          ("device", "On a second audio device")):
+            self.ltc_mode.addItem(text, key)
+        self.ltc_mode.setCurrentIndex(max(0, self.ltc_mode.findData(g("ltc_mode") or "off")))
+        f2.addRow("Send LTC", self.ltc_mode)
+        self.ltc_dev = self._device_combo(g("ltc_device"))
+        f2.addRow("LTC device", self.ltc_dev)
+        self.ltc_ch = QComboBox()
+        f2.addRow("LTC channel", self.ltc_ch)
+        self.level = QDoubleSpinBox()
+        self.level.setRange(-40.0, 0.0)
+        self.level.setSuffix(" dBFS")
+        self.level.setValue(float(g("ltc_level_db", -12.0)))
+        f2.addRow("LTC level", self.level)
+        striped = QPushButton("Striped: audio on the left, LTC on the right")
+        striped.setToolTip("Mono mix on channel 1 and timecode on channel 2 of the playback device, "
+                           "e.g. for a stereo cable into a console's LTC input and a PA feed")
+        striped.clicked.connect(self._striped)
+        f2.addRow(striped)
+        p = session.project
+        info = QLabel(f"LTC runs while CueForge plays, locked to the playhead, at the project frame rate "
+                      f"(<b>{p.frame_rate.label}</b>) from each song's start timecode (this song: "
+                      f"<b>{seconds_to_tc(p.tc_offset, p.frame_rate)}</b>). It is silent while stopped, so "
+                      f"the console holds its timecode. Its channel carries nothing else.")
+        info.setWordWrap(True)
+        info.setStyleSheet(f"color: {theme.FG_DIM};")
+        f2.addRow(info)
+        lay.addWidget(box2)
+
+        self.warn = QLabel()
+        self.warn.setWordWrap(True)
+        self.warn.setStyleSheet("color: #ffb74d;")
+        lay.addWidget(self.warn)
+        e = session.engine
+        status = {"sounddevice": "Playing through the audio device", "silent": "No output device (silent)",
+                  "none": "Idle (opens when you press Play)"}.get(e.backend, e.backend)
+        if e.error:
+            status += f": {e.error}"
+        if e.ltc_error:
+            status += f"\nLTC device: {e.ltc_error}"
+        st = QLabel(status)
+        st.setWordWrap(True)
+        st.setStyleSheet(f"color: {theme.FG_DIM};")
+        lay.addWidget(st)
+        self.bb = _buttons(self)
+        lay.addWidget(self.bb)
+
+        self._fill_mix(g("mix_channels") or (0, 1))
+        self._fill_ltc_channels(int(g("ltc_channel", 1)))
+        self.dev.currentIndexChanged.connect(lambda: (self._fill_mix(self.mix_channels()),
+                                                      self._fill_ltc_channels(self.ltc_ch.currentData())))
+        self.ltc_dev.currentIndexChanged.connect(lambda: self._fill_ltc_channels(self.ltc_ch.currentData()))
+        self.ltc_mode.currentIndexChanged.connect(lambda: self._fill_ltc_channels(self.ltc_ch.currentData()))
+        self.mix.currentIndexChanged.connect(self._check)
+        self.ltc_ch.currentIndexChanged.connect(self._check)
+        self._check()
+
+    def _device_combo(self, current) -> QComboBox:
+        c = QComboBox()
+        c.addItem("System default", None)
+        for idx, name in self.devices:
+            c.addItem(name, idx)
+        c.setCurrentIndex(max(0, c.findData(current)))
+        c.setMinimumContentsLength(30)
+        return c
+
+    @staticmethod
+    def _channels(device) -> int:
+        from ..audio.engine import device_channels
+        return device_channels(device)
+
+    @staticmethod
+    def _key(chans) -> str:
+        return ",".join(str(int(c)) for c in chans)
+
+    def mix_channels(self) -> tuple[int, ...]:
+        d = self.mix.currentData()
+        return tuple(int(c) for c in d.split(",")) if d else (0, 1)
+
+    def set_mix(self, chans) -> None:
+        self.mix.setCurrentIndex(max(0, self.mix.findData(self._key(chans))))
+
+    def _fill_mix(self, current) -> None:
+        n = self._channels(self.dev.currentData())
+        self.mix.blockSignals(True)
+        self.mix.clear()
+        for a in range(0, n - 1, 2):
+            self.mix.addItem(f"Channels {a + 1}–{a + 2} (stereo)", self._key((a, a + 1)))
+        for a in range(n):
+            self.mix.addItem(f"Channel {a + 1} (mono)", self._key((a,)))
+        i = self.mix.findData(self._key(current or (0, 1)))
+        self.mix.setCurrentIndex(max(0, i))
+        self.mix.blockSignals(False)
+        self._check()
+
+    def _fill_ltc_channels(self, current) -> None:
+        mode = self.ltc_mode.currentData()
+        dev = self.dev.currentData() if mode == "same" else self.ltc_dev.currentData()
+        n = self._channels(dev)
+        self.ltc_ch.blockSignals(True)
+        self.ltc_ch.clear()
+        for a in range(n):
+            self.ltc_ch.addItem(f"Channel {a + 1}", a)
+        self.ltc_ch.setCurrentIndex(max(0, self.ltc_ch.findData(current if current is not None else 1)))
+        self.ltc_ch.blockSignals(False)
+        on = mode != "off"
+        self.ltc_dev.setEnabled(mode == "device")
+        self.ltc_ch.setEnabled(on)
+        self.level.setEnabled(on)
+        self._check()
+
+    def _striped(self) -> None:
+        self.ltc_mode.setCurrentIndex(self.ltc_mode.findData("same"))
+        self.set_mix((0,))
+        self.ltc_ch.setCurrentIndex(max(0, self.ltc_ch.findData(1)))
+        self._check()
+
+    def _problem(self) -> str:
+        mode = self.ltc_mode.currentData()
+        mix = self.mix_channels()
+        if mode == "same" and self.ltc_ch.currentData() in mix:
+            return "The LTC channel is also used by the mix: choose another channel, or a mono mix."
+        if mode == "device" and self.ltc_dev.currentData() == self.dev.currentData():
+            return ("The LTC device is the playback device: choose \"On a channel of the playback device\" "
+                    "instead, or a different device.")
+        return ""
+
+    def _check(self) -> None:
+        msg = self._problem()
+        self.warn.setText(msg)
+        self.warn.setVisible(bool(msg))
+        self.bb.button(QDialogButtonBox.Ok).setEnabled(not msg)
 
     def accept(self) -> None:
-        d = self.dev.currentData()
-        self.s.engine.set_device(d)
-        self.s.settings.set("output_device", d)
+        if self._problem():
+            return
+        st = self.s.settings
+        st.set("output_device", self.dev.currentData())
+        st.set("mix_channels", list(self.mix_channels()))
+        st.set("ltc_mode", self.ltc_mode.currentData())
+        st.set("ltc_device", self.ltc_dev.currentData())
+        st.set("ltc_channel", int(self.ltc_ch.currentData() if self.ltc_ch.currentData() is not None else 1))
+        st.set("ltc_level_db", self.level.value())
+        self.s.apply_audio_settings()
         super().accept()
 
 

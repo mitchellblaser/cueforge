@@ -561,7 +561,7 @@ class MainWindow(QMainWindow):
         ex.addAction(self._act("LTC timecode audio…", self.export_ltc))
         f.addSeparator()
         f.addAction(self._act("Project settings (frame rate, TC offset)…", self.project_settings))
-        f.addAction(self._act("Audio output…", self.audio_device))
+        f.addAction(self._act("Audio setup (output, LTC)…", self.audio_device))
         f.addAction(self._act("MIDI && OSC control…", self.control_settings))
         f.addAction(self._act("grandMA3 live link…", self.link_settings, "Ctrl+L"))
         f.addSeparator()
@@ -970,6 +970,9 @@ class MainWindow(QMainWindow):
             self.a_play.setText(txt)
         backend = {"sounddevice": "Audio: OK", "silent": "Audio: no output device (silent)",
                    "none": "Audio: idle"}.get(eng.backend, eng.backend)
+        if eng.ltc_mode != "off":
+            backend += (f" · LTC: {eng.ltc_error[:40]}" if eng.ltc_error
+                        else f" · LTC on ch {eng.ltc_channel + 1}")
         if self.audio_label.text() != backend:
             self.audio_label.setText(backend)
 

@@ -436,3 +436,71 @@ def test_ma3_xml_round_trip_in_ma_layout():
     times = sorted(cue.time for _, _, cue in got)
     assert times[0] == 1.0 and any(cue.duration == 0.5 for _, _, cue in got)
     assert all(cue.number is not None for _, _, cue in got)
+
+
+def _decoded_seconds(sig, rate, sr=48000):
+    from cueforge.export.ltc import decode_ltc
+    from cueforge.core.timecode import tc_to_frame_count
+    fr = decode_ltc(sig, sr, rate)
+    assert fr
+    out = []
+    for i, h, m, s, f in fr:
+        out.append((i, tc_to_frame_count(h, m, s, f, rate) / rate.fps))
+    return out
+
+
+def test_live_ltc_striped_on_the_playback_device():
+    """Mono mix on channel 1, LTC on channel 2, sample-locked to the song position."""
+    from cueforge.core.timecode import get_rate
+    e = _engine_with([("a", 0.25, 48000 * 30)])
+    e.ltc.rate, e.ltc.offset = get_rate("25"), 3600.0
+    e.mix_channels, e.ltc_mode, e.ltc_channel = (0,), "same", 1
+    assert e.out_channels() == 2
+    e.seek(10.0)
+    e._playing = True
+    blocks = []
+    for _ in range(40):
+        mix, ltc = e._next_blocks(1024, 0.0, with_ltc=True)
+        blocks.append(e.route(mix, ltc, e.out_channels()))
+    e._playing = False
+    out = np.concatenate(blocks)
+    assert np.allclose(out[:, 0], 0.25)                          # mono mix on the left only
+    for i, t in _decoded_seconds(out[:, 1], e.ltc.rate):
+        assert abs(t - (3600.0 + 10.0 + i / 48000)) < 1.5 / 48000 * 25   # frame starts on its sample
+    # stopped: the timecode channel goes silent so the console holds
+    mix, ltc = e._next_blocks(512, 0.0, with_ltc=True)
+    assert not ltc.any()
+
+
+def test_live_ltc_on_a_second_device_follows_the_clock(monkeypatch):
+    import types
+    from cueforge.audio import engine as engine_mod
+    from cueforge.core.timecode import get_rate
+    now = [50.0]
+    monkeypatch.setattr(engine_mod, "time", types.SimpleNamespace(perf_counter=lambda: now[0]))
+    e = _engine_with([("a", 0.0, 48000 * 60)])
+    e.ltc.rate, e.ltc.offset = get_rate("30"), 0.0
+    e._playing = True
+    e._set_clock(20.0, 0.0)                     # song time 20 s is heard now
+    sig = []
+    for _ in range(30):
+        sig.append(e.ltc_block(256, 0.01))      # blocks heard 10 ms from now
+        now[0] += 256 / 48000
+        e._set_clock(e.position(), 0.0)
+    times = _decoded_seconds(np.concatenate(sig), e.ltc.rate)
+    for i, t in times:
+        assert abs(t - (20.01 + i / 48000)) < 0.002
+    e._set_clock(5.0, 0.0)                      # a seek: followed at once
+    t0 = e._ltc_t
+    e.ltc_block(256, 0.0)
+    assert abs(e._ltc_t - (5.0 + 256 / 48000)) < 1e-6 and t0 > 20
+
+
+def test_route_stereo_pair_and_mono():
+    e = AudioEngine()
+    mix = np.column_stack([np.full(4, 0.2, np.float32), np.full(4, 0.4, np.float32)])
+    e.mix_channels = (2, 3)
+    out = e.route(mix, None, 4)
+    assert np.allclose(out[:, 2], 0.2) and np.allclose(out[:, 3], 0.4) and not out[:, :2].any()
+    e.mix_channels = (0,)
+    assert np.allclose(e.route(mix, None, 2)[:, 0], 0.3)

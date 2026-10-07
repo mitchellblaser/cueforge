@@ -13,7 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from PySide6.QtCore import QPoint, Qt
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QDialog, QFileDialog, QMessageBox
+from PySide6.QtWidgets import QApplication, QDialog, QDialogButtonBox, QFileDialog, QMessageBox
 
 from cueforge.analysis.pipeline import AnalysisOptions
 from cueforge.core.settings import UserSettings
@@ -1243,3 +1243,25 @@ def test_midifighter_colours():
     assert midifighter_velocity("#00ffff") == 75            # cyan 73-78 (not green)
     assert midifighter_velocity("#ffd000", dim=True) == 45
     assert midifighter_velocity("#eeeeee") == MF_WHITE
+
+
+def test_audio_setup_dialog_ltc(app, win):
+    s = win.s
+    d = dialogs.AudioDeviceDialog(s, win)
+    d._striped()
+    assert d.ltc_mode.currentData() == "same" and d.mix_channels() == (0,) and d.ltc_ch.currentData() == 1
+    assert d.bb.button(QDialogButtonBox.Ok).isEnabled()
+    d.set_mix((0, 1))                                        # stereo mix on 1-2 clashes with LTC on 2
+    assert "LTC channel" in d.warn.text() and not d.bb.button(QDialogButtonBox.Ok).isEnabled()
+    d.set_mix((0,))
+    d.level.setValue(-18)
+    d.accept()
+    assert s.settings.get("ltc_mode") == "same" and s.settings.get("mix_channels") == [0]
+    e = s.engine
+    assert (e.ltc_mode, e.ltc_channel, e.mix_channels, e.ltc.level_db) == ("same", 1, (0,), -18)
+    assert e.ltc.rate == s.project.frame_rate
+    d = dialogs.AudioDeviceDialog(s, win)                    # reopens with the saved setup
+    assert d.ltc_mode.currentData() == "same" and d.mix_channels() == (0,)
+    d.ltc_mode.setCurrentIndex(d.ltc_mode.findData("off"))
+    d.accept()
+    assert e.ltc_mode == "off"

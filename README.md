@@ -48,6 +48,7 @@ as timecode XML, or **live over the network** while you work.
 - Mix, **stems**, click and guide tracks, each with its own fader, mute and solo
 - A **beat grid** from the click track or the audio, which follows tempo drift in live recordings
 - Scrub, loop, slow playback, and **cue blips** so you hear whether hits land
+- **Live LTC out** while you play: striped (audio L, timecode R), any channel, or a second interface
 - A **setlist** of songs in one project, each with its own start timecode
 
 </td>

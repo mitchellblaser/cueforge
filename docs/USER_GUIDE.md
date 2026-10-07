@@ -77,9 +77,28 @@ two extra AI models (about 600 MB, once).
 
 If the models ever fail to load, CueForge quietly uses the built-in analysis instead.
 
-### Choosing the audio output
+### Audio setup and live timecode (LTC)
 
-Use **File › Audio output…** to pick which sound card or interface CueForge plays through.
+**File › Audio setup (output, LTC)…** chooses where CueForge plays and whether it sends
+timecode while it plays.
+
+- **Output device** and **Mix on**: the sound card or interface, and which of its outputs get
+  the mix: a stereo pair (1–2, 3–4 …) or a single channel in mono.
+- **Send LTC** sends live SMPTE timecode, locked to the playhead, so a console (or anything
+  else that chases LTC) follows CueForge:
+  - **On a channel of the playback device**: e.g. channel 3 of a multi-channel interface, or
+    the **Striped** button: a mono mix on the left and LTC on the right of an ordinary stereo
+    output. One cable carries both; split it to the PA and the console's LTC input.
+  - **On a second audio device**: a separate interface (a USB dongle is enough) just for the
+    timecode, on the channel you choose.
+- LTC uses the project frame rate and each song's start timecode, follows loops, jumps and
+  speed changes, and is silent while stopped, so the console holds where it was. The LTC
+  channel carries nothing else; CueForge won't let you put the mix on it.
+- **LTC level** is the output level (−12 dBFS suits most line inputs).
+- The status bar shows "LTC on ch N" while it's on, or the error if the second device didn't
+  open.
+
+These settings belong to the computer, not the project.
 
 ---
 
@@ -670,7 +689,8 @@ back lane names, colours, the active lane, the song name, and timecode while pla
 ### Exports (File › Export)
 
 - **CSV cue list** – for paperwork. Can include the whole setlist with a Song column.
-- **LTC timecode audio** – a SMPTE timecode WAV for playback systems. Optionally stereo
+- **LTC timecode audio** – a SMPTE timecode WAV for playback systems (to send timecode
+  live while CueForge plays, see *Audio setup and live timecode* in section 2). Optionally stereo
   with the song on the left and LTC on the right. Add pre-roll so the console locks before
   the song starts.
 
@@ -703,7 +723,7 @@ back lane names, colours, the active lane, the song name, and timecode while pla
 
 | Problem | Try |
 |---|---|
-| No sound | **File › Audio output…** – pick the right device. Check Master, mute and solo. |
+| No sound | **File › Audio setup…** – pick the right device and *Mix on* channels. Check Master, mute and solo. |
 | Cues land slightly late or early | Check the beat grid is accepted and Snap is set to the resolution you want. Use **Grid › Shift grid 1 frame** if the whole grid is off. |
 | Bar numbers are off by a beat | Press **D** on the "one" while playing, or **Ctrl+Alt+← / →**. Then *Re-analyse with the new bars*. |
 | Grid is double / half speed | **Grid › Halve tempo** / **Double tempo**. |

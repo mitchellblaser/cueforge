@@ -62,9 +62,7 @@ class Session(QObject):
         super().__init__()
         self.settings = settings or UserSettings()
         self.engine = AudioEngine()
-        dev = self.settings.get("output_device")
-        if dev is not None:
-            self.engine.device = dev
+        self.apply_audio_settings(open_now=False)
         self.audio: dict[str, AudioData] = {}
         self.load_errors: dict[str, str] = {}
         self.sel_cues: set[str] = set()
@@ -421,9 +419,27 @@ class Session(QObject):
         self._touch()
         self.mixer_changed.emit()
 
+    AUDIO_KEYS = ("output_device", "mix_channels", "ltc_mode", "ltc_device", "ltc_channel", "ltc_level_db")
+
+    def apply_audio_settings(self, open_now: bool = True) -> None:
+        """Output device, channel routing and live LTC from this computer's settings."""
+        g = self.settings.get
+        e = self.engine
+        fields = dict(device=g("output_device"), mix_channels=tuple(g("mix_channels") or (0, 1)),
+                      ltc_mode=g("ltc_mode") or "off", ltc_device=g("ltc_device"),
+                      ltc_channel=int(g("ltc_channel", 1)))
+        e.ltc.level_db = float(g("ltc_level_db", -12.0))
+        if open_now:
+            e.configure(**fields)
+        else:
+            for k, v in fields.items():
+                setattr(e, k, v)
+
     def _sync_engine(self) -> None:
         m = self.project.mixer
         g = self.project.beat_grid
+        self.engine.ltc.rate = self.project.frame_rate
+        self.engine.ltc.offset = self.project.tc_offset
         self.engine.master_gain = db_to_gain(m.master_db)
         self.engine.set_click(g.beats, g.downbeats, m.click_enabled, m.click_db)
         self.engine.set_blips([c.time for c in self.project.cues], m.blips_enabled, m.blips_db)

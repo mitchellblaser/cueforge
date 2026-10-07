@@ -13,6 +13,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from .loader import ENGINE_SR
+from .ltc_live import LtcGenerator
 from .sounds import blip_sound, click_sounds
 
 BLOCK = 1024           # ~21 ms at 48 kHz: robust against short stalls in the UI thread
@@ -63,6 +64,15 @@ class AudioEngine:
         self.latency = 0.0
 
         self.device = None              # sounddevice device index/name or None for default
+        self.mix_channels: tuple[int, ...] = (0, 1)   # output channels (0-based): L, R, or one = mono
+        # live timecode: "off", "same" (a channel of the main device) or "device" (its own device)
+        self.ltc_mode = "off"
+        self.ltc_device = None
+        self.ltc_channel = 1
+        self.ltc = LtcGenerator()
+        self.ltc_error = ""
+        self._ltc_stream = None
+        self._ltc_t: float | None = None
         self._stream = None
         self._fallback_thread: threading.Thread | None = None
         self._fallback_stop = threading.Event()
@@ -308,6 +318,13 @@ class AudioEngine:
             self._cb_pos, self._cb_wall = pred + 0.08 * err, wall
 
     def _next_block(self, frames: int, lat: float | None = None) -> np.ndarray:
+        return self._next_blocks(frames, lat)[0]
+
+    def _next_blocks(self, frames: int, lat: float | None = None,
+                     with_ltc: bool = False) -> tuple[np.ndarray, np.ndarray | None]:
+        """The next block of the mix, and (with_ltc) the LTC that goes with it, sample for
+        sample (silent while stopped)."""
+        ltc = np.zeros(frames, np.float32) if with_ltc else None
         with self._lock:
             if not self._playing:
                 out = np.zeros((frames, 2), np.float32)
@@ -315,7 +332,7 @@ class AudioEngine:
                     m = min(frames, len(self._scrub_buf))
                     out[:m] = self._scrub_buf[:m]
                     self._scrub_buf = self._scrub_buf[m:]
-                return out
+                return out, ltc
             out = np.zeros((frames, 2), np.float32)
             done = 0
             while done < frames:
@@ -327,13 +344,35 @@ class AudioEngine:
                         continue
                     n = min(n, max(1, int(remaining)))
                 out[done:done + n] = self.render(self._pos, n, self.speed)
+                if ltc is not None:
+                    ltc[done:done + n] = self.ltc.render(self._pos, n, self.speed / self.sr)
                 self._pos += n * self.speed / self.sr
                 done += n
             self._set_clock(self._pos - frames * self.speed / self.sr, self.latency if lat is None else lat)
             if not self.loop_enabled and self.duration and self._pos > self.duration + 0.5:
                 self._playing = False
                 self._pos = self.duration
-            return out
+            return out, ltc
+
+    def out_channels(self) -> int:
+        """Channels the main output stream needs for the routing."""
+        used = list(self.mix_channels)
+        if self.ltc_mode == "same":
+            used.append(self.ltc_channel)
+        return max(2, max(used) + 1)
+
+    def route(self, mix: np.ndarray, ltc: np.ndarray | None, channels: int) -> np.ndarray:
+        """Place the stereo mix (or its mono sum) and the LTC on their output channels."""
+        out = np.zeros((len(mix), channels), np.float32)
+        ch = [c for c in self.mix_channels if c < channels]
+        if len(ch) == 1:
+            out[:, ch[0]] = mix.mean(axis=1)
+        elif len(ch) >= 2:
+            out[:, ch[0]] += mix[:, 0]
+            out[:, ch[1]] += mix[:, 1]
+        if ltc is not None and self.ltc_channel < channels:
+            out[:, self.ltc_channel] = ltc            # the timecode channel carries nothing else
+        return out
 
     # -- output ---------------------------------------------------------
     def _ensure_output(self) -> None:
@@ -341,13 +380,14 @@ class AudioEngine:
             return
         try:
             import sounddevice as sd
-            self._stream = sd.OutputStream(samplerate=self.sr, channels=2, dtype="float32",
+            self._stream = sd.OutputStream(samplerate=self.sr, channels=self.out_channels(), dtype="float32",
                                            blocksize=BLOCK, device=self.device, latency="high",
                                            callback=self._callback)
             self._stream.start()
             self.latency = float(self._stream.latency or 0.0)
             self.backend = "sounddevice"
             self.error = ""
+            self._open_ltc_device()
         except Exception as exc:  # no device / no PortAudio
             self._stream = None
             self.error = str(exc)
@@ -365,7 +405,57 @@ class AudioEngine:
                 lat = d
         except Exception:
             pass
-        outdata[:] = self._next_block(frames, lat)
+        same = self.ltc_mode == "same"
+        mix, ltc = self._next_blocks(frames, lat, with_ltc=same)
+        if outdata.shape[1] == 2 and self.mix_channels == (0, 1) and not same:
+            outdata[:] = mix
+        else:
+            outdata[:] = self.route(mix, ltc, outdata.shape[1])
+
+    def _open_ltc_device(self) -> None:
+        """Timecode on its own interface: a second stream that follows the playhead clock."""
+        self.ltc_error = ""
+        if self.ltc_mode != "device":
+            return
+        try:
+            import sounddevice as sd
+            self._ltc_t = None
+            self._ltc_stream = sd.OutputStream(samplerate=self.sr, channels=max(1, self.ltc_channel + 1),
+                                               dtype="float32", blocksize=256, device=self.ltc_device,
+                                               latency="low", callback=self._ltc_callback)
+            self._ltc_stream.start()
+        except Exception as exc:
+            self._ltc_stream = None
+            self.ltc_error = str(exc)
+
+    def ltc_block(self, frames: int, lat: float) -> np.ndarray:
+        """LTC for the second device: song time when this block is heard, by the playhead clock.
+        Blocks follow on from each other; small clock differences are eased in, a jump (seek,
+        loop) is followed at once."""
+        with self._lock:
+            if not self._playing:
+                self._ltc_t = None
+                return np.zeros(frames, np.float32)
+            target = self._cb_pos + (time.perf_counter() + lat - self._cb_wall) * self.speed
+            step = self.speed / self.sr
+        t = self._ltc_t
+        if t is None or abs(target - t) > 0.02:
+            t = target
+        else:
+            t += 0.1 * (target - t)
+        self._ltc_t = t + frames * step
+        return self.ltc.render(t, frames, step)
+
+    def _ltc_callback(self, outdata, frames, time_info, status) -> None:  # pragma: no cover - realtime
+        lat = 0.0
+        try:
+            d = float(time_info.outputBufferDacTime - time_info.currentTime)
+            if 0.0 <= d < 1.0:
+                lat = d
+        except Exception:
+            pass
+        outdata[:] = 0
+        outdata[:, min(self.ltc_channel, outdata.shape[1] - 1)] = self.ltc_block(frames, lat)
 
     def _fallback_loop(self) -> None:
         period = BLOCK / self.sr
@@ -380,14 +470,27 @@ class AudioEngine:
                 nxt = time.perf_counter()
 
     def set_device(self, device) -> None:
+        self.configure(device=device)
+
+    def configure(self, **fields) -> None:
+        """Change the output setup (device, mix_channels, ltc_mode, ltc_device, ltc_channel):
+        the streams are reopened."""
         was_playing = self._playing
         self.pause()
         self.close()
-        self.device = device
+        for k, v in fields.items():
+            setattr(self, k, tuple(v) if k == "mix_channels" else v)
         if was_playing:
             self.play()
 
     def close(self) -> None:
+        if self._ltc_stream is not None:
+            try:
+                self._ltc_stream.stop()
+                self._ltc_stream.close()
+            except Exception:
+                pass
+            self._ltc_stream = None
         if self._stream is not None:
             try:
                 self._stream.stop()
@@ -407,10 +510,20 @@ class AudioEngine:
         return self.render(start, frames, 1.0)
 
 
+def device_channels(device) -> int:
+    """Output channels of a device (None = the system default); 2 if unknown."""
+    try:
+        import sounddevice as sd
+        d = sd.query_devices(kind="output") if device is None else sd.query_devices(device)
+        return int(d["max_output_channels"]) or 2
+    except Exception:
+        return 2
+
+
 def list_output_devices() -> list[tuple[int, str]]:
     try:
         import sounddevice as sd
         return [(i, f"{d['name']} ({sd.query_hostapis(d['hostapi'])['name']})")
-                for i, d in enumerate(sd.query_devices()) if d["max_output_channels"] >= 2]
+                for i, d in enumerate(sd.query_devices()) if d["max_output_channels"] >= 1]
     except Exception:
         return []

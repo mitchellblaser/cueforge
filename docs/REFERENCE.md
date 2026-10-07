@@ -354,6 +354,19 @@ on the timeline.
 
 ---
 
+## Audio setup and live LTC (File › Audio setup…)
+
+- **Output device** and **Mix on**: a stereo pair (1–2, 3–4 …) or one channel in mono, on
+  any channel of a multi-channel interface.
+- **Live LTC** while CueForge plays, sample-locked to the playhead: project frame rate (incl.
+  29.97 drop-frame), each song's start timecode, following loops, seeks and varispeed; silent
+  while stopped.
+  - *On a channel of the playback device*, e.g. **Striped**: mono mix on the left, LTC on
+    the right of a stereo output.
+  - *On a second audio device*, on any of its channels. It follows the playhead clock and
+    corrects small drift between the two interfaces smoothly.
+- *LTC level* in dBFS. The LTC channel never carries audio. Settings are stored per computer.
+
 ## Screens and panels
 
 Every panel (Setlist, AI Suggestions, Cue list, Lanes, Mixer) is its own dock: drag it
