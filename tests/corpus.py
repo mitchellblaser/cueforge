@@ -17,7 +17,7 @@ from dataclasses import asdict, dataclass, field
 import numpy as np
 
 SR = 44100
-CORPUS_VERSION = "4"   # bump when composition changes so cached renders are refreshed
+CORPUS_VERSION = "5"   # bump when composition changes so cached renders are refreshed
 CACHE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".corpus_cache")
 SOUNDFONTS = ["/usr/share/sounds/sf2/FluidR3_GM.sf2", "/usr/share/soundfonts/FluidR3_GM.sf2",
               "/usr/share/sounds/sf2/default-GM.sf2"]
@@ -167,8 +167,8 @@ def compose(spec: SongSpec):
     truth = {"beats": [], "downbeats": [], "fills": [], "lead_notes": [], "lead_phrases": [],
              "chord_changes": [], "sections": [], "kicks": [], "snares": [], "crashes": [], "accents": []}
 
-    def hit(note, pos, vel, dur=0.1):
-        t = at(pos)
+    def hit(note, pos, vel, dur=0.1, human=True):
+        t = at(pos, human)
         drums.notes.append(pretty_midi.Note(int(np.clip(vel, 1, 127)), note, t, t + dur))
         if vel < 60:      # ghost notes are not lighting hits
             return
@@ -193,19 +193,6 @@ def compose(spec: SongSpec):
             if chord != prev_chord:
                 truth["chord_changes"].append(float(beats[bb]))
                 prev_chord = chord
-            if bar in sec.stops:
-                # the band hits the one together and stops for the rest of the bar
-                hit(KICK, bb, v + 15)
-                hit(CRASH, bb, v + 15, 0.4)
-                inst = harm.setdefault(sec.chords if sec.chords is not None else 0,
-                                       pretty_midi.Instrument(sec.chords or 0, name="harmony"))
-                t0 = at(bb)
-                for n in chord:
-                    inst.notes.append(pretty_midi.Note(int(min(127, v + 10)), n, t0, t0 + 0.25))
-                if sec.bass:
-                    bass.notes.append(pretty_midi.Note(int(v), chord[0] - 24, t0, t0 + 0.25))
-                truth["accents"].append(("stop", t0))
-                continue
             # ---- drums
             phrase_end = sec.fill_every and (bar + 1) % sec.fill_every == 0
             section_end = bar == sec.bars - 1 and next_has_drums and sec.drums
@@ -238,11 +225,11 @@ def compose(spec: SongSpec):
             if bar in sec.stabs:
                 # a band stab off the beat: kick, crash and a short loud chord together
                 pos = bb + 1.5
-                hit(KICK, pos, v + 15)
-                hit(CRASH, pos, v + 15, 0.4)
+                hit(KICK, pos, v + 15, human=False)       # no random draws: the rest of the song
+                hit(CRASH, pos, v + 15, 0.4, human=False)  # stays as it was before stabs existed
                 inst = harm.setdefault(sec.chords if sec.chords is not None else 0,
                                        pretty_midi.Instrument(sec.chords or 0, name="harmony"))
-                t0 = at(pos)
+                t0 = at(pos, False)
                 for n in chord:
                     inst.notes.append(pretty_midi.Note(int(min(127, v + 20)), n + 12, t0, t0 + 0.2))
                 truth["accents"].append(("stab", t0))
@@ -280,6 +267,26 @@ def compose(spec: SongSpec):
                     if t0 - last_lead_end > 0.6:
                         truth["lead_phrases"].append(t0)
                     last_lead_end = t1
+            if bar in sec.stops:
+                # the band hits the one together and stops for the rest of the bar: the bar is
+                # made as usual (same random draws as before stops existed), then cut back
+                t0, t1 = at(bb, False), at(bb + bpb, False)
+
+                def keep(t):
+                    return not (t0 - 0.03 <= t < t1 - 0.03)
+                for inst in [drums, bass, *harm.values(), *lead.values()]:
+                    inst.notes = [n for n in inst.notes if keep(n.start)]
+                for k in ("kicks", "snares", "crashes", "lead_notes", "lead_phrases"):
+                    truth[k] = [t for t in truth[k] if keep(t)]
+                hit(KICK, bb, v + 15, human=False)
+                hit(CRASH, bb, v + 15, 0.4, human=False)
+                inst = harm.setdefault(sec.chords if sec.chords is not None else 0,
+                                       pretty_midi.Instrument(sec.chords or 0, name="harmony"))
+                for n in chord:
+                    inst.notes.append(pretty_midi.Note(int(min(127, v + 10)), n, t0, t0 + 0.25))
+                if sec.bass:
+                    bass.notes.append(pretty_midi.Note(int(v), chord[0] - 24, t0, t0 + 0.25))
+                truth["accents"].append(("stop", t0))
         # cymbal crash at section starts that have drums
         if sec.drums and si > 0:
             hit(CRASH, b0, v + 10, 0.8)

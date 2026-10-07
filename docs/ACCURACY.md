@@ -6,7 +6,7 @@ Measured with `python -m tests.evaluate` (full mix) and `python -m tests.evaluat
 
 ## The test corpus
 
-Six songs composed as MIDI and rendered with a sampled General-MIDI soundfont (FluidR3:
+Six songs composed as MIDI (with band stabs and stops as accent ground truth) and rendered with a sampled General-MIDI soundfont (FluidR3:
 real recorded drum kits, basses, pianos, guitars, synths, brass, choir). Every song has
 exact ground truth for beats, downbeats, drum fills, lead-line notes/phrases, chord
 changes and sections.
@@ -27,34 +27,38 @@ The thresholds and the threshold learning in the app are there to adapt to your 
 
 ## Results — full mix only
 
-| song | beatF | beatAMLt | downF | meter | hitF | fillF | fillP | fillR | phraseF | chordF | sectionR | secs |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| rock_live | 0.97 | 0.95 | 0.97 | 4 | 0.88 | 0.73 | 0.80 | 0.67 | 0.00 | 0.97 | 1.00 | 15.2 |
-| edm_club | 0.98 | 0.96 | 0.98 | 4 | 0.89 | 0.86 | 1.00 | 0.75 | 0.00 | 0.80 | 1.00 | 12.7 |
-| funk_live | 0.97 | 0.96 | 0.98 | 4 | 0.65 | 0.80 | 1.00 | 0.67 | 0.00 | 0.98 | 0.67 | 11.8 |
-| ballad_live | 0.65 | 0.95 | 0.65 | 4 | 0.50 | 0.00 | 0.00 | 0.00 | 0.00 | 0.94 | 0.50 | 12.2 |
-| waltz_34 | 0.96 | 0.92 | 0.96 | 3 | 0.43 | 1.00 | 1.00 | 1.00 | 0.00 | 0.98 | 1.00 | 4.2 |
-| pop_halftime | 0.97 | 0.94 | 0.96 | 4 | 0.69 | 1.00 | 1.00 | 1.00 | 0.00 | 1.00 | 1.00 | 6.8 |
-| MEAN | 0.92 | 0.95 | 0.92 | 3.83 | 0.67 | 0.73 | 0.80 | 0.68 | 0.00 | 0.95 | 0.86 |
+| song | beatF | beatAMLt | downF | meter | accP | accR | hits/min | fillF | fillP | fillR | phraseF | chordF | sectionR | secs |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| rock_live | 0.99 | 0.98 | 0.99 | 4 | 0.36 | 0.83 | 11.75 | 0.60 | 0.75 | 0.50 | 0.00 | 0.96 | 1.00 | 17.8 |
+| edm_club | 0.99 | 0.99 | 0.99 | 4 | 0.22 | 0.67 | 6.97 | 0.86 | 1.00 | 0.75 | 0.00 | 0.78 | 0.67 | 16.8 |
+| funk_live | 0.99 | 0.99 | 0.98 | 4 | 0.23 | 0.60 | 11.64 | 0.80 | 1.00 | 0.67 | 0.00 | 0.93 | 0.67 | 13.7 |
+| ballad_live | 0.62 | 0.87 | 0.60 | 4 | 0.21 | 1.00 | 12.18 | 1.00 | 1.00 | 1.00 | 0.00 | 0.88 | 1.00 | 14.5 |
+| waltz_34 | 0.99 | 0.99 | 0.98 | 3 | 0.38 | 1.00 | 15.90 | 0.89 | 1.00 | 0.80 | 0.00 | 0.98 | 1.00 | 5.4 |
+| pop_halftime | 0.99 | 0.99 | 0.98 | 4 | 0.50 | 0.67 | 5.50 | 1.00 | 1.00 | 1.00 | 0.00 | 0.96 | 0.50 | 8.0 |
+| MEAN | 0.93 | 0.97 | 0.92 | 3.83 | 0.32 | 0.79 | 10.66 | 0.86 | 0.96 | 0.79 | 0.00 | 0.91 | 0.81 | – |
 
 ## Results — with stems
 
-| song | beatF | beatAMLt | downF | meter | hitF | fillF | fillP | fillR | phraseF | chordF | sectionR | secs |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| rock_live | 0.98 | 0.96 | 0.97 | 4 | 0.81 | 1.00 | 1.00 | 1.00 | 1.00 | 0.77 | 0.75 | 13.9 |
-| edm_club | 0.98 | 0.96 | 0.98 | 4 | 0.81 | 1.00 | 1.00 | 1.00 | 1.00 | 0.65 | 1.00 | 13.0 |
-| funk_live | 0.98 | 0.97 | 0.98 | 4 | 0.46 | 0.67 | 0.67 | 0.67 | 0.35 | 0.98 | 0.33 | 11.3 |
-| ballad_live | 0.65 | 0.96 | 0.16 | 3 | 0.88 | 0.20 | 0.11 | 1.00 | 1.00 | 0.81 | 1.00 | 11.3 |
-| waltz_34 | 0.96 | 0.92 | 0.96 | 3 | 0.70 | 0.91 | 0.83 | 1.00 | 1.00 | 0.86 | 1.00 | 4.6 |
-| pop_halftime | 0.97 | 0.94 | 0.96 | 4 | 0.54 | 1.00 | 1.00 | 1.00 | 1.00 | 0.94 | 1.00 | 7.3 |
-| MEAN | 0.92 | 0.95 | 0.84 | 3.67 | 0.70 | 0.80 | 0.77 | 0.94 | 0.89 | 0.83 | 0.85 |
+| song | beatF | beatAMLt | downF | meter | accP | accR | hits/min | fillF | fillP | fillR | phraseF | chordF | sectionR | secs |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| rock_live | 1.00 | 0.99 | 0.99 | 4 | 0.46 | 1.00 | 10.91 | 1.00 | 1.00 | 1.00 | 1.00 | 0.75 | 1.00 | 18.8 |
+| edm_club | 0.99 | 0.99 | 0.99 | 4 | 0.29 | 0.67 | 5.42 | 1.00 | 1.00 | 1.00 | 0.67 | 0.66 | 0.67 | 15.5 |
+| funk_live | 1.00 | 0.99 | 0.98 | 4 | 0.33 | 0.60 | 8.06 | 0.67 | 0.67 | 0.67 | 0.35 | 0.90 | 0.33 | 13.8 |
+| ballad_live | 0.61 | 0.80 | 0.16 | 3 | 0.03 | 0.33 | 27.84 | 0.22 | 0.12 | 1.00 | 1.00 | 0.52 | 1.00 | 13.6 |
+| waltz_34 | 0.99 | 0.99 | 0.98 | 3 | 0.43 | 1.00 | 13.91 | 1.00 | 1.00 | 1.00 | 1.00 | 0.81 | 1.00 | 5.9 |
+| pop_halftime | 0.99 | 0.99 | 0.98 | 4 | 0.40 | 0.67 | 6.87 | 1.00 | 1.00 | 1.00 | 0.89 | 0.94 | 0.50 | 9.2 |
+| MEAN | 0.93 | 0.96 | 0.85 | 3.67 | 0.32 | 0.71 | 12.17 | 0.81 | 0.80 | 0.94 | 0.82 | 0.76 | 0.75 | – |
 
 ## Column meanings
 
 - **beatF**: beat F-measure (±70 ms). **beatAMLt**: the same, but accepting double/half
   tempo or off-beat lock (use *Grid › Halve/Double tempo* to fix those).
 - **downF**: downbeat (bar 1) F-measure. **meter**: detected beats per bar.
-- **hitF**: kick/snare/crash hits at the default 75% threshold (±50 ms; ghost notes excluded).
+- **accP / accR / hits/min**: hits are *accents*, scored against the accents in each song (crashes
+  at section starts and fill landings, band stabs off the beat, stops) at the default 60% threshold,
+  ±70 ms. accP: share of shown hit suggestions on an accent (slow tom fills and horn riffs that a
+  programmer may well light count against it); accR: accents found; hits/min: how many are shown.
+  The old detector suggested every kick and snare: 80–160 a minute, about 3% of them on an accent.
 - **fillF / fillP / fillR**: *fast* drum fills (16ths, sextuplets, 32nd rolls into a bar line). A suggestion is
   correct if it starts inside a real fast fill. Slow 8th-note tom fills are deliberately not suggested: they
   count neither for nor against.
@@ -71,8 +75,11 @@ The thresholds and the threshold learning in the app are there to adapt to your 
 - **Rubato / free-time passages** (ballad intro): beats are unreliable. Use the
   *Tap-along grid*.
 - **Slow songs** may be tracked at double tempo (ballad: 146 vs 72 BPM). Use *Halve tempo*.
-- **Hits in quiet, busy-cymbal passages** (ride / side-stick ballads, soft waltz) produce
-  extra suggestions. Raise the Hits threshold or let the app learn it.
+- **Hits on a wrong grid** (the ballad's stems, tracked in 3/4): accents are found by comparing
+  bars, so a wrong bar length gives too many. Fix the grid first.
+- **Spoken cue tracks** aren't in this corpus (it has no voice). Their timing is tested with
+  synthetic calls in `tests/test_cuetrack.py`, and word recognition with espeak-ng speech when
+  the keyword model is installed. Real cue voices are clearer than espeak.
 - **Lead lines without stems** are rough. Import stems, or enable Demucs.
 
 ## Gaps and pauses (downbeat F-measure)

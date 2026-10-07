@@ -784,7 +784,8 @@ def test_cuepoints_dialog_import_and_undo(app, win):
 def test_ai_models_dialog_and_first_run(app, win, monkeypatch):
     from cueforge.ui import ai_models_dialog as amd
     d = amd.AIModelsDialog(win.s.settings, win)
-    assert set(d.boxes) == {"beat_this", "demucs"} and d.keys() == ["beat_this", "demucs"]
+    assert set(d.boxes) == {"beat_this", "demucs", "spoken_cues"}
+    assert d.keys() == ["beat_this", "demucs", "spoken_cues"]
     d.close()
     shown = []
     monkeypatch.delenv("CUEFORGE_NO_FIRST_RUN", raising=False)

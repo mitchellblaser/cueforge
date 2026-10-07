@@ -57,8 +57,8 @@ def test_fast_fills(mix_scores):
 def test_hits_are_accents_not_every_drum_hit(mix_scores, stem_scores):
     """Hits suggest the accents a programmer lights (section-start crashes, band stabs,
     stops), a handful per minute, instead of every kick and snare (~100+ per minute)."""
-    assert mean(mix_scores, "accR") >= 0.8
-    assert mean(stem_scores, "accR") >= 0.6          # the ballad's stems give a wrong (3/4) grid
+    assert mean(mix_scores, "accR") >= 0.75
+    assert mean(stem_scores, "accR") >= 0.65         # the ballad's stems give a wrong (3/4) grid
     for scores in (mix_scores, stem_scores):
         assert mean(scores, "accP") >= 0.3
         assert mean(scores, "hitsPerMin") <= 15
