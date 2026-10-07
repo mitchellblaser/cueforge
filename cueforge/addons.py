@@ -159,6 +159,17 @@ def _redirect(log: str) -> None:
     sys.stdout = sys.stderr = f
 
 
+def _skip_command_scripts() -> None:
+    """Don't create the packages' command-line tools (torchrun.exe …). On Windows pip builds
+    them from launcher templates that it can't read from inside the packaged app
+    ("Unable to locate finder for 'pip._vendor.distlib'"), and CueForge never uses them."""
+    try:
+        from pip._internal.operations.install import wheel
+        wheel.PipScriptMaker.make_multiple = lambda self, specifications, options=None: []
+    except Exception as exc:          # a pip without this class: install as usual
+        print(f"(could not switch off script creation: {exc})", flush=True)
+
+
 def run_pip(log: str, args: list[str]) -> int:
     """`CueForge --pip <log> install …`: pip inside CueForge, output to <log>."""
     _redirect(log)
@@ -170,6 +181,8 @@ def run_pip(log: str, args: list[str]) -> int:
     except Exception as exc:
         print(f"pip is not available: {exc}", flush=True)
         return 2
+    if frozen() or "--target" in args:
+        _skip_command_scripts()
     code = int(pip_main(args) or 0)
     print(f"[pip finished with code {code}]", flush=True)
     return code

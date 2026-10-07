@@ -258,3 +258,34 @@ def test_model_grid_is_tidied():
     assert (_bar_lengths(g) == 4).all()
     est = np.asarray(g.downbeats)
     assert np.mean([np.min(np.abs(est - x)) < 0.07 for x in info["downbeats"]]) > 0.9
+
+
+def test_ai_install_skips_command_scripts(tmp_path):
+    """Packaged app on Windows: pip can't build .exe launchers inside the bundle; the AI
+    install must not try (simulated here by making launcher creation fail)."""
+    import subprocess
+    import sys
+    import zipfile
+    whl = tmp_path / "cfdemo-1.0-py3-none-any.whl"
+    with zipfile.ZipFile(whl, "w") as z:
+        z.writestr("cfdemo/__init__.py", "def main():\n    return 0\n")
+        z.writestr("cfdemo-1.0.dist-info/METADATA", "Metadata-Version: 2.1\nName: cfdemo\nVersion: 1.0\n")
+        z.writestr("cfdemo-1.0.dist-info/WHEEL", "Wheel-Version: 1.0\nGenerator: test\nRoot-Is-Purelib: true\n"
+                                                  "Tag: py3-none-any\n")
+        z.writestr("cfdemo-1.0.dist-info/entry_points.txt", "[console_scripts]\ncfdemo = cfdemo:main\n")
+        z.writestr("cfdemo-1.0.dist-info/RECORD", "")
+    target, log = tmp_path / "pkgs", tmp_path / "pip.log"
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    code = ("import sys\n"
+            "from pip._vendor.distlib import scripts\n"
+            "def broken(*a, **k):\n"
+            "    raise RuntimeError(\"Unable to locate finder for 'pip._vendor.distlib'\")\n"
+            "scripts.ScriptMaker.make = broken\n"
+            "from cueforge import addons\n"
+            f"sys.exit(addons.run_pip({str(log)!r}, ['install', '--no-index', '--no-deps', "
+            f"'--target', {str(target)!r}, {str(whl)!r}]))\n")
+    r = subprocess.run([sys.executable, "-c", code], cwd=root, env={**os.environ, "PYTHONPATH": root})
+    text = log.read_text()
+    assert r.returncode == 0, text
+    assert (target / "cfdemo" / "__init__.py").exists()
+    assert not (target / "bin").exists() and not (target / "Scripts").exists()
