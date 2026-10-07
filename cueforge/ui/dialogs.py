@@ -40,6 +40,28 @@ def _demucs_installed() -> bool:
     return addons.status().get("demucs", False)
 
 
+def source_warning(project) -> str:
+    """What the analysis can't hear: no full mix and no drums means hits and fills come from
+    whatever is there (percussion loops, samples) and are weak."""
+    from ..analysis.pipeline import DRUM_WORDS
+    tracks = [t for t in project.tracks if t.analyse and t.role in ("Track", "Stem")]
+    guides = [t for t in project.tracks if t.role == "Cue/Guide"]
+    if not tracks:
+        if guides:
+            return ("Only the cue track will be used: sections from its spoken calls. Set your mix's role to "
+                    "Track (or import stems) for hits, fills and the rest.")
+        return "Nothing to analyse: set a track's role to Track (the full mix) or Stem."
+    if any(t.role == "Track" for t in tracks):
+        return ""
+    if any(any(w in t.name.lower() for w in DRUM_WORDS) and "perc" not in t.name.lower() for t in tracks):
+        return ""
+    names = ", ".join(t.name for t in tracks)
+    return (f"None of the analysed tracks ({names}) looks like a full mix or a drum kit, so hits and fills "
+            "come from whatever is there (percussion, samples) and will be weak. If the band plays the drums "
+            "live, untick Hits and Fills and use the cue track for sections; otherwise add the mix (role "
+            "Track) or a drums stem, or tick Demucs.")
+
+
 class AnalysisDialog(QDialog):
     def __init__(self, session, parent=None, scope: str = "this", song_ids: list[str] | None = None) -> None:
         super().__init__(parent)
@@ -71,23 +93,41 @@ class AnalysisDialog(QDialog):
         lay.addWidget(bulk)
         tracks = [t for t in p.tracks if t.analyse and t.role in ("Track", "Stem")]
         clicks = [t for t in p.tracks if t.role == "Click"]
+        guides = [t for t in p.tracks if t.role == "Cue/Guide"]
         src = ", ".join(t.name for t in tracks) or "<none — set a track's role to Track or Stem>"
-        info = QLabel(f"<b>Analysing:</b> {src}" + (f"<br><b>Click track:</b> {clicks[0].name} (used for the grid)"
-                                                    if clicks else ""))
+        info = QLabel(f"<b>Analysing:</b> {src}"
+                      + (f"<br><b>Click track:</b> {clicks[0].name} (used for the grid)" if clicks else "")
+                      + (f"<br><b>Cue track:</b> {', '.join(t.name for t in guides)} (spoken section calls)"
+                         if guides else ""))
         info.setWordWrap(True)
         lay.addWidget(info)
+        self.source_warning = QLabel(source_warning(p))
+        self.source_warning.setWordWrap(True)
+        self.source_warning.setStyleSheet("color: #ffb74d;")
+        self.source_warning.setVisible(bool(self.source_warning.text()))
+        lay.addWidget(self.source_warning)
         form = QFormLayout()
         prev = session.settings.get("analysis_options", {})
         self.grid = QCheckBox("Beat grid (tempo, downbeats)")
         self.grid.setChecked(prev.get("grid", True))
         if p.beat_grid.confirmed:
             self.grid.setText("Beat grid — you have a confirmed grid; it will be kept")
-        self.hits = QCheckBox("Hits (kick, snare, crash)")
+        self.hits = QCheckBox("Hits: accents that break the groove (crashes, band stabs, stops)")
         self.hits.setChecked(prev.get("hits", True))
         self.fills = QCheckBox("Drum fills → strobe suggestions")
         self.fills.setChecked(prev.get("fills", True))
         self.sections = QCheckBox("Sections (verse / chorus / drop changes)")
         self.sections.setChecked(prev.get("sections", True))
+        from ..analysis.cuetrack import spotter_available, spotter_installed
+        words = "names recognised" if spotter_available() else \
+            "names recognised (model downloads on first use)" if spotter_installed() else \
+            "grouped by sound; install 'Spoken cue words' to name them"
+        self.spoken = QCheckBox(f"…from the spoken cue track when there is one ({words})")
+        self.spoken.setChecked(prev.get("spoken_cues", True))
+        self.spoken.setToolTip("A track with role Cue/Guide where a voice calls the sections (\"Verse… 3, 4\"): "
+                               "each section starts on the downbeat after its call. Much more reliable than "
+                               "guessing sections from the music.")
+        self.spoken.setEnabled(bool(guides))
         self.energy = QCheckBox("Energy (drops, breakdowns, builds, blackouts)")
         self.energy.setChecked(prev.get("energy", True))
         self.harmony = QCheckBox("Chord changes → colour-change suggestions")
@@ -100,8 +140,8 @@ class AnalysisDialog(QDialog):
         self.melody_mix.setChecked(prev.get("melody_from_mix", False))
         self.melody_mix.setToolTip("Without stems the lead line has to be guessed from the whole mix. "
                                    "Import stems (or use Demucs) for accurate lead-line following.")
-        for w in (self.grid, self.hits, self.fills, self.sections, self.energy, self.harmony, self.melody,
-                  self.melody_mix):
+        for w in (self.grid, self.hits, self.fills, self.sections, self.spoken, self.energy, self.harmony,
+                  self.melody, self.melody_mix):
             form.addRow(w)
         if not has_melodic_stems:
             tip = QLabel("Tip: lead lines are followed accurately from stems (vocals, synth, guitar…). "
@@ -152,7 +192,7 @@ class AnalysisDialog(QDialog):
         o = AnalysisOptions(grid=self.grid.isChecked(), hits=self.hits.isChecked(), fills=self.fills.isChecked(),
                             sections=self.sections.isChecked(), energy=self.energy.isChecked(),
                             harmony=self.harmony.isChecked(), melody=self.melody.isChecked(),
-                            melody_from_mix=self.melody_mix.isChecked(),
+                            melody_from_mix=self.melody_mix.isChecked(), spoken_cues=self.spoken.isChecked(),
                             use_deep_models=self.deep.isChecked(), use_demucs=self.demucs.isChecked(),
                             beats_per_bar=self.bpb.value())
         self.s.settings.set("analysis_options", dict(o.__dict__))

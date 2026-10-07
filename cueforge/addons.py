@@ -26,6 +26,7 @@ class Component:
     packages: tuple[str, ...]
     size: str
     what: str
+    torch: bool = True        # needs PyTorch
 
 
 TORCH = ("torch", "torchaudio")
@@ -36,6 +37,10 @@ COMPONENTS = (
     Component("demucs", "Demucs", "demucs", ("demucs>=4.0",), "≈ 300 MB",
               "Separates a stereo mix into drums / bass / vocals / other, so hits, fills and lead "
               "lines are found as if you had stems (slow on CPU; results are cached)."),
+    Component("spoken_cues", "Spoken cue words", "sherpa_onnx", ("sherpa-onnx>=1.10",), "≈ 45 MB",
+              "Recognises the section names on a spoken cue track (\"Verse\", \"Chorus\", \"Bridge\" …) "
+              "so sections get their real names. Small, no PyTorch needed. Without it, cue-track "
+              "sections are still found and grouped by sound.", torch=False),
 )
 TORCH_SIZE = "≈ 250 MB (macOS / Windows CPU) · ≈ 2.5 GB with NVIDIA GPU support"
 GPU_INDEX = "https://download.pytorch.org/whl/cu124"
@@ -87,9 +92,14 @@ def activate() -> None:
 
 def installed(c: Component) -> bool:
     try:
-        return importlib.util.find_spec(c.module) is not None and importlib.util.find_spec("torch") is not None
+        ok = importlib.util.find_spec(c.module) is not None and \
+            (not c.torch or importlib.util.find_spec("torch") is not None)
     except (ImportError, ValueError):
         return False
+    if ok and c.key == "spoken_cues":
+        from .analysis.cuetrack import spotter_available
+        ok = spotter_available()
+    return ok
 
 
 def status() -> dict[str, bool]:
@@ -113,7 +123,8 @@ def _self_command(*args: str) -> tuple[str, list[str], dict]:
 
 
 def pip_args(keys: list[str], gpu: bool = False) -> list[str]:
-    pkgs = list(TORCH)
+    chosen = [c for c in COMPONENTS if c.key in keys]
+    pkgs = list(TORCH) if any(c.torch for c in chosen) else []
     for c in COMPONENTS:
         if c.key in keys:
             pkgs += list(c.packages)
@@ -121,7 +132,7 @@ def pip_args(keys: list[str], gpu: bool = False) -> list[str]:
             "--only-binary=:all:", "--prefer-binary"]
     if private_install():
         args += ["--target", packages_dir(), "--upgrade"]
-    if gpu and sys.platform != "darwin":
+    if gpu and sys.platform != "darwin" and any(c.torch for c in chosen):
         args += ["--extra-index-url", GPU_INDEX]
     return args + pkgs
 
@@ -203,6 +214,10 @@ def prefetch(log: str, keys: list[str]) -> int:
                 print("Downloading Demucs (htdemucs) weights…", flush=True)
                 from demucs.pretrained import get_model
                 get_model("htdemucs")
+            elif key == "spoken_cues":
+                from .analysis.cuetrack import download_spotter
+                if not download_spotter(lambda m: print(m, flush=True)):
+                    raise RuntimeError("download incomplete")
             print(f"{key}: ready", flush=True)
         except Exception as exc:
             print(f"{key}: could not fetch weights now ({exc}); they download on first use", flush=True)
@@ -229,7 +244,10 @@ def check(log: str) -> int:
         if not installed(c):
             continue
         try:
-            if c.key == "beat_this":
+            if c.key == "spoken_cues":
+                from .analysis.cuetrack import Spotter
+                Spotter()
+            elif c.key == "beat_this":
                 from beat_this.inference import Audio2Beats  # noqa: F401
                 from beat_this.model.beat_tracker import BeatThis
                 BeatThis()

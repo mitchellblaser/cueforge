@@ -55,7 +55,8 @@ as timecode XML, or **live over the network** while you work.
 <td width="50%" valign="top">
 
 ### ✦ AI suggestions, never surprises
-- **Hits** on kick, snare and crash
+- **Accents** that break the groove: crashes, band stabs, stops (not every kick and snare)
+- **Sections read from a spoken cue track** ("Verse… 3, 4"), on the downbeat after each call
 - **Drum fills**, suggested as strobes held across the fill
 - **Sections** and energy changes: verse, chorus, drop, build, blackout
 - **Chord changes** as colour changes, **lead lines** as chase steps

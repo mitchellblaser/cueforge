@@ -44,7 +44,7 @@ class AIModelsDialog(QDialog):
             row.addWidget(cb)
             row.addWidget(d)
             lay.addLayout(row)
-        torch_note = QLabel(f"Both need PyTorch: {addons.TORCH_SIZE}.")
+        torch_note = QLabel(f"Beat This! and Demucs need PyTorch: {addons.TORCH_SIZE}.")
         torch_note.setWordWrap(True)
         torch_note.setStyleSheet(f"color: {theme.FG_DIM};")
         lay.addWidget(torch_note)

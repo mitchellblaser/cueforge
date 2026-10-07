@@ -1265,3 +1265,36 @@ def test_audio_setup_dialog_ltc(app, win):
     d.ltc_mode.setCurrentIndex(d.ltc_mode.findData("off"))
     d.accept()
     assert e.ltc_mode == "off"
+
+
+def test_analysis_source_warning():
+    from cueforge.core.model import Project, Track
+    from cueforge.ui.dialogs import source_warning
+    p = Project()
+    p.tracks += [Track("04-PERCUSSION", "p.wav", role="Stem"), Track("02-SAMPLES", "s.wav", role="Other")]
+    w = source_warning(p)
+    assert "04-PERCUSSION" in w and "drum kit" in w                  # percussion loops aren't a kit
+    p.tracks.append(Track("Drums", "d.wav", role="Stem"))
+    assert source_warning(p) == ""
+    q = Project()
+    q.tracks.append(Track("07-CUES", "c.wav", role="Cue/Guide"))
+    assert "cue track" in source_warning(q)
+    q.tracks.append(Track("Mix", "m.wav", role="Track"))
+    assert source_warning(q) == ""
+
+
+def test_compare_dialog(app, win):
+    from cueforge.core.model import Suggestion
+    from cueforge.ui.compare_dialog import CompareDialog
+    s = win.s
+    lane = s.project.lanes[0].id
+    for t in range(10, 90, 4):
+        s.add_cue(lane, float(t))
+    d = CompareDialog(s, win, analyse=lambda ids: None)
+    assert "Nothing to compare" in d.summary.text() and d.analyse_btn.isVisibleTo(d)
+    s.raw_analysis[s.project.song.id] = [Suggestion("hit", float(t), 0.8, "") for t in range(10, 90, 4)] + \
+        [Suggestion("hit", t + 2.0, 0.4, "") for t in range(10, 90, 4)]
+    d.refresh()
+    assert "100%" in d.summary.text() and d.kinds.rowCount() == 1
+    d._apply()
+    assert 0.4 < s.project.analysis.thresholds["hit"] <= 0.8

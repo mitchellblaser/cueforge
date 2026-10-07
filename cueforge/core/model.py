@@ -190,7 +190,7 @@ class MixerState:
 class AnalysisSettings:
     # Minimum confidence shown per suggestion kind (filter, no re-analysis needed)
     thresholds: dict[str, float] = field(default_factory=lambda: {
-        "hit": 0.75, "fill": 0.6, "section": 0.5, "energy": 0.6, "harmony": 0.6, "melody": 0.5, "console": 0.0})
+        "hit": 0.6, "fill": 0.6, "section": 0.5, "energy": 0.6, "harmony": 0.6, "melody": 0.5, "console": 0.0})
     visible: dict[str, bool] = field(default_factory=lambda: {k: True for k in SUGGESTION_KINDS})
     lane_for_kind: dict[str, str] = field(default_factory=dict)  # kind -> lane id
     snap_to_grid: bool = True
@@ -486,6 +486,7 @@ class Project:
             "snap_div": self.snap_div,
             "per_song_seqs": True,
             "shared_temps2": True,
+            "accent_hits": True,
         }
 
     @classmethod
@@ -498,6 +499,8 @@ class Project:
         for k in SUGGESTION_KINDS:  # projects saved before a kind existed
             p.analysis.thresholds.setdefault(k, defaults.thresholds[k])
             p.analysis.visible.setdefault(k, True)
+        if not d.get("accent_hits") and p.analysis.thresholds.get("hit") == 0.75:
+            p.analysis.thresholds["hit"] = defaults.thresholds["hit"]   # hits are accents now
         p.export = _from_dict(ExportSettings, d.get("export", {}))
         p.console = d.get("console") or {}
         p.snap_div = int(d.get("snap_div", 1) or 1)

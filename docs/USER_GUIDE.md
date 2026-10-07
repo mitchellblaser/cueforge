@@ -206,7 +206,7 @@ strip if it guessed wrong.
 | **Track** | yes | yes | The full song mix |
 | **Stem** | yes | yes, on its own | Drums, vocals, bass, keys… (gives much better hits and melody lines) |
 | **Click** | yes | builds the beat grid directly | The band's click track |
-| **Cue/Guide** | yes | no | Spoken cues, count-ins |
+| **Cue/Guide** | yes | for spoken section calls | Spoken cues ("Verse… 3, 4"), count-ins |
 | **Other** | yes | no | Anything else |
 
 If the files don't start at the same moment, use the **⋯** button on the strip to set an
@@ -378,12 +378,31 @@ for:
 | Option | Finds | Suggested as |
 |---|---|---|
 | Beat grid | Tempo, beats, bar 1 | The dashed orange grid |
-| Hits | Kick, snare, crash | Cues in **Hits** (bump / flash / blinder) |
+| Hits | Accents that break the groove: crashes, band stabs, stops | Cues in **Hits** (bump / flash / blinder) |
 | Drum fills | Fast snare/tom runs into a new bar | Temps in **Strobe**, from the first fast note to the landing |
-| Sections | Verse / chorus / bridge changes | Cues in **Main Cues** (new look) |
+| Sections | Verse / chorus / bridge changes, named from the spoken cue track if there is one | Cues in **Main Cues** (new look) |
 | Energy | Drops, breakdowns, builds, blackouts | Cues in **Main Cues** |
 | Chord changes | Harmony changes, e.g. "Chord → F#m" | Cues in **Colour** |
 | Lead lines | Vocal, synth, guitar phrases | **FX / Chase**; can be accepted as one cue per note |
+
+**Hits are accents, not every drum hit.** A steady groove has a kick and snare on every beat,
+and lighting each one is just noise. CueForge learns each song's groove bar by bar and
+suggests what *breaks* it: a crash where the groove has none (section starts, fill landings),
+a band stab off the beat, or a stop (everyone hits, then silence). It keeps the strongest few
+per four bars, so a song gets a handful a minute, not hundreds.
+
+**Spoken cue tracks give the best sections.** If the song has a guide track where a voice calls
+the sections ("Verse… 3, 4", "Chorus"), give it the role **Cue/Guide**. CueForge finds each
+call and starts the section on the downbeat after it. Sections guessed from the music are
+then only added where nothing was called. With the optional **Spoken cue words** model (AI ›
+AI models, about 45 MB, no PyTorch) the sections get their real names; without it, calls that
+sound the same get the same letter (Cue A, Cue B …). A guide *vocal* track (mostly singing)
+is recognised and left alone.
+
+The dialog warns you when none of the analysed tracks is a full mix or a drum kit: for
+example a backing-track rig where the band plays the drums live and the files are only
+percussion loops and samples. Hits and fills are weak then; untick them and use the cue track
+for sections.
 
 Other options in the dialog:
 
@@ -418,6 +437,14 @@ In the **AI Suggestions** panel:
 - **→ lane** – change which lane each type goes to.
 - **✓ all / ✗ all** – accept or reject every visible suggestion of a type.
 - **AI › Accept all visible suggestions in loop region** – accept a whole passage at once.
+
+### How well does it match your programming?
+
+**AI › Compare suggestions with my cues…** takes songs you've already programmed and shows how
+many of your cues the analysis would have suggested (within a quarter beat), how many of its
+suggestions land on one of your cues, per type and per lane. It uses each song's last
+analysis in this session (*Analyse songs first…* runs it). **Use the thresholds learnt from
+my cues** sets each type's confidence threshold to what best matches how you program.
 - **Apply learned thresholds** – CueForge learns from what you accept and reject and offers
   better thresholds. It never applies them without you clicking.
 

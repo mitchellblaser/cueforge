@@ -16,6 +16,8 @@ from . import beats as beats_mod
 from .energy import detect_energy
 from .fills import detect_fills
 from .harmony import detect_chord_changes
+from .accents import detect_accents
+from .cuetrack import detect_spoken_sections
 from .hits import detect_hits
 from .melody import detect_phrases, is_lead_like
 from .spectral import Spectra
@@ -41,6 +43,7 @@ class AnalysisOptions:
     use_deep_models: bool = True     # Beat This! / All-In-One when installed
     use_demucs: bool = False         # separate the mix when no stems are imported
     melody_from_mix: bool = False    # rough lead-line estimate when there are no stems (slow)
+    spoken_cues: bool = True         # sections from a spoken cue track (role Cue/Guide)
     beats_per_bar: int = 0           # 0 = detect (3 or 4)
 
 
@@ -97,9 +100,12 @@ def run_analysis(project: Project, audio: dict[str, AudioData], opts: AnalysisOp
     mains = [t for t in tracks if t.analyse and t.role == "Track"]
     stems = [t for t in tracks if t.analyse and t.role == "Stem"]
     clicks = [t for t in tracks if t.role == "Click"]
+    guides = [t for t in tracks if t.role == "Cue/Guide"]
     mix_tracks = mains or stems
     if not mix_tracks:
         res.log.append("No tracks selected for analysis (role Track or Stem with 'Analyse' on).")
+        if guides and opts.sections and opts.spoken_cues:
+            _spoken_only(project, audio, opts, res, clicks, guides, step)
         return res
 
     step(0.02, "Preparing audio")
@@ -135,9 +141,6 @@ def run_analysis(project: Project, audio: dict[str, AudioData], opts: AnalysisOp
             if abs(arr[j] - t) <= window:
                 return float(arr[j]), True
         return t, False
-
-    def on_downbeat(t: float) -> bool:
-        return bool(grid_downbeats) and float(np.min(np.abs(np.asarray(grid_downbeats) - t))) < 0.02
 
     # --- sources: which audio each detector listens to -------------------------
     drum_src: np.ndarray | None = None       # drums only (stem) -> no HPSS needed
@@ -195,39 +198,26 @@ def run_analysis(project: Project, audio: dict[str, AudioData], opts: AnalysisOp
                 duration=round(f.end - f.start, 3),
                 idea="strobe Temp through the fill (released on the landing), big hit on the downbeat"))
 
-    def in_fill(t: float) -> bool:
-        return any(f.start - 0.03 <= t < f.end - 0.03 for f in fills)
-
-    # --- hits ---------------------------------------------------------------
+    # --- hits: accents that break the groove, not every kick and snare ---------------
     if opts.hits:
         res.kinds.add("hit")
-        sources: list[tuple[str, np.ndarray, tuple[str, ...], bool]] = []
-        if drum_src is not None:
-            sources.append(("", drum_src, ("kick", "snare", "crash"), False))
-        else:
-            sources.append(("", y, ("kick", "snare", "crash"), True))
         hit_sugs = []
-        for i, (name, ys, bands, perc) in enumerate(sources):
-            step(0.35, f"Detecting hits{(' in ' + name) if name else ''}")
-            for h in detect_hits(ys, sr, bands, source=name, percussive=perc,
-                                 spectra=spectra if ys is y else None):
-                t, snapped = snap_time(h.time)
-                conf = h.confidence
-                reason = h.reason
-                if snapped:
-                    reason += ", on beat"
-                    conf = min(1.0, conf + 0.05)
-                    if on_downbeat(t):
-                        reason += " (downbeat)"
-                        conf = min(1.0, conf + 0.05)
-                if in_fill(t):
-                    # part of a fast fill: the fill's strobe covers it, so hide it by default
-                    reason += ", inside a drum fill (covered by the fill suggestion)"
-                    conf *= 0.6
-                idea = {"Kick": "bump / flash on the kick", "Snare": "hit / strobe flash on the snare",
-                        "Crash": "big hit: full-rig flash or blinder"}.get(h.label.split()[-1], "")
-                hit_sugs.append(Suggestion("hit", round(t, 6), round(conf, 3), reason,
-                                           label=h.label, source_track=name, idea=idea))
+        if len(grid_beats) >= 8 and grid_downbeats:
+            step(0.35, "Finding accents (crashes, stabs, stops)")
+            for a in detect_accents(y, sr, grid_beats, grid_downbeats, drums=drum_src,
+                                    spectra=spectra, exclude=[(f.start, f.end) for f in fills]):
+                hit_sugs.append(Suggestion("hit", a.time, a.confidence, a.reason, label=a.label, idea=a.idea))
+        else:
+            # no beat grid: loud drum hits, thinned to the strongest few per stretch
+            step(0.35, "Detecting hits (no beat grid: accents need one)")
+            src = drum_src if drum_src is not None else y
+            found = detect_hits(src, sr, ("kick", "snare", "crash"), percussive=drum_src is None,
+                                spectra=spectra if src is y else None)
+            idea = {"Kick": "bump / flash on the kick", "Snare": "hit / strobe flash on the snare",
+                    "Crash": "big hit: full-rig flash or blinder"}
+            for h in _thin(found, 8.0, 4):
+                hit_sugs.append(Suggestion("hit", round(h.time, 6), round(h.confidence, 3), h.reason,
+                                           label=h.label, idea=idea.get(h.label.split()[-1], "")))
         res.suggestions += _dedupe(hit_sugs, 0.04)
 
     # --- harmony ------------------------------------------------------------
@@ -265,6 +255,18 @@ def run_analysis(project: Project, audio: dict[str, AudioData], opts: AnalysisOp
                                                   steps=[round(x, 4) for x in ph.notes[:128]]))
 
     # --- sections -----------------------------------------------------------
+    spoken = []
+    if opts.sections and opts.spoken_cues and guides:
+        step(0.58, "Listening to the cue track")
+        for g in guides:
+            yg = _fit(_timeline_mix([(audio[g.id], g.offset)], sr), len(y))
+            found = detect_spoken_sections(yg, sr, grid_downbeats, grid_beats,
+                                           log=lambda m, n=g.name: res.log.append(f"{n}: {m}"))
+            if len(found) > len(spoken):
+                spoken = found
+        for sp in spoken:
+            res.suggestions.append(Suggestion("section", sp.time, sp.confidence, sp.reason, label=sp.label,
+                                              idea="new look for the section"))
     if opts.sections:
         res.kinds.add("section")
         step(0.6, "Finding song sections")
@@ -275,8 +277,15 @@ def run_analysis(project: Project, audio: dict[str, AudioData], opts: AnalysisOp
                 res.log.append("Sections from All-In-One")
         if bounds is None:
             bounds = detect_sections(y, sr, grid_beats, grid_downbeats)
+        bar = (grid_downbeats[1] - grid_downbeats[0]) if len(grid_downbeats) > 1 else 2.0
         for b in bounds:
-            res.suggestions.append(Suggestion("section", round(b.time, 6), b.confidence, b.reason, label=b.label))
+            conf, reason = b.confidence, b.reason
+            if spoken:
+                # the cue track is the authority: the music's guess only adds what it didn't call
+                if any(abs(sp.time - b.time) < 1.1 * bar for sp in spoken):
+                    continue
+                conf, reason = round(conf * 0.7, 3), reason + " (not called on the cue track)"
+            res.suggestions.append(Suggestion("section", round(b.time, 6), conf, reason, label=b.label))
 
     # --- energy -------------------------------------------------------------
     if opts.energy:
@@ -292,7 +301,8 @@ def run_analysis(project: Project, audio: dict[str, AudioData], opts: AnalysisOp
     if fills:
         bar = (grid_downbeats[1] - grid_downbeats[0]) if len(grid_downbeats) > 1 else 2.0
         for sg in res.suggestions:
-            if sg.kind not in ("section", "energy") or sg.label in ("Blackout", "Return", "Build"):
+            if sg.kind not in ("section", "energy") or sg.label in ("Blackout", "Return", "Build") or \
+                    "cue track" in sg.reason:
                 continue
             for f in fills:
                 if sg.time - 0.1 <= f.end <= sg.time + 2.2 * bar and f.start >= sg.time - 0.1 - bar and \
@@ -304,6 +314,41 @@ def run_analysis(project: Project, audio: dict[str, AudioData], opts: AnalysisOp
     res.suggestions.sort(key=lambda s: s.time)
     step(1.0, f"Done: {len(res.suggestions)} suggestions")
     return res
+
+
+def _spoken_only(project, audio, opts, res, clicks, guides, step) -> None:
+    """No music to analyse, but a cue track (and a click or a confirmed grid): its sections."""
+    sr = ANALYSIS_SR
+    grid = project.beat_grid if project.beat_grid.confirmed and not project.beat_grid.empty else None
+    if grid is None and clicks and opts.grid:
+        step(0.1, f"Building grid from click track '{clicks[0].name}'")
+        g = beats_mod.grid_from_click(_timeline_mix([(audio[clicks[0].id], clicks[0].offset)], sr), sr,
+                                      opts.beats_per_bar or 4)
+        if not g.empty:
+            res.grid = grid = g
+    step(0.5, "Listening to the cue track")
+    best = []
+    for g in guides:
+        yg = _timeline_mix([(audio[g.id], g.offset)], sr)
+        found = detect_spoken_sections(yg, sr, grid.downbeats if grid else [], grid.beats if grid else [],
+                                       log=lambda m, n=g.name: res.log.append(f"{n}: {m}"))
+        if len(found) > len(best):
+            best = found
+    if best:
+        res.kinds.add("section")
+        for sp in best:
+            res.suggestions.append(Suggestion("section", sp.time, sp.confidence, sp.reason, label=sp.label,
+                                              idea="new look for the section"))
+    step(1.0, f"Done: {len(res.suggestions)} suggestions")
+
+
+def _thin(hits, window: float, keep: int):
+    """The strongest `keep` hits in every `window` seconds."""
+    out = []
+    for h in sorted(hits, key=lambda h: -h.confidence):
+        if sum(1 for o in out if abs(o.time - h.time) < window / 2) < keep:
+            out.append(h)
+    return sorted(out, key=lambda h: h.time)
 
 
 def _dedupe(sugs: list[Suggestion], window: float) -> list[Suggestion]:

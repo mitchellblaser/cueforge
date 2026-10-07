@@ -610,6 +610,7 @@ class MainWindow(QMainWindow):
         a.addAction(self._act("Analyse all songs in the setlist…", lambda: self.analyse(all_songs=True),
                               "Ctrl+Shift+R"))
         a.addAction(self._act("AI models (install / remove)…", self.ai_models))
+        a.addAction(self._act("Compare suggestions with my cues…", self.compare_with_cues))
         a.addAction(self._act("Cancel analysis", self.s.cancel_analysis))
         a.addSeparator()
         # Tab / Shift+Tab are handled in eventFilter so focus navigation never eats them
@@ -1160,6 +1161,10 @@ class MainWindow(QMainWindow):
             self.s.clear_pending()
 
     # ================================================================ analysis
+    def compare_with_cues(self) -> None:
+        from .compare_dialog import CompareDialog
+        CompareDialog(self.s, self, analyse=lambda ids: self.analyse(song_ids=ids)).exec()
+
     def analyse(self, all_songs: bool = False, song_ids: list[str] | None = None) -> None:
         if self.s.analysis_running():
             self.statusBar().showMessage("An analysis is already running (Cancel in the status bar)", 5000)

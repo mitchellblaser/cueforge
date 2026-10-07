@@ -76,6 +76,7 @@ class Session(QObject):
         self.undo.on_change = self._on_undo_change
         self._was_dirty = False
         self._song_lru: list[str] = []
+        self.raw_analysis: dict[str, list] = {}   # song id -> what the last analysis found, unmerged
         self._engine_song: str | None = None
         self._load_current_song()
 
@@ -278,9 +279,11 @@ class Session(QObject):
                              + ": that key is now a CueForge shortcut (pick another in Lanes)")
 
     def new_project(self) -> None:
+        self.raw_analysis = {}
         self._replace_project(Project())
 
     def open_project(self, path: str) -> None:
+        self.raw_analysis = {}
         self._replace_project(load_project(path))
         self.settings.add_recent(path)
 
@@ -1129,7 +1132,8 @@ class Session(QObject):
         return best / 60.0
 
     def analysable(self, song) -> bool:
-        return any(t.analyse and t.role in ("Track", "Stem") and t.path for t in song.tracks)
+        return any(t.path and ((t.analyse and t.role in ("Track", "Stem")) or t.role == "Cue/Guide")
+                   for t in song.tracks)
 
     def run_analysis(self, opts: AnalysisOptions, song_ids: list[str] | None = None) -> bool:
         """Analyse the current song, or every song in `song_ids` one after another, each in
@@ -1280,6 +1284,9 @@ class Session(QObject):
         if not self.project.song_by_id(origin):
             self.status.emit("Analysis finished, but its song was removed")
             return
+        import copy
+        # kept as found (merging drops suggestions already on a cue): AI ▸ Compare with my cues
+        self.raw_analysis[origin] = [copy.copy(x) for x in res.suggestions]
         current = self.project.song.id
         self.project.select_song(origin)   # apply results to the song that was analysed
         try:

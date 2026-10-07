@@ -17,7 +17,7 @@ from dataclasses import asdict, dataclass, field
 import numpy as np
 
 SR = 44100
-CORPUS_VERSION = "3"   # bump when composition changes so cached renders are refreshed
+CORPUS_VERSION = "4"   # bump when composition changes so cached renders are refreshed
 CACHE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".corpus_cache")
 SOUNDFONTS = ["/usr/share/sounds/sf2/FluidR3_GM.sf2", "/usr/share/soundfonts/FluidR3_GM.sf2",
               "/usr/share/sounds/sf2/default-GM.sf2"]
@@ -52,6 +52,8 @@ class Section:
     lead_style: str = "melody"   # melody | arp | riff
     roll: bool = False           # EDM-style snare roll build through the section
     progression: tuple = (0, 5, 3, 4)   # scale degrees (major key), one per bar
+    stabs: tuple = ()            # bars with a band stab on the "and" of 2 (kick + crash + chord)
+    stops: tuple = ()            # bars where everyone hits the one, then stops for the bar
 
 
 @dataclass
@@ -83,36 +85,39 @@ def corpus() -> list[SongSpec]:
         SongSpec("rock_live", 124, [
             Section("intro", 4, 0.5, None, bass=False, chords=29),
             Section("verse", 8, 0.65, "rock", 4, chords=29),
-            Section("chorus", 8, 0.95, "rock", 4, chords=29, lead=30),
-            Section("verse2", 8, 0.65, "rock", 4, chords=29),
+            Section("chorus", 8, 0.95, "rock", 4, chords=29, lead=30, stabs=(1,)),
+            Section("verse2", 8, 0.65, "rock", 4, chords=29, stops=(5,)),
             Section("chorus2", 8, 1.0, "rock", 4, chords=29, lead=30),
         ], drift=0.02, push=0.02, humanize=0.010, live=True, seed=1),
         SongSpec("edm_club", 128, [
             Section("intro", 8, 0.6, "four", 0, chords=89, progression=(5, 3, 0, 4)),
             Section("build", 8, 0.75, None, roll=True, bass=False, chords=89, lead=81, lead_style="arp",
                     progression=(5, 3, 0, 4)),
-            Section("drop", 16, 1.0, "four", 8, chords=89, lead=81, lead_style="riff", progression=(5, 3, 0, 4)),
+            Section("drop", 16, 1.0, "four", 8, chords=89, lead=81, lead_style="riff", progression=(5, 3, 0, 4),
+                    stabs=(5,), stops=(10,)),
             Section("break", 8, 0.5, None, bass=False, chords=89, progression=(5, 3, 0, 4)),
         ], key=53, bass_program=38, seed=2),
         SongSpec("funk_live", 104, [
             Section("groove", 8, 0.7, "funk", 4, chords=7, progression=(1, 4, 1, 4)),
-            Section("horns", 8, 0.9, "funk", 4, chords=7, lead=61, lead_style="riff", progression=(1, 4, 1, 4)),
-            Section("solo", 8, 0.85, "funk", 4, chords=7, lead=65, progression=(1, 4, 1, 4)),
+            Section("horns", 8, 0.9, "funk", 4, chords=7, lead=61, lead_style="riff", progression=(1, 4, 1, 4),
+                    stabs=(2,)),
+            Section("solo", 8, 0.85, "funk", 4, chords=7, lead=65, progression=(1, 4, 1, 4), stops=(5,)),
             Section("out", 4, 0.9, "funk", 0, chords=7, lead=61, lead_style="riff", progression=(1, 4, 1, 4)),
         ], key=52, drift=0.015, humanize=0.012, live=True, bass_program=36, seed=3),
         SongSpec("ballad_live", 72, [
             Section("intro", 4, 0.4, None, bass=False, chords=0, progression=(0, 4, 5, 3)),
             Section("verse", 8, 0.55, "soft", 0, chords=0, lead=53, progression=(0, 4, 5, 3)),
-            Section("chorus", 8, 0.85, "rock", 4, chords=48, lead=53, progression=(3, 4, 0, 5)),
+            Section("chorus", 8, 0.85, "rock", 4, chords=48, lead=53, progression=(3, 4, 0, 5), stabs=(5,)),
         ], key=55, drift=0.03, humanize=0.015, rubato_intro=True, live=True, seed=4),
         SongSpec("waltz_34", 156, [
             Section("a", 8, 0.6, "waltz", 4, chords=0, lead=73, progression=(0, 3, 4, 0)),
-            Section("b", 8, 0.8, "waltz", 4, chords=48, lead=73, progression=(5, 1, 4, 0)),
+            Section("b", 8, 0.8, "waltz", 4, chords=48, lead=73, progression=(5, 1, 4, 0), stabs=(1,)),
             Section("a2", 8, 0.65, "waltz", 4, chords=0, lead=73, progression=(0, 3, 4, 0)),
         ], bpb=3, key=60, humanize=0.006, seed=5),
         SongSpec("pop_halftime", 140, [
             Section("verse", 8, 0.6, "halftime", 8, chords=4, lead=80, progression=(0, 5, 3, 4)),
-            Section("chorus", 8, 0.95, "rock", 8, chords=4, lead=80, lead_style="riff", progression=(3, 4, 5, 4)),
+            Section("chorus", 8, 0.95, "rock", 8, chords=4, lead=80, lead_style="riff", progression=(3, 4, 5, 4),
+                    stops=(3,)),
             Section("verse2", 8, 0.6, "halftime", 8, chords=4, lead=80, progression=(0, 5, 3, 4)),
         ], key=58, seed=6),
     ]
@@ -160,7 +165,7 @@ def compose(spec: SongSpec):
     harm: dict[int, pretty_midi.Instrument] = {}
     lead: dict[int, pretty_midi.Instrument] = {}
     truth = {"beats": [], "downbeats": [], "fills": [], "lead_notes": [], "lead_phrases": [],
-             "chord_changes": [], "sections": [], "kicks": [], "snares": [], "crashes": []}
+             "chord_changes": [], "sections": [], "kicks": [], "snares": [], "crashes": [], "accents": []}
 
     def hit(note, pos, vel, dur=0.1):
         t = at(pos)
@@ -188,6 +193,19 @@ def compose(spec: SongSpec):
             if chord != prev_chord:
                 truth["chord_changes"].append(float(beats[bb]))
                 prev_chord = chord
+            if bar in sec.stops:
+                # the band hits the one together and stops for the rest of the bar
+                hit(KICK, bb, v + 15)
+                hit(CRASH, bb, v + 15, 0.4)
+                inst = harm.setdefault(sec.chords if sec.chords is not None else 0,
+                                       pretty_midi.Instrument(sec.chords or 0, name="harmony"))
+                t0 = at(bb)
+                for n in chord:
+                    inst.notes.append(pretty_midi.Note(int(min(127, v + 10)), n, t0, t0 + 0.25))
+                if sec.bass:
+                    bass.notes.append(pretty_midi.Note(int(v), chord[0] - 24, t0, t0 + 0.25))
+                truth["accents"].append(("stop", t0))
+                continue
             # ---- drums
             phrase_end = sec.fill_every and (bar + 1) % sec.fill_every == 0
             section_end = bar == sec.bars - 1 and next_has_drums and sec.drums
@@ -217,6 +235,17 @@ def compose(spec: SongSpec):
                     hit(SNARE, bb + k * bpb / steps, 50 + 70 * (bar / sec.bars), 0.05)
                 if bar == 0:
                     truth["fills"].append((float(beats[bb]), float(beats[b0 + sec.bars * bpb]), 4))
+            if bar in sec.stabs:
+                # a band stab off the beat: kick, crash and a short loud chord together
+                pos = bb + 1.5
+                hit(KICK, pos, v + 15)
+                hit(CRASH, pos, v + 15, 0.4)
+                inst = harm.setdefault(sec.chords if sec.chords is not None else 0,
+                                       pretty_midi.Instrument(sec.chords or 0, name="harmony"))
+                t0 = at(pos)
+                for n in chord:
+                    inst.notes.append(pretty_midi.Note(int(min(127, v + 20)), n + 12, t0, t0 + 0.2))
+                truth["accents"].append(("stab", t0))
             # ---- bass
             if sec.bass:
                 root = chord[0] - 24
@@ -254,6 +283,7 @@ def compose(spec: SongSpec):
         # cymbal crash at section starts that have drums
         if sec.drums and si > 0:
             hit(CRASH, b0, v + 10, 0.8)
+            truth["accents"].append(("crash", float(beats[b0])))
     end_beat = sec_starts[-1] + spec.sections[-1].bars * bpb
     truth["beats"] = [float(x) for x in beats[:end_beat]]
     truth["downbeats"] = [float(x) for x in beats[:end_beat:bpb]]

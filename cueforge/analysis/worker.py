@@ -96,14 +96,16 @@ def run(folder: str) -> int:
         opts = AnalysisOptions(**{k: v for k, v in job["options"].items()
                                   if k in AnalysisOptions.__dataclass_fields__})
         audio = {}
-        want = [t for t in project.tracks if (t.analyse and t.role in ("Track", "Stem")) or t.role == "Click"]
+        spoken = opts.sections and opts.spoken_cues
+        want = [t for t in project.tracks if (t.analyse and t.role in ("Track", "Stem")) or t.role == "Click"
+                or (spoken and t.role == "Cue/Guide")]
         for i, t in enumerate(want):
             report(0.0, f"Loading audio: {t.name}")
             try:
                 audio[t.id] = load_audio(t.path)
             except Exception as exc:
                 report(0.0, f"Could not load {t.name}: {exc}")
-        if not any(t.id in audio for t in want if t.role in ("Track", "Stem")):
+        if not any(t.id in audio for t in want if t.role in ("Track", "Stem", "Cue/Guide")):
             raise RuntimeError("None of this song's audio files could be loaded (moved or deleted?): "
                                + ", ".join(os.path.basename(t.path or "?") for t in want))
         res = run_analysis(project, audio, opts, progress=report, cache_dir=job.get("cache_dir"))

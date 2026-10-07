@@ -11,7 +11,10 @@ link creates and fires cues as you program, pushes each song's timecode show, an
 edits made on the console back.
 
 CueForge can also **analyse the audio and suggest** cues:
-- **Hits** on kick, snare and crash.
+- **Hits**: the accents that break the groove (a crash where the groove has none, a band
+  stab, a stop), the strongest few per four bars. Not every kick and snare.
+- **Sections from a spoken cue track** ("Verse… 3, 4"): each section starts on the downbeat
+  after its call, named with the optional *Spoken cue words* model.
 - **Drum fills**: fast 16th, sextuplet or 32nd runs on snare and toms going into a new bar,
   suggested as strobes held across the fill. Kick/snare hits inside the fill are then hidden.
 - **Section changes**: verse, chorus, drop, breakdown, build and blackout.
@@ -80,6 +83,8 @@ needed:
 - **Demucs** separates the mix into drums / bass / vocals / other, so hits and fills are
   found per stem. Tick it in the *Analyse* dialog. It's slow on CPU, and results are cached
   next to the project.
+- **Spoken cue words** (sherpa-onnx, ~45 MB, no PyTorch) names the sections called on a
+  spoken cue track. Its 5 MB keyword model downloads from GitHub.
 - *Remove AI models* in the same dialog deletes the packages and the downloaded weights.
 - From the command line instead: `pip install -r requirements-ai.txt`. **All-In-One**
   (`pip install allin1`, optional) labels sections when installed.
@@ -149,14 +154,18 @@ on the timeline.
    what to program there:
    | Type | Lane (default) | What it finds | Idea |
    |---|---|---|---|
-   | ◇ Hits | Hits | kick, snare and crash (not hats, ride or ghost notes) | bump / flash / blinder |
+   | ◇ Hits | Hits | accents that break the bar-by-bar groove: crashes (section starts, fill landings), band stabs, stops; at most 3 per 4 bars | bump / flash / blinder, blackout after a stop |
    | ⚡ Drum fills | Strobe | fast runs (16ths / sextuplets / 32nd rolls) on snare and toms into the next bar; the hits inside are folded into the fill | strobe from the first fast note, Off on the landing |
-   | □ Sections | Main Cues | verse / chorus / bridge changes, moved onto the downbeat a fill lands on | new look |
+   | □ Sections | Main Cues | from a **spoken cue track** (role Cue/Guide) when there is one: the downbeat after each call, named by word ("Chorus") or grouped by sound; otherwise verse / chorus / bridge changes in the music, moved onto the downbeat a fill lands on | new look |
    | △ Energy | Main Cues | drops, breakdowns, builds, blackouts, returns | |
    | ○ Chord changes | Colour | harmony changes, e.g. "Chord → F#m" | colour change |
    | ♪ Lead lines | FX / Chase | vocal, synth, guitar or horn phrases, rising / falling / fast runs | follow-spot, tilt with the line, chase steps |
 
    - The beat grid is shown dashed and orange until you click *Accept grid*.
+   - The dialog warns when no analysed track is a full mix or a drum kit (e.g. only
+     percussion loops in a backing-track rig): hits and fills are weak then.
+   - **AI › Compare suggestions with my cues…** scores the last analysis against songs you've
+     programmed (per type and lane, ±¼ beat) and can set each type's threshold from your cues.
    - Lanes for new suggestion types are created automatically.
    - **Lead lines are accurate from stems.** Import vocal / lead / synth stems with role
      **Stem**, or tick *Demucs*. CueForge checks whether each stem plays a single line or

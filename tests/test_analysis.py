@@ -57,15 +57,19 @@ def test_sections_found(analysed):
         assert np.min(np.abs(times - t)) < 0.1, name
 
 
-def test_hits_ranked(analysed):
+def test_hits_are_a_few_accents(analysed):
+    """A steady kick/snare groove is not lit hit by hit: the suggestions are the few accents
+    that break it, e.g. where the drums stop before the breakdown, each on a real drum hit."""
     p, res, info = analysed
     hits = [s for s in res.suggestions if s.kind == "hit"]
     true = np.asarray(info["kicks"] + info["snares"])
     th = p.analysis.thresholds["hit"]
     shown = [h for h in hits if h.confidence >= th]
-    correct = [h for h in shown if np.min(np.abs(true - h.time)) < 0.04]
-    assert len(correct) / len(shown) > 0.9          # precision at default threshold
-    assert len(correct) / len(true) > 0.9           # recall
+    assert 1 <= len(shown) <= 0.1 * len(true)
+    assert all(np.min(np.abs(true - h.time)) < 0.04 for h in shown)
+    breakdown = dict((n, t) for t, n in info["boundaries"])["breakdown"]
+    last = max(t for t in true if t < breakdown)
+    assert any(abs(h.time - last) < 0.04 and h.label == "Stop" for h in shown)
 
 
 def test_click_track_grid(song):

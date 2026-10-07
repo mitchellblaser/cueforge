@@ -120,14 +120,14 @@ def score(res, truth) -> dict:
     kinds = {}
     for s in res.suggestions:
         kinds.setdefault(s.kind, []).append(s)
-    th = {"hit": 0.75, "fill": 0.5, "melody": 0.5, "harmony": 0.5, "section": 0.5, "energy": 0.6}
+    th = {"hit": 0.6, "fill": 0.5, "melody": 0.5, "harmony": 0.5, "section": 0.5, "energy": 0.6}
     vis = {k: [s for s in v if s.confidence >= th.get(k, 0.5)] for k, v in kinds.items()}
     fills_ref = truth["fills"]
     # estimates inside drum fills belong to the fill, not to the hit metric
-    hits = [s.time for s in vis.get("hit", []) if not any(f[0] - 0.05 <= s.time < f[1] - 0.05 for f in fills_ref)]
-    out["hitF"] = f_measure(hit_truth(truth), hits, 0.05)
-    out["hitP"] = out["hitF"][1]
-    out["hitF"] = out["hitF"][0]
+    # hits are accents: section-start crashes, band stabs and stops, not every kick and snare
+    hits = [s.time for s in vis.get("hit", [])]
+    _, out["accP"], out["accR"] = f_measure([t for _, t in truth.get("accents", [])], hits, 0.07)
+    out["hitsPerMin"] = len(hits) / (truth["duration"] / 60)
     fills = [s.time for s in vis.get("fill", [])]
     out["fillF"], out["fillP"], out["fillR"] = interval_hits(fast_fills(truth), fills,
                                                              ignore=slow_fills(truth))
@@ -141,7 +141,7 @@ def score(res, truth) -> dict:
     return out
 
 
-COLS = ["beatF", "beatAMLt", "downF", "meter", "hitF", "fillF", "fillP", "fillR", "phraseF", "chordF", "sectionR"]
+COLS = ["beatF", "beatAMLt", "downF", "meter", "accP", "accR", "hitsPerMin", "fillF", "fillP", "fillR", "phraseF", "chordF", "sectionR"]
 
 
 def main(argv):
