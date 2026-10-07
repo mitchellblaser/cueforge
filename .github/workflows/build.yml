@@ -4,6 +4,14 @@ on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      version:
+        description: "Publish a release with this tag (e.g. v1.0.1); leave empty to only build"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
 
 jobs:
   build:
@@ -51,3 +59,36 @@ jobs:
         with:
           name: CueForge-${{ runner.os }}
           path: CueForge-*.zip
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v') || inputs.version != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Name the files after the version
+        run: |
+          tag="${{ inputs.version || github.ref_name }}"
+          cd dist
+          mv CueForge-windows.zip "CueForge-${tag}-windows.zip"
+          mv CueForge-macos.zip "CueForge-${tag}-macos.zip"
+          ls -l
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.version || github.ref_name }}
+          target_commitish: ${{ github.sha }}
+          name: CueForge ${{ inputs.version || github.ref_name }}
+          generate_release_notes: true
+          prerelease: ${{ contains(inputs.version || github.ref_name, '-') }}
+          files: dist/*.zip
+          body: |
+            ### Downloads
+            - **Windows:** `CueForge-…-windows.zip`: unzip and run `CueForge\CueForge.exe`.
+            - **macOS:** `CueForge-…-macos.zip`: unzip, move `CueForge.app` to Applications, and open it the first time with **right-click › Open** (the app isn't signed).
+
+            The optional AI models (Beat This!, Demucs) are installed from inside the app: **AI › AI models…**.

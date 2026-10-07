@@ -8,6 +8,7 @@
 
 <p align="center">
   <a href="https://github.com/mitchellblaser/cueforge/actions/workflows/build.yml"><img alt="Build" src="https://github.com/mitchellblaser/cueforge/actions/workflows/build.yml/badge.svg"></a>
+  <a href="https://github.com/mitchellblaser/cueforge/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/mitchellblaser/cueforge?include_prereleases&label=download&color=ff7a1a"></a>
   <img alt="Python 3.10–3.12" src="https://img.shields.io/badge/python-3.10%E2%80%933.12-3776AB?logo=python&logoColor=white">
   <img alt="Windows | macOS" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS-555">
   <img alt="Qt / PySide6" src="https://img.shields.io/badge/UI-PySide6-41CD52?logo=qt&logoColor=white">
@@ -100,7 +101,8 @@ as timecode XML, or **live over the network** while you work.
 
 ## 🚀 Get started
 
-You need **Python 3.10–3.12** ([python.org](https://www.python.org/downloads/)).
+The quickest way is a [**ready-made build from Releases**](https://github.com/mitchellblaser/cueforge/releases/latest).
+To run from source you need **Python 3.10–3.12** ([python.org](https://www.python.org/downloads/)).
 
 | | |
 |---|---|
@@ -116,8 +118,11 @@ pip install -r requirements.txt
 python -m cueforge
 ```
 
-**Standalone app:** `packaging\build_windows.bat` (Windows) or `bash packaging/build_macos.sh`
-(macOS). The *Build* workflow in GitHub Actions makes zipped Windows and macOS builds.
+**Ready-made app:** download the Windows or macOS zip from
+[**Releases**](https://github.com/mitchellblaser/cueforge/releases/latest). On macOS, open it the
+first time with right-click › Open (the app isn't signed).
+
+**Build it yourself:** `packaging\build_windows.bat` (Windows) or `bash packaging/build_macos.sh` (macOS).
 
 **Optional AI models:** CueForge offers to install [Beat This!](https://github.com/CPJKU/beat_this)
 and [Demucs](https://github.com/facebookresearch/demucs) (about 600 MB, once) for stronger beat
@@ -159,6 +164,10 @@ All of them are in the app under `F1` and in the [feature reference](docs/REFERE
 pip install -r requirements-dev.txt
 QT_QPA_PLATFORM=offscreen python -m pytest -q
 ```
+
+**Releasing:** push a version tag (`git tag v1.0.1 && git push origin v1.0.1`), or run the *Build*
+workflow from the Actions tab with a version filled in. Windows and macOS are built and tested, and
+the zips are attached to a new release. A tag with a dash (`v1.1.0-beta1`) makes a pre-release.
 
 ```
 cueforge/

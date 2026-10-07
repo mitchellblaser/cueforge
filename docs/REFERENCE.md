@@ -56,8 +56,10 @@ python -m cueforge               # optionally: python -m cueforge song.wav click
 
 - **Windows:** `packaging\build_windows.bat` → `dist\CueForge\CueForge.exe`
 - **macOS:** `bash packaging/build_macos.sh` → `dist/CueForge.app`
-- **GitHub:** push the repo and run the *Build* workflow (Actions tab, or push a `v*` tag).
-  It produces zipped Windows and macOS builds as downloadable artifacts.
+- **GitHub:** push a `v*` tag (e.g. `v1.0.1`), or run the *Build* workflow from the Actions
+  tab with a version filled in. It builds and tests Windows and macOS and attaches the zips
+  to a new release on the Releases page (a tag with a dash, e.g. `v1.1.0-beta1`, makes a
+  pre-release). Run it without a version to get the zips as workflow artifacts only.
 
 Each build runs the test suite and then `CueForge --self-test` inside the packaged app.
 The macOS app isn't code-signed, so open it the first time with right-click › Open.
