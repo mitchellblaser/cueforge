@@ -399,18 +399,23 @@ def test_ma3_import_tolerates_console_layout():
     assert [(c.time, c.label, c.duration) for c in cues] == [(2.0, "Look 1", None), (3.0, "", 0.5)]
 
 
-def test_playhead_clock_is_smoothed():
+def test_playhead_clock_is_smoothed(monkeypatch):
     """A late audio block must not make the playhead jump; a real jump (loop) resets it."""
     import time as _t
+    import types
+    from cueforge.audio import engine as engine_mod
+    now = [1000.0]                                        # a fake clock: no dependence on CI speed
+    monkeypatch.setattr(engine_mod, "time", types.SimpleNamespace(perf_counter=lambda: now[0], sleep=_t.sleep,
+                                                                   monotonic=lambda: now[0]))
     e = _engine_with([("a", 0.0, 48000 * 30)])
     e._playing = True
     e._set_clock(5.0, 0.05)
     p0 = e.position()
-    _t.sleep(0.05)
+    now[0] += 0.05
     e._set_clock(5.0 + 0.05 + 0.02, 0.05)                 # 20 ms off: eased, not jumped
-    assert abs(e.position() - (p0 + 0.05)) < 0.015
+    assert abs(e.position() - (p0 + 0.05)) < 0.005
     e._set_clock(1.0, 0.05)                               # loop back: reset
-    assert abs(e.position() - 1.0 + 0.05) < 0.06
+    assert abs(e.position() - (1.0 - 0.05)) < 1e-9
     e._playing = False
 
 

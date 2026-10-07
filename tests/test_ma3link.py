@@ -557,7 +557,7 @@ def test_sender_runs_in_the_background_and_live_goes_first():
     t0 = _t.perf_counter()
     for k in range(5):
         sender.put(c, "/cmd", f"bulk{k}", bulk=True)
-    assert _t.perf_counter() - t0 < 0.05            # queuing never waits on the network
+    assert _t.perf_counter() - t0 < 0.5             # queuing never waits on the (2 s) stalled network
     sender.put(c, "/cmd", "live", bulk=False)
     gate.set()
     assert sender.wait_idle(3)
