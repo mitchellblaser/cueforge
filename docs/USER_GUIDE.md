@@ -42,7 +42,7 @@ verse/chorus changes, drops, chord changes and melody lines. Suggestions are dra
 never turn into real cues until you accept them, and the AI never moves or deletes a cue
 you made.
 
-![CueForge with a setlist, lanes and suggestions](screenshot_setlist.png)
+![How CueForge works: audio, AI analysis, your cues, grandMA3](images/workflow.png)
 
 ---
 
@@ -85,7 +85,7 @@ Use **File › Audio output…** to pick which sound card or interface CueForge 
 
 ## 3. A tour of the window
 
-![The main window](screenshot.png)
+![The main window](images/screenshot.webp)
 
 | Area | What it's for |
 |---|---|
