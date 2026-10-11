@@ -504,3 +504,51 @@ def test_route_stereo_pair_and_mono():
     assert np.allclose(out[:, 2], 0.2) and np.allclose(out[:, 3], 0.4) and not out[:, :2].any()
     e.mix_channels = (0,)
     assert np.allclose(e.route(mix, None, 2)[:, 0], 0.3)
+
+
+def test_sequence_blocks_with_gap_between_songs():
+    """Sequence start 1000, gap 100: shared lanes and song 1 from 1000, song 2 from 1100, song 3
+    from 1200; a song that overruns its block pushes the next one on."""
+    from cueforge.core.editing import sequence_plan
+    p = Project()
+    hits = next(l for l in p.lanes if l.name == "Hits")
+    per_song = [l for l in p.lanes if l.name in ("Main Cues", "Colour")]
+    for i in range(3):
+        if i:
+            p.add_song(f"Song {i + 1}")
+        p.select_song(p.songs[i].id)
+        for l in per_song:
+            editing.add_cue(p, l.id, 1.0)
+    editing.add_cue(p, hits.id, 2.0)
+    p.export.ma3_seq_start, p.export.ma3_song_gap = 1000, 100
+    pl = sequence_plan(p)
+    assert pl["Hits"] == 1000
+    assert (pl["Song 1 Main Cues"], pl["Song 1 Colour"]) == (1001, 1002)
+    assert (pl["Song 2 Main Cues"], pl["Song 2 Colour"]) == (1100, 1101)
+    assert pl["Song 3 Main Cues"] == 1200
+    p.export.ma3_song_gap = 2                         # blocks too small: never overlap
+    pl = sequence_plan(p)
+    assert sorted(pl.values()) == list(range(1000, 1007))
+    p.export.ma3_song_gap = 0                         # off: one after another, as before
+    assert sorted(sequence_plan(p).values()) == list(range(1000, 1007))
+    assert build_ma3_xml(p).count("Sequences.1099") == 0
+
+
+def test_song_sets_its_own_first_sequence():
+    from cueforge.core.editing import sequence_plan
+    from cueforge.core.model import Project as P
+    p = P()
+    main = next(l for l in p.lanes if l.name == "Main Cues")
+    for i in range(3):
+        if i:
+            p.add_song(f"Song {i + 1}")
+        p.select_song(p.songs[i].id)
+        editing.add_cue(p, main.id, 1.0)
+    p.export.ma3_seq_start, p.export.ma3_song_gap = 1000, 100
+    p.songs[1].seq_start = 2500                       # song 2 placed by hand
+    pl = sequence_plan(p)
+    assert (pl["Song 1 Main Cues"], pl["Song 2 Main Cues"], pl["Song 3 Main Cues"]) == (1000, 2500, 2501)
+    p.songs[2].seq_start = 1000                       # clashes with song 1: next free number
+    assert sequence_plan(p)["Song 3 Main Cues"] == 1001
+    q = P.from_dict(p.to_dict())                      # saved with the project
+    assert [x.seq_start for x in q.songs] == [0, 2500, 1000]

@@ -95,6 +95,10 @@ class LinkDialog(QDialog):
                                   "in one block. They are found by name, so you can move them on the console. "
                                   "Same setting as in the grandMA3 export.")
         f2.addRow("Sequence start", self.seq_start)
+        from .dialogs import song_gap_widgets
+        self.song_gap, gap_hint = song_gap_widgets(self.seq_start, link.s.project)
+        f2.addRow("Gap between songs", self.song_gap)
+        f2.addRow(gap_hint)
         lay.addWidget(g2)
 
         g3 = QGroupBox("Command syntax ({seq}, {cue}, {label}, {fade})")
@@ -164,6 +168,7 @@ class LinkDialog(QDialog):
         c.reply_port = self.reply_port.value()
         c.reply_line = self.reply_line.value()
         self.link.s.project.export.ma3_seq_start = self.seq_start.value()
+        self.link.s.project.export.ma3_song_gap = self.song_gap.value()
         c.pin_numbers = self.pin.isChecked()
         for k, e in self.tpl.items():
             setattr(c, "cmd_" + k, e.text().strip() or getattr(LinkSettings, "cmd_" + k))

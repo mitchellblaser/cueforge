@@ -522,6 +522,9 @@ Click **⚙** or double-click a song:
 - **grandMA3 Timecode slot** – which Timecode pool object it imports into.
 - **First cue in shared lanes** – where this song's cues start in sequences shared by every
   song (hits, strobe).
+- **First sequence (this song)** – the grandMA3 sequence number this song's own sequences
+  start at, e.g. 1100. *Auto* follows the project's Sequence start and Gap between songs.
+  The dialog lists each lane's sequence with its planned number.
 - **Notes**
 
 The timecode show itself starts at 0: the song's start timecode goes into the show's
@@ -547,6 +550,7 @@ Open **File › Export › grandMA3…** (Ctrl+E).
 | **First cue of each lane is a Goto** | Makes sure each sequence is on the right cue whenever the song starts. Leave on. |
 | **Songs** | Current song or the whole setlist. |
 | **Sequence start** | CueForge's sequences are created from this number up: shared lanes first, then each song's own sequences in setlist order. On the console they are found by name afterwards, so you can move them. Same setting as in the live link. |
+| **Gap between songs** | Gives every song its own block of sequence numbers: Sequence start 1000 and gap 100 put song 1 at 1000, song 2 at 1100, song 3 at 1200. Shared lanes open the first block. *None* = one after another. A song can override this with its own **First sequence** (song settings). Same setting as in the live link. |
 | **XML DataVersion** | Set to your console's software version, e.g. 2.1.1.5. |
 | **Plugin: create missing cues** | The plugin creates empty, labelled cues in the sequences if they don't exist yet. |
 
@@ -617,8 +621,8 @@ Open **File › grandMA3 live link…** (Ctrl+L):
 3. Click **Send test**. The console's command-line feedback should print
    "CueForge link OK". Click **Test reply**: the status bar should say the console's reply
    arrived.
-4. Set **Sequence start** (also in the export settings): where CueForge's sequences are
-   created.
+4. Set **Sequence start** and, if you like, **Gap between songs** (also in the export
+   settings): where CueForge's sequences are created, e.g. 1000, 1100, 1200 per song.
 5. Choose what to send:
 
 | Option | What it does |
@@ -868,5 +872,6 @@ Press **F1** in the app for this list.
 - **Stem** – a separate audio file for one part of the song (drums, vocals…).
 - **Suggestion** – a cue the AI proposes. Ghosted until you accept it.
 - **Temp** – a cue with a hold time: it fires, holds, then releases. Used for strobes and bumps.
-- **Sequence start** – the number CueForge's grandMA3 sequences are created from.
+- **Sequence start** – the number CueForge's grandMA3 sequences are created from (with an
+  optional *Gap between songs*, or a song's own *First sequence*).
 - **Timecode slot** – the grandMA3 Timecode pool object a song is imported into.

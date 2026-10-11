@@ -315,6 +315,10 @@ on the timeline.
      **Sequence start** (in the export and live link settings): shared lanes first, then each
      song's own sequences in setlist order, so they sit together. After that they are found
      **by name**, so you can move them around on the console.
+     - **Gap between songs** (export and live link) gives each song its own block: start 1000
+       and gap 100 put song 1 at 1000 (after any shared lanes), song 2 at 1100, song 3 at 1200.
+       A song can also set its own **First sequence** in its song settings (Auto = follow the
+       gap). Taken numbers are skipped, so blocks never overlap.
      - **Timecode shows start at 0**: the song's start timecode becomes the show's *Offset TC
        Slot* on the console (set by the plugin and the live link), so a whole song can be
        nudged there on site.

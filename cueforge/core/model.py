@@ -205,6 +205,7 @@ class ExportSettings:
     ma3_cue_token: str = "Go+"        # command for normal cues: "Go+" or "Goto"
     ma3_first_goto: bool = True       # first cue of each lane is a Goto (resyncs the sequence)
     ma3_seq_start: int = 1            # CueForge's sequences are created from this number up
+    ma3_song_gap: int = 0             # >0: each song's sequences start a block this far on (1000, 1100 …)
     ltc_sample_rate: int = 48000
     ltc_level_db: float = -12.0
     ltc_preroll: float = 2.0
@@ -247,6 +248,7 @@ class Song:
         self.ma3_timecode = 1        # grandMA3 Timecode pool slot for this song
         self.seq_offset = 0          # unused (sequences are found by name); kept so old files load
         self.cue_start = 1.0         # first auto cue number for this song in shared (global) lanes
+        self.seq_start = 0           # first grandMA3 sequence for this song's own lanes; 0 = automatic
         self.notes = ""
         self.sections: list[SectionMarker] = []
         self.analysed = ""           # when the AI analysis last ran (ISO time), "" = never
@@ -266,7 +268,7 @@ class Song:
             "loop": list(self.loop) if self.loop else None,
             "view": self.view,
             "tc_offset": self.tc_offset, "ma3_timecode": self.ma3_timecode,
-            "seq_offset": self.seq_offset, "cue_start": self.cue_start,
+            "seq_offset": self.seq_offset, "cue_start": self.cue_start, "seq_start": self.seq_start,
             "sections": [asdict(m) for m in self.sections],
         }
 
@@ -286,6 +288,7 @@ class Song:
         s.ma3_timecode = int(d.get("ma3_timecode", 1))
         s.seq_offset = int(d.get("seq_offset", 0))
         s.cue_start = float(d.get("cue_start", 1.0))
+        s.seq_start = int(d.get("seq_start", 0) or 0)
         return s
 
     def content(self) -> dict[str, Any]:

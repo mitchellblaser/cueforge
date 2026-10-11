@@ -171,21 +171,42 @@ def sequence_name(project: Project, lane, song=None) -> str:
 def sequence_plan(project: Project) -> dict[str, int]:
     """{sequence name: number} for the whole setlist, counting up from the project's
     Sequence start: shared lanes first (lane order), then each song's own lanes (setlist
-    order). The file export uses these numbers; the live link and the plugin create a
+    order). A song's own *First sequence* (song settings) puts its block exactly there;
+    otherwise, with a *Gap between songs*, song k's block starts at start + k × gap (shared
+    lanes open the first block). Numbers already planned are skipped, so blocks never
+    collide. The file export uses these numbers; the live link and the plugin create a
     missing sequence in the first free number from its planned one, so CueForge's
     sequences sit together. Commands find sequences by name, not by number."""
     from .model import lane_per_song
     lanes = [l for l in project.lanes if l.export]
     used = {(s.id, c.lane_id) for s in project.songs for c in s.cues}   # only sequences that will exist
-    names = [sequence_name(project, l) for l in lanes
-             if not lane_per_song(l) and any((s.id, l.id) in used for s in project.songs)]
-    for song in project.songs:
-        names += [sequence_name(project, l, song) for l in lanes if lane_per_song(l) and (song.id, l.id) in used]
     start = max(1, int(getattr(project.export, "ma3_seq_start", 1) or 1))
+    gap = max(0, int(getattr(project.export, "ma3_song_gap", 0) or 0))
     plan: dict[str, int] = {}
-    for n in names:
-        if n not in plan:
-            plan[n] = start + len(plan)
+    taken: set[int] = set()
+    nxt = start
+
+    def put(name: str) -> None:
+        nonlocal nxt
+        while nxt in taken:
+            nxt += 1
+        plan[name] = nxt
+        taken.add(nxt)
+        nxt += 1
+    for l in lanes:
+        n = sequence_name(project, l)
+        if not lane_per_song(l) and n not in plan and any((s.id, l.id) in used for s in project.songs):
+            put(n)
+    for k, song in enumerate(project.songs):
+        own = int(getattr(song, "seq_start", 0) or 0)
+        if own > 0:
+            nxt = own
+        elif gap:
+            nxt = max(nxt, start + k * gap)
+        for l in lanes:
+            n = sequence_name(project, l, song)
+            if lane_per_song(l) and (song.id, l.id) in used and n not in plan:
+                put(n)
     return plan
 
 

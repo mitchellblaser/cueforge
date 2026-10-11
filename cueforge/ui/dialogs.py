@@ -40,6 +40,38 @@ def _demucs_installed() -> bool:
     return addons.status().get("demucs", False)
 
 
+def song_gap_widgets(seq_start: QSpinBox, project) -> tuple[QSpinBox, QLabel]:
+    """Gap between songs (export and live link): each song's sequences start a block this far
+    on from Sequence start, e.g. 1000, 1100, 1200 … (0 = straight after each other)."""
+    gap = QSpinBox()
+    gap.setRange(0, 100000)
+    gap.setSingleStep(10)
+    gap.setSpecialValueText("None (one after another)")
+    ex, n_songs = project.export, len(project.songs)
+    own = [x.name for x in project.songs if getattr(x, "seq_start", 0)]
+    gap.setValue(int(getattr(ex, "ma3_song_gap", 0) or 0))
+    gap.setToolTip("Each song's own sequences start a new block: Sequence start, then + gap for the next "
+                   "song, and so on. Shared lanes (e.g. Hits, Strobe) open the first block. A song with more "
+                   "sequences than the gap pushes the next block on, so numbers never overlap.")
+    hint = QLabel()
+    hint.setStyleSheet(f"color: {theme.FG_DIM};")
+
+    def show() -> None:
+        a, g = seq_start.value(), gap.value()
+        extra = (f" {len(own)} song(s) set their own First sequence (song settings): "
+                 + ", ".join(own[:3]) + (" …" if len(own) > 3 else "") + ".") if own else ""
+        if not g:
+            hint.setText("Every song's sequences follow straight on from the one before." + extra)
+            return
+        blocks = ", ".join(str(a + k * g) for k in range(min(max(n_songs, 3), 4)))
+        hint.setText(f"Song blocks start at {blocks} …" + extra)
+    hint.setWordWrap(True)
+    seq_start.valueChanged.connect(show)
+    gap.valueChanged.connect(show)
+    show()
+    return gap, hint
+
+
 def source_warning(project) -> str:
     """What the analysis can't hear: no full mix and no drums means hits and fills come from
     whatever is there (percussion loops, samples) and are weak."""
@@ -328,12 +360,24 @@ class SongDialog(QDialog):
         self.cue_start.setToolTip("First automatic cue number for this song in lanes shared by every song "
                                   "(hits, strobe). Per-song lanes always start at 1. Fixed numbers are kept.")
         form.addRow("First cue in shared lanes", self.cue_start)
+        self.seq_start = QSpinBox()
+        self.seq_start.setRange(0, 99999)
+        self.seq_start.setSpecialValueText("Auto")
+        self.seq_start.setValue(int(song.seq_start or 0))
+        self.seq_start.setToolTip("First grandMA3 sequence number for this song's own lanes (e.g. 1100). Auto "
+                                  "follows the project's Sequence start and Gap between songs.")
+        form.addRow("First sequence (this song)", self.seq_start)
         self.notes = QPlainTextEdit(song.notes)
         self.notes.setFixedHeight(60)
         form.addRow("Notes", self.notes)
-        from ..core.editing import sequence_name
+        from ..core.editing import sequence_name, sequence_plan
         from ..core.model import lane_per_song
-        seqs = ", ".join(f'{l.name} → "{sequence_name(p, l, song)}"' + ("" if lane_per_song(l) else " (shared)")
+        plan = sequence_plan(p)
+
+        def num(l):
+            n = plan.get(sequence_name(p, l, song))
+            return f" {n}" if n else ""
+        seqs = ", ".join(f'{l.name} → "{sequence_name(p, l, song)}"{num(l)}' + ("" if lane_per_song(l) else " (shared)")
                          for l in p.lanes if l.export)
         info = QLabel(f"<span style='color:{theme.FG_DIM}'>grandMA3 sequences (found by name): {seqs}</span>")
         info.setWordWrap(True)
@@ -349,7 +393,7 @@ class SongDialog(QDialog):
             return
         self.s.update_song(self.sid, name=self.name.text().strip() or "Song", tc_offset=off,
                            ma3_timecode=self.slot.value(), cue_start=self.cue_start.value(),
-                           notes=self.notes.toPlainText().strip())
+                           seq_start=self.seq_start.value(), notes=self.notes.toPlainText().strip())
         super().accept()
 
 
@@ -586,6 +630,9 @@ class MA3ExportDialog(QDialog):
                                   "(the live link and the plugin take the first free numbers from here). They are "
                                   "found by name afterwards, so you can move them on the console.")
         form.addRow("Sequence start", self.seq_start)
+        self.song_gap, gap_hint = song_gap_widgets(self.seq_start, p)
+        form.addRow("Gap between songs", self.song_gap)
+        form.addRow(gap_hint)
         self.ver = QLineEdit(ex.ma3_data_version)
         self.ver.setToolTip("Set to your console/onPC software version, e.g. 2.1.1.5")
         form.addRow("XML DataVersion", self.ver)
@@ -634,6 +681,7 @@ class MA3ExportDialog(QDialog):
         ex.ma3_cue_token = self.token.currentData()
         ex.ma3_first_goto = self.first_goto.isChecked()
         ex.ma3_seq_start = self.seq_start.value()
+        ex.ma3_song_gap = self.song_gap.value()
         self.s.update_song(self.s.project.song.id, ma3_timecode=self.tc_num.value())
         self.all_songs = self.scope.currentData() == "all"
         ex.ma3_data_version = self.ver.text().strip() or ex.ma3_data_version

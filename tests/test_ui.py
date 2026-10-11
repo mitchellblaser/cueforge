@@ -1321,3 +1321,24 @@ def test_trackpad_pinch_zooms_timeline(app, win):
     assert tl.pps == pytest.approx(50.0)
     pinch(Qt.SmartZoomNativeGesture, 0.0)                  # two-finger double tap: whole song
     assert tl.t0 == 0.0
+
+
+def test_song_dialog_first_sequence_and_gap_widgets(app, win):
+    from cueforge.ui.link_dialog import LinkDialog
+    s = win.s
+    d = dialogs.SongDialog(s, s.project.song.id, win)
+    assert d.seq_start.value() == 0 and d.seq_start.text() == "Auto"
+    d.seq_start.setValue(1100)
+    d.accept()
+    assert s.project.song.seq_start == 1100
+    e = dialogs.MA3ExportDialog(s, win)
+    e.seq_start.setValue(1000)
+    e.song_gap.setValue(100)
+    e.accept()
+    assert (s.project.export.ma3_seq_start, s.project.export.ma3_song_gap) == (1000, 100)
+    ld = LinkDialog(win.ma3link, win)
+    assert ld.song_gap.value() == 100
+    ld.song_gap.setValue(50)
+    ld._store()
+    assert s.project.export.ma3_song_gap == 50
+    ld.reject()
