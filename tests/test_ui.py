@@ -1299,3 +1299,25 @@ def test_compare_dialog(app, win):
     assert "100%" in d.summary.text() and d.kinds.rowCount() == 1
     d._apply()
     assert 0.4 < s.project.analysis.thresholds["hit"] <= 0.8
+
+
+def test_trackpad_pinch_zooms_timeline(app, win):
+    from PySide6.QtCore import QPointF
+    from PySide6.QtGui import QNativeGestureEvent, QPointingDevice
+    tl = win.timeline.canvas
+    tl.resize(1000, 400)
+    tl.set_view(t0=0.0, pps=50.0)
+    pos = QPointF(400, 200)
+    t_under = tl.t_of(pos.x())
+
+    def pinch(kind, value):
+        e = QNativeGestureEvent(kind, QPointingDevice.primaryPointingDevice(), 2, pos, pos, pos, value,
+                                QPointF(0, 0))
+        QApplication.sendEvent(tl, e)
+    pinch(Qt.ZoomNativeGesture, 0.25)                      # spread fingers: zoom in
+    assert tl.pps == pytest.approx(62.5)
+    assert tl.t_of(pos.x()) == pytest.approx(t_under, abs=1e-6)  # the time under the fingers stays put
+    pinch(Qt.ZoomNativeGesture, -0.2)                      # pinch in: zoom out
+    assert tl.pps == pytest.approx(50.0)
+    pinch(Qt.SmartZoomNativeGesture, 0.0)                  # two-finger double tap: whole song
+    assert tl.t0 == 0.0

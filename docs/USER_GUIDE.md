@@ -228,7 +228,7 @@ Each strip has a fader (double-click resets it to 0 dB), a level meter, **M** (m
 - Click in the ruler to move the playhead.
 - **Scrub:** while stopped, drag in the ruler or a waveform to hear the audio under the
   playhead. Turn this off with **View › Scrub audio** (Ctrl+Alt+S).
-- **Zoom** with Ctrl + mouse wheel, or **+ / −**. **Z** zooms to fit the whole song.
+- **Zoom** with Ctrl + mouse wheel, a **trackpad pinch**, or **+ / −**. **Z** (or a two-finger double tap on a Mac trackpad) zooms to fit the whole song.
 - **Follow** (F) keeps the playhead in view while playing.
 - **Loop:** Shift-drag in the ruler, or press **I** (in) and **O** (out), then **L** to turn
   looping on and off.
@@ -788,7 +788,7 @@ Press **F1** in the app for this list.
 | C / B | Click / cue blips on-off |
 | F | Follow playhead |
 | Z | Zoom to fit |
-| Ctrl + wheel, + / − | Zoom |
+| Ctrl + wheel, trackpad pinch, + / − | Zoom |
 | Ctrl+Alt+S | Scrub audio on-off |
 
 **Cues**

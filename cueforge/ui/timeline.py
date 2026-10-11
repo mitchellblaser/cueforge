@@ -6,7 +6,7 @@ import math
 from dataclasses import dataclass
 
 import numpy as np
-from PySide6.QtCore import QPointF, QRect, QRectF, QSize, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QPointF, QRect, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import (QBrush, QColor, QFont, QFontMetrics, QImage, QPainter, QPainterPath, QPen, QPixmap,
                            QPolygonF)
 from PySide6.QtWidgets import QGridLayout, QMenu, QScrollBar, QToolTip, QWidget
@@ -1122,6 +1122,18 @@ class TimelineCanvas(QWidget):
             return
         snap = self.s.snap and not (e.modifiers() & Qt.AltModifier)
         self.s.add_cue(r.id, max(0.0, self.t_of(pos.x())), snap)
+
+    def event(self, e) -> bool:
+        # trackpad pinch (macOS sends it as a native gesture; Windows as Ctrl + wheel, below)
+        if e.type() == QEvent.NativeGesture:
+            g = e.gestureType()
+            if g == Qt.ZoomNativeGesture:
+                self.zoom(max(0.5, min(2.0, 1.0 + e.value())), self.t_of(e.position().x()))
+                return True
+            if g == Qt.SmartZoomNativeGesture:            # two-finger double tap: whole song
+                self.zoom_fit()
+                return True
+        return super().event(e)
 
     def wheelEvent(self, e) -> None:
         dx, dy = e.angleDelta().x(), e.angleDelta().y()

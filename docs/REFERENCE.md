@@ -509,7 +509,7 @@ Choose **Replace** (console is master) or **Merge**.
 | Ctrl+Shift+C | Copy section cues to all repeats |
 | Ctrl+P | Pattern fill |
 | Ctrl+Shift+D | Dual-monitor layout |
-| Ctrl + wheel, + / − | Zoom |
+| Ctrl + wheel, trackpad pinch, + / − | Zoom |
 | Ctrl+PgUp / Ctrl+PgDn | Previous / next song in the setlist |
 | Ctrl+Shift+N | Add a song |
 | Ctrl+Z / Ctrl+Shift+Z | Undo / redo |
