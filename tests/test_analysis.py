@@ -112,3 +112,14 @@ def test_stems_of_different_lengths(song, tmp_path):
     res = run_analysis(p, files, AnalysisOptions(use_deep_models=False, hits=False, fills=False,
                                                  melody=False, harmony=False))
     assert res.grid is not None and res.grid.bpm() == pytest.approx(120, abs=1)
+
+
+def test_regularise_with_no_supported_beats():
+    """A stretch of music with no attacks near any beat (e.g. a pad between two free-time
+    pauses) is kept as tracked instead of crashing."""
+    from cueforge.analysis.beats import _regularise
+    beats = np.arange(17) * 0.5 + 1.0
+    out, steady = _regularise(beats, np.array([0.0, 30.0]))
+    assert np.allclose(out, beats) and not steady
+    out, _ = _regularise(beats, np.array([1.0, 1.5, 9.0]))          # only leading anchors
+    assert len(out) == len(beats)

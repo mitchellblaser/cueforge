@@ -515,7 +515,7 @@ def _regularise(beats: np.ndarray, on_t: np.ndarray, win: float = 0.06) -> tuple
         j = i
         while j < n and not support[j]:
             j += 1
-        if j - i < 3:
+        if j - i < 3 or (i == 0 and j == n):   # short run, or no supported beat at all
             result.extend(out[i:j])
         elif i > 0 and j < n:               # gap between two anchors
             local = _local_ibi(out, support, i - 1)
